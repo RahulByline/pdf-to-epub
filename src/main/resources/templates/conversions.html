@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Conversion Jobs - EPUB Converter</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 40px auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 {
+            font-size: 32px;
+        }
+        .content {
+            padding: 40px;
+        }
+        .loading {
+            text-align: center;
+            padding: 60px;
+            color: #667eea;
+            font-size: 18px;
+        }
+        .jobs-list {
+            margin-top: 20px;
+        }
+        .job-card {
+            background: #f8f9ff;
+            border-radius: 15px;
+            padding: 20px;
+            margin-bottom: 15px;
+            border: 2px solid transparent;
+            transition: all 0.3s;
+        }
+        .job-card:hover {
+            border-color: #667eea;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.2);
+        }
+        .job-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+        .job-id {
+            font-size: 20px;
+            font-weight: bold;
+            color: #333;
+        }
+        .status-badge {
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+        .status-PENDING {
+            background: #ffeaa7;
+            color: #d63031;
+        }
+        .status-IN_PROGRESS {
+            background: #74b9ff;
+            color: #0984e3;
+        }
+        .status-COMPLETED {
+            background: #55efc4;
+            color: #00b894;
+        }
+        .status-FAILED {
+            background: #ff7675;
+            color: #d63031;
+        }
+        .status-REVIEW_REQUIRED {
+            background: #fdcb6e;
+            color: #e17055;
+        }
+        .job-info {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        .info-item {
+            font-size: 14px;
+            color: #666;
+        }
+        .info-label {
+            font-weight: bold;
+            color: #333;
+        }
+        .progress-bar {
+            width: 100%;
+            height: 25px;
+            background: #e0e0e0;
+            border-radius: 12px;
+            overflow: hidden;
+            margin: 15px 0;
+        }
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            font-size: 12px;
+        }
+        .job-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 15px;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+        .btn-download {
+            background: #00b894;
+            color: white;
+        }
+        .btn-download:hover {
+            background: #00a383;
+        }
+        .btn-download:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .btn-details {
+            background: #667eea;
+            color: white;
+        }
+        .btn-details:hover {
+            background: #764ba2;
+        }
+        .error-message {
+            background: #ff7675;
+            color: white;
+            padding: 10px;
+            border-radius: 8px;
+            margin-top: 10px;
+        }
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #666;
+        }
+        .empty-state-icon {
+            font-size: 80px;
+            margin-bottom: 20px;
+        }
+        .nav-links {
+            margin-top: 30px;
+            text-align: center;
+        }
+        .nav-links a {
+            color: #667eea;
+            text-decoration: none;
+            margin: 0 15px;
+            transition: color 0.3s;
+        }
+        .nav-links a:hover {
+            color: #764ba2;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🔄 Conversion Jobs</h1>
+        </div>
+        
+        <div class="content">
+            <div class="loading" id="loading">Loading conversion jobs...</div>
+            <div class="jobs-list" id="jobsList" style="display: none;"></div>
+            <div class="empty-state" id="emptyState" style="display: none;">
+                <div class="empty-state-icon">📭</div>
+                <h2>No conversion jobs yet</h2>
+                <p>Start converting PDFs to see jobs here</p>
+            </div>
+            
+            <div class="nav-links">
+                <a href="/">← Home</a>
+                <a href="/pdfs">PDF Library</a>
+                <a href="/upload">Upload PDF</a>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadJobs() {
+            try {
+                const response = await fetch('/api/conversions/status/IN_PROGRESS');
+                const inProgress = await response.json();
+                
+                const response2 = await fetch('/api/conversions/status/COMPLETED');
+                const completed = await response2.json();
+                
+                const response3 = await fetch('/api/conversions/status/FAILED');
+                const failed = await response3.json();
+                
+                const response4 = await fetch('/api/conversions/status/PENDING');
+                const pending = await response4.json();
+                
+                const allJobs = [...pending, ...inProgress, ...completed, ...failed];
+                
+                document.getElementById('loading').style.display = 'none';
+                
+                if (allJobs.length === 0) {
+                    document.getElementById('emptyState').style.display = 'block';
+                    return;
+                }
+                
+                document.getElementById('jobsList').style.display = 'block';
+                renderJobs(allJobs);
+            } catch (error) {
+                document.getElementById('loading').textContent = 'Error loading jobs: ' + error.message;
+            }
+        }
+
+        function renderJobs(jobs) {
+            const list = document.getElementById('jobsList');
+            list.innerHTML = jobs.map(job => `
+                <div class="job-card">
+                    <div class="job-header">
+                        <div class="job-id">Job #${job.id}</div>
+                        <span class="status-badge status-${job.status}">${job.status}</span>
+                    </div>
+                    
+                    <div class="job-info">
+                        <div class="info-item">
+                            <span class="info-label">PDF ID:</span> ${job.pdfDocumentId}
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Current Step:</span> ${formatStep(job.currentStep)}
+                        </div>
+                        <div class="info-item">
+                            <span class="info-label">Created:</span> ${formatDate(job.createdAt)}
+                        </div>
+                        ${job.completedAt ? `
+                        <div class="info-item">
+                            <span class="info-label">Completed:</span> ${formatDate(job.completedAt)}
+                        </div>
+                        ` : ''}
+                    </div>
+                    
+                    <div class="progress-bar">
+                        <div class="progress-fill" style="width: ${job.progressPercentage || 0}%">
+                            ${job.progressPercentage || 0}%
+                        </div>
+                    </div>
+                    
+                    ${job.errorMessage ? `
+                    <div class="error-message">
+                        ❌ Error: ${job.errorMessage}
+                    </div>
+                    ` : ''}
+                    
+                    <div class="job-actions">
+                        <button class="btn btn-download" 
+                                onclick="downloadEpub(${job.id})" 
+                                ${job.status !== 'COMPLETED' ? 'disabled' : ''}>
+                            📥 Download EPUB
+                        </button>
+                        <button class="btn btn-details" onclick="viewDetails(${job.id})">
+                            📋 View Details
+                        </button>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function formatStep(step) {
+            if (!step) return 'N/A';
+            return step.replace('STEP_', '').replace(/_/g, ' ');
+        }
+
+        function formatDate(dateString) {
+            if (!dateString) return 'N/A';
+            const date = new Date(dateString);
+            return date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+        }
+
+        function downloadEpub(jobId) {
+            window.location.href = `/api/conversions/${jobId}/download`;
+        }
+
+        async function viewDetails(jobId) {
+            try {
+                const response = await fetch(`/api/conversions/${jobId}`);
+                const job = await response.json();
+                
+                let details = `Job ID: ${job.id}\n`;
+                details += `Status: ${job.status}\n`;
+                details += `Progress: ${job.progressPercentage}%\n`;
+                details += `Current Step: ${formatStep(job.currentStep)}\n`;
+                details += `Created: ${formatDate(job.createdAt)}\n`;
+                if (job.completedAt) details += `Completed: ${formatDate(job.completedAt)}\n`;
+                if (job.errorMessage) details += `\nError: ${job.errorMessage}`;
+                if (job.confidenceScore) details += `\nConfidence Score: ${job.confidenceScore}`;
+                
+                alert(details);
+            } catch (error) {
+                alert('Error loading job details: ' + error.message);
+            }
+        }
+
+        // Load jobs on page load
+        loadJobs();
+        
+        // Auto-refresh every 5 seconds
+        setInterval(loadJobs, 5000);
+    </script>
+</body>
+</html>
