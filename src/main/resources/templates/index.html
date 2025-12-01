@@ -42,6 +42,15 @@
             transform: translateY(-2px);
             box-shadow: 0 10px 20px rgba(0,0,0,0.2);
         }
+        .ai-button {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            font-weight: 600;
+        }
+        .ai-button:hover {
+            background: linear-gradient(135deg, #f5576c 0%, #f093fb 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(245, 87, 108, 0.4);
+        }
     </style>
 </head>
 <body>
@@ -52,6 +61,7 @@
             <a href="/upload">📤 Upload PDF</a>
             <a href="/pdfs">📚 View Library</a>
             <a href="/conversions">🔄 Conversions</a>
+            <a href="/api/ai/config" class="ai-button">🤖 AI Configuration</a>
         </div>
     </div>
 </body>

@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Configuration - PDF to EPUB Converter</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 40px;
+        }
+
+        .header h1 {
+            color: #667eea;
+            font-size: 36px;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 16px;
+        }
+
+        .status-badge {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 14px;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+
+        .status-active {
+            background: #4caf50;
+            color: white;
+        }
+
+        .status-inactive {
+            background: #f44336;
+            color: white;
+        }
+
+        .form-group {
+            margin-bottom: 25px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 8px;
+            color: #333;
+            font-weight: 600;
+            font-size: 14px;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 12px 16px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: all 0.3s;
+        }
+
+        .form-group input:focus,
+        .form-group select:focus,
+        .form-group textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .form-group textarea {
+            resize: vertical;
+            min-height: 80px;
+        }
+
+        .form-group small {
+            display: block;
+            margin-top: 5px;
+            color: #666;
+            font-size: 12px;
+        }
+
+        .checkbox-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .checkbox-group input[type="checkbox"] {
+            width: auto;
+            margin: 0;
+            cursor: pointer;
+        }
+
+        .button-group {
+            display: flex;
+            gap: 15px;
+            margin-top: 30px;
+        }
+
+        .btn {
+            padding: 14px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            flex: 1;
+        }
+
+        .btn-primary {
+            background: #667eea;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #5568d3;
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+
+        .btn-test {
+            background: #17a2b8;
+            color: white;
+        }
+
+        .btn-test:hover {
+            background: #138496;
+        }
+
+        .alert {
+            padding: 15px 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            display: none;
+        }
+
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .alert-error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .alert-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .info-box {
+            background: #f8f9fa;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin-bottom: 25px;
+            border-radius: 4px;
+        }
+
+        .info-box h3 {
+            color: #667eea;
+            font-size: 16px;
+            margin-bottom: 10px;
+        }
+
+        .info-box p {
+            color: #666;
+            font-size: 14px;
+            line-height: 1.6;
+        }
+
+        .nav-links {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 30px;
+            border-top: 1px solid #e0e0e0;
+        }
+
+        .nav-links a {
+            color: #667eea;
+            text-decoration: none;
+            margin: 0 15px;
+            font-size: 14px;
+        }
+
+        .nav-links a:hover {
+            text-decoration: underline;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+
+        .spinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            width: 30px;
+            height: 30px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 AI Configuration</h1>
+            <p>Configure Google Gemini AI for enhanced EPUB conversion</p>
+            <div th:if="${isAiEnabled}" class="status-badge status-active">AI Enabled</div>
+            <div th:unless="${isAiEnabled}" class="status-badge status-inactive">AI Disabled</div>
+        </div>
+
+        <div id="alert" class="alert"></div>
+
+        <div class="info-box">
+            <h3>📋 About AI Enhancement</h3>
+            <p>
+                The AI system uses Google Gemini to improve your EPUB conversions by:
+                <br>• Fixing spelling errors and OCR mistakes
+                <br>• Properly identifying and classifying headers (H1, H2, H3)
+                <br>• Detecting and formatting image captions
+                <br>• Improving document structure and readability
+                <br>• Classifying document types for better processing
+            </p>
+        </div>
+
+        <div th:if="${config.id != null}" class="info-box" style="background: #e8f5e9; border-left-color: #4caf50;">
+            <h3>✅ Configuration Saved</h3>
+            <p>
+                Your AI configuration is saved permanently in the database.
+                <br>Configuration ID: <strong th:text="${config.id}"></strong>
+                <br>Your settings will persist across sessions and only change when you update them here.
+            </p>
+        </div>
+
+        <form id="aiConfigForm">
+            <input type="hidden" id="configId" th:value="${config.id}">
+
+            <div class="form-group">
+                <label for="apiKey">Gemini API Key *</label>
+                <div style="position: relative;">
+                    <input 
+                        type="password" 
+                        id="apiKey" 
+                        th:value="${config.apiKey != null && config.apiKey.length() > 0 && !config.apiKey.contains('*') ? config.apiKey : ''}" 
+                        placeholder="Enter your Google Gemini API key"
+                        required
+                        style="padding-right: 50px;">
+                    <button 
+                        type="button" 
+                        onclick="toggleApiKeyVisibility()" 
+                        style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 18px; color: #667eea;"
+                        title="Show/Hide API Key">
+                        👁️
+                    </button>
+                </div>
+                <small>
+                    Get your API key from 
+                    <a href="https://makersuite.google.com/app/apikey" target="_blank">Google AI Studio</a>
+                    <br>
+                    <strong th:if="${config.id != null}">Note:</strong>
+                    <span th:if="${config.id != null}"> Your API key is stored securely. Leave this field empty to keep your existing API key, or enter a new one to update it.</span>
+                    <span th:unless="${config.id != null}"> Your API key will be stored permanently in the database once you save.</span>
+                </small>
+            </div>
+
+            <div class="form-group">
+                <label for="modelName">Gemini Model *</label>
+                <select id="modelName" th:value="${config.modelName}" required>
+                    <option th:each="model : ${availableModels}" 
+                            th:value="${model}" 
+                            th:text="${model}"
+                            th:selected="${config.modelName == model}">
+                    </option>
+                </select>
+                <small>Select the Gemini model to use for AI processing</small>
+            </div>
+
+            <div class="form-group">
+                <label for="description">Description (Optional)</label>
+                <textarea 
+                    id="description" 
+                    th:text="${config.description}"
+                    placeholder="Add a description for this configuration"></textarea>
+            </div>
+
+            <div class="form-group">
+                <div class="checkbox-group">
+                    <input 
+                        type="checkbox" 
+                        id="isActive" 
+                        th:checked="${config.isActive}">
+                    <label for="isActive" style="margin: 0; font-weight: normal;">
+                        Enable AI for conversions
+                    </label>
+                </div>
+                <small>When enabled, AI will be used to improve all EPUB conversions</small>
+            </div>
+
+            <div class="button-group">
+                <button type="button" class="btn btn-test" onclick="testConnection()">
+                    🧪 Test Connection
+                </button>
+                <button type="button" class="btn btn-secondary" onclick="window.location.href='/'">
+                    ← Back to Home
+                </button>
+                <button type="submit" class="btn btn-primary">
+                    💾 Save Configuration
+                </button>
+            </div>
+        </form>
+
+        <div class="nav-links">
+            <a href="/">Home</a>
+            <a href="/upload">Upload PDF</a>
+            <a href="/pdfs">View Library</a>
+            <a href="/conversions">Conversions</a>
+        </div>
+
+        <div id="loading" class="loading">
+            <div class="spinner"></div>
+            <p>Processing...</p>
+        </div>
+    </div>
+
+    <script>
+        const form = document.getElementById('aiConfigForm');
+        const alertDiv = document.getElementById('alert');
+        const loadingDiv = document.getElementById('loading');
+
+        function showAlert(message, type) {
+            alertDiv.textContent = message;
+            alertDiv.className = 'alert alert-' + type;
+            alertDiv.style.display = 'block';
+            setTimeout(() => {
+                alertDiv.style.display = 'none';
+            }, 5000);
+        }
+
+        function setLoading(show) {
+            loadingDiv.style.display = show ? 'block' : 'none';
+        }
+
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            setLoading(true);
+
+            const formData = {
+                id: document.getElementById('configId').value || null,
+                apiKey: document.getElementById('apiKey').value,
+                modelName: document.getElementById('modelName').value,
+                description: document.getElementById('description').value,
+                isActive: document.getElementById('isActive').checked
+            };
+
+            try {
+                const response = await fetch('/api/ai/config', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(formData)
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    showAlert('Configuration saved permanently to database! Your settings will persist across sessions.', 'success');
+                    // Update the form with the response
+                    document.getElementById('configId').value = result.id;
+                    // Keep API key in the field - don't clear it so user can see it's saved
+                    // Show saved indicator dynamically without reloading
+                    showSavedIndicator(result.id);
+                } else {
+                    showAlert(result || 'Error saving configuration', 'error');
+                }
+            } catch (error) {
+                showAlert('Error: ' + error.message, 'error');
+            } finally {
+                setLoading(false);
+            }
+        });
+
+        function showSavedIndicator(configId) {
+            // Check if saved indicator already exists (from server-side rendering)
+            let savedIndicator = document.querySelector('.info-box[style*="background: #e8f5e9"]') || 
+                                 document.querySelector('.saved-indicator');
+            
+            if (savedIndicator) {
+                // Update existing indicator
+                const strongTag = savedIndicator.querySelector('strong');
+                if (strongTag) {
+                    strongTag.textContent = configId;
+                }
+            } else {
+                // Create new saved indicator
+                savedIndicator = document.createElement('div');
+                savedIndicator.className = 'info-box saved-indicator';
+                savedIndicator.style.background = '#e8f5e9';
+                savedIndicator.style.borderLeftColor = '#4caf50';
+                savedIndicator.innerHTML = `
+                    <h3>✅ Configuration Saved</h3>
+                    <p>
+                        Your AI configuration is saved permanently in the database.
+                        <br>Configuration ID: <strong>${configId}</strong>
+                        <br>Your settings will persist across sessions and only change when you update them here.
+                    </p>
+                `;
+                // Insert after the first info-box (About AI Enhancement)
+                const infoBox = document.querySelector('.info-box');
+                if (infoBox && infoBox.nextSibling) {
+                    infoBox.parentNode.insertBefore(savedIndicator, infoBox.nextSibling);
+                } else if (infoBox) {
+                    infoBox.parentNode.appendChild(savedIndicator);
+                }
+            }
+        }
+
+        function toggleApiKeyVisibility() {
+            const apiKeyInput = document.getElementById('apiKey');
+            const button = event.target;
+            
+            if (apiKeyInput.type === 'password') {
+                apiKeyInput.type = 'text';
+                button.textContent = '🙈';
+            } else {
+                apiKeyInput.type = 'password';
+                button.textContent = '👁️';
+            }
+        }
+
+        async function testConnection() {
+            const apiKey = document.getElementById('apiKey').value;
+            const modelName = document.getElementById('modelName').value;
+
+            if (!apiKey || apiKey.length < 20) {
+                showAlert('Please enter a valid API key first', 'error');
+                return;
+            }
+
+            setLoading(true);
+            showAlert('Testing connection...', 'info');
+
+            try {
+                const response = await fetch('/api/ai/test', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        apiKey: apiKey,
+                        modelName: modelName
+                    })
+                });
+
+                const result = await response.text();
+
+                if (response.ok) {
+                    showAlert(result, 'success');
+                } else {
+                    showAlert(result, 'error');
+                }
+            } catch (error) {
+                showAlert('Error testing connection: ' + error.message, 'error');
+            } finally {
+                setLoading(false);
+            }
+        }
+    </script>
+</body>
+</html>
+

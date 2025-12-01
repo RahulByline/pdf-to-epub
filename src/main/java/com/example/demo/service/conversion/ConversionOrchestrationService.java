@@ -61,6 +61,9 @@ public class ConversionOrchestrationService {
     @Autowired
     private AsyncConversionService asyncConversionService;
 
+    @Autowired
+    private com.example.demo.service.GeminiAiService geminiAiService;
+
     @Value("${file.upload.dir:uploads}")
     private String uploadDir;
 
@@ -138,6 +141,17 @@ public class ConversionOrchestrationService {
             structure = contentCleanupService.cleanupAndNormalize(structure);
             saveIntermediateData(job, structure);
             logger.info("Job {}: Content cleanup completed", jobId);
+
+            // Step 5.5: AI-Powered Content Improvement (if enabled)
+            if (geminiAiService.isAiEnabled()) {
+                logger.info("Job {}: Starting AI-powered content improvement", jobId);
+                updateJobProgress(job, ConversionJob.ConversionStep.STEP_5_CONTENT_CLEANUP, 65);
+                structure = geminiAiService.improveDocumentStructure(structure);
+                saveIntermediateData(job, structure);
+                logger.info("Job {}: AI improvement completed", jobId);
+            } else {
+                logger.info("Job {}: AI is not enabled, skipping AI improvement", jobId);
+            }
 
             // Step 6: Math, Tables & Special Content
             logger.info("Job {}: Starting Step 6 - Math & Tables Processing", jobId);
