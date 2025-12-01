@@ -145,7 +145,7 @@ public class ConversionOrchestrationService {
             // Step 5.5: AI-Powered Content Improvement (if enabled)
             if (geminiAiService.isAiEnabled()) {
                 logger.info("Job {}: Starting AI-powered content improvement", jobId);
-                updateJobProgress(job, ConversionJob.ConversionStep.STEP_5_CONTENT_CLEANUP, 65);
+                updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_5_CONTENT_CLEANUP, 65);
                 structure = geminiAiService.improveDocumentStructure(structure);
                 saveIntermediateData(job, structure);
                 logger.info("Job {}: AI improvement completed", jobId);
