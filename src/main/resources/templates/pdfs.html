@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -10,212 +10,532 @@
             padding: 0;
             box-sizing: border-box;
         }
+
         body {
-            font-family: 'Arial', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #fafafa;
+            color: #555;
+            display: flex;
             min-height: 100vh;
-            padding: 20px;
         }
-        .container {
-            max-width: 1200px;
-            margin: 40px auto;
+
+        /* Top Navbar */
+        .navbar {
+            position: fixed;
+            top: 0;
+            left: 300px;
+            right: 0;
+            height: 60px;
             background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 30px;
+            z-index: 999;
         }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+
+        .navbar-brand {
+            font-size: 20px;
+            font-weight: 600;
+            color: #8b7fa8;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .navbar-links {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .navbar-link {
+            color: #6b5b95;
+            text-decoration: none;
+            font-size: 14px;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+
+        .navbar-link:hover {
+            background: #f5f5f5;
+            color: #8b7fa8;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 300px;
+            background: white;
+            color: #5a5a5a;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.08);
+            z-index: 1000;
+            border-right: 1px solid #e8e8e8;
+        }
+
+        .sidebar-header {
+            padding: 25px 20px;
+            border-bottom: 1px solid #e8e8e8;
+        }
+
+        .sidebar-header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #8b7fa8;
+            margin-bottom: 5px;
+        }
+
+        .sidebar-header p {
+            font-size: 12px;
+            color: #9a9a9a;
+        }
+
+        .sidebar-nav {
+            padding: 20px 0;
+        }
+
+        .nav-item {
+            display: block;
+            padding: 14px 20px;
+            color: #6b5b95;
+            text-decoration: none;
+            transition: all 0.3s;
+            border-left: 3px solid transparent;
+            font-size: 15px;
+        }
+
+        .nav-item:hover {
+            background: #f8f8f8;
+            border-left-color: #b8d4e3;
+            color: #8b7fa8;
+        }
+
+        .nav-item.active {
+            background: #f0f0f0;
+            border-left-color: #d4a5d4;
+            color: #8b7fa8;
+            font-weight: 500;
+        }
+
+        .nav-item i {
+            margin-right: 12px;
+            width: 20px;
+            display: inline-block;
+            text-align: center;
+        }
+
+        .sidebar-footer {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            padding: 20px;
+            border-top: 1px solid #e8e8e8;
+            font-size: 12px;
+            color: #9a9a9a;
+            text-align: center;
+        }
+
+        /* Icon Styles */
+        .icon {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            margin-right: 10px;
+            vertical-align: middle;
+        }
+
+        .icon-home::before {
+            content: "⌂";
+            font-size: 18px;
+        }
+
+        .icon-upload::before {
+            content: "↑";
+            font-size: 18px;
+        }
+
+        .icon-library::before {
+            content: "☰";
+            font-size: 18px;
+        }
+
+        .icon-conversions::before {
+            content: "↻";
+            font-size: 18px;
+        }
+
+        .icon-ai::before {
+            content: "⚙";
+            font-size: 18px;
+        }
+
+        .icon-brand::before {
+            content: "◉";
+            font-size: 20px;
+        }
+
+        .icon-file::before {
+            content: "▣";
+            font-size: 24px;
+        }
+
+        .icon-size::before {
+            content: "▢";
+            font-size: 14px;
+        }
+
+        .icon-pages::before {
+            content: "▦";
+            font-size: 14px;
+        }
+
+        .icon-date::before {
+            content: "◷";
+            font-size: 14px;
+        }
+
+        .icon-download::before {
+            content: "⬇";
+            font-size: 14px;
+        }
+
+        .icon-convert::before {
+            content: "↻";
+            font-size: 14px;
+        }
+
+        .icon-analyze::before {
+            content: "◉";
+            font-size: 14px;
+        }
+
+        .icon-zip::before {
+            content: "▦";
+            font-size: 18px;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            margin-left: 300px;
+            margin-top: 60px;
             padding: 30px;
+            min-height: calc(100vh - 60px);
+            max-width: 100%;
+        }
+
+        .page-header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 30px;
             display: flex;
             justify-content: space-between;
             align-items: center;
         }
-        .header h1 {
-            font-size: 32px;
+
+        .page-header h1 {
+            font-size: 28px;
+            color: #8b7fa8;
+            font-weight: 600;
         }
+
         .btn {
-            padding: 12px 30px;
-            background: white;
-            color: #667eea;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
             border: none;
-            border-radius: 10px;
-            font-size: 16px;
             cursor: pointer;
             transition: all 0.3s;
-            text-decoration: none;
-            display: inline-block;
         }
-        .btn:hover {
+
+        .btn-primary {
+            background: #a8d5e2;
+            color: #5a5a5a;
+        }
+
+        .btn-primary:hover {
+            background: #9bc5d2;
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+            box-shadow: 0 4px 12px rgba(168, 213, 226, 0.4);
         }
-        .content {
-            padding: 40px;
+
+        .content-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            padding: 30px;
+            margin-bottom: 30px;
+            width: 100%;
         }
+
         .loading {
             text-align: center;
             padding: 60px;
-            color: #667eea;
+            color: #8b7fa8;
             font-size: 18px;
         }
+
         .pdf-grid {
             display: block;
             margin-top: 20px;
         }
+
         .pdf-group {
             margin-bottom: 30px;
-            border: 2px solid #e0e0e0;
-            border-radius: 15px;
+            border: 2px solid #e8e8e8;
+            border-radius: 12px;
             padding: 20px;
+            background: #fafafa;
         }
+
         .pdf-group .pdf-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
             gap: 15px;
             margin-top: 20px;
         }
+
         .pdf-card {
-            background: #f8f9ff;
-            border-radius: 15px;
+            background: white;
+            border-radius: 12px;
             padding: 20px;
             transition: all 0.3s;
-            border: 2px solid transparent;
+            border: 2px solid #e8e8e8;
         }
+
         .pdf-card:hover {
-            border-color: #667eea;
-            transform: translateY(-5px);
-            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.2);
+            border-color: #b8d4e3;
+            transform: translateY(-3px);
+            box-shadow: 0 4px 12px rgba(184, 212, 227, 0.2);
         }
+
         .pdf-icon {
             font-size: 48px;
             text-align: center;
             margin-bottom: 15px;
+            color: #8b7fa8;
         }
+
         .pdf-title {
-            font-size: 18px;
-            font-weight: bold;
-            color: #333;
+            font-size: 16px;
+            font-weight: 600;
+            color: #5a5a5a;
             margin-bottom: 10px;
             word-break: break-word;
         }
+
         .pdf-info {
-            font-size: 14px;
-            color: #666;
+            font-size: 13px;
+            color: #9a9a9a;
             margin-bottom: 5px;
         }
+
         .pdf-actions {
             display: flex;
             gap: 10px;
             margin-top: 15px;
         }
+
         .action-btn {
             flex: 1;
             padding: 10px;
             border: none;
             border-radius: 8px;
             cursor: pointer;
-            font-size: 14px;
+            font-size: 13px;
             transition: all 0.3s;
         }
+
         .convert-btn {
-            background: #667eea;
-            color: white;
+            background: #a8d5e2;
+            color: #5a5a5a;
         }
+
         .convert-btn:hover {
-            background: #764ba2;
+            background: #9bc5d2;
         }
+
         .download-btn {
-            background: #48dbfb;
-            color: white;
+            background: #d4a5d4;
+            color: #5a5a5a;
         }
+
         .download-btn:hover {
-            background: #0abde3;
+            background: #c895c8;
         }
+
         .analyze-btn {
-            background: #feca57;
-            color: #333;
+            background: #c8e6c9;
+            color: #5a5a5a;
         }
+
         .analyze-btn:hover {
-            background: #ff9ff3;
+            background: #b8d6b9;
         }
+
         .empty-state {
             text-align: center;
             padding: 60px 20px;
-            color: #666;
+            color: #9a9a9a;
         }
+
         .empty-state-icon {
-            font-size: 80px;
+            font-size: 64px;
             margin-bottom: 20px;
+            color: #b8d4e3;
         }
+
         .empty-state h2 {
-            color: #667eea;
+            color: #8b7fa8;
             margin-bottom: 10px;
         }
-        .nav-links {
-            margin-top: 30px;
-            text-align: center;
+
+        .group-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 2px solid #e8e8e8;
         }
-        .nav-links a {
-            color: #667eea;
-            text-decoration: none;
-            margin: 0 15px;
-            transition: color 0.3s;
+
+        .group-title {
+            color: #8b7fa8;
+            font-size: 18px;
+            font-weight: 600;
         }
-        .nav-links a:hover {
-            color: #764ba2;
+
+        .group-subtitle {
+            color: #9a9a9a;
+            font-size: 14px;
+            margin-top: 5px;
         }
-        .status-badge {
-            display: inline-block;
-            padding: 5px 10px;
-            border-radius: 5px;
-            font-size: 12px;
-            font-weight: bold;
-            margin-top: 10px;
+
+        .bulk-convert-btn {
+            background: #a8d5e2;
+            color: #5a5a5a;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 14px;
+            transition: all 0.3s;
         }
-        .status-pending {
-            background: #ffeaa7;
-            color: #fdcb6e;
+
+        .bulk-convert-btn:hover {
+            background: #9bc5d2;
         }
-        .status-processing {
-            background: #74b9ff;
-            color: #0984e3;
-        }
-        .status-completed {
-            background: #55efc4;
-            color: #00b894;
-        }
-        .status-failed {
-            background: #ff7675;
-            color: #d63031;
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 70px;
+            }
+
+            .navbar {
+                left: 70px;
+                height: 60px;
+            }
+
+            .sidebar-header h1,
+            .sidebar-header p,
+            .nav-item span {
+                display: none;
+            }
+
+            .main-content {
+                margin-left: 70px;
+                margin-top: 60px;
+                padding: 20px;
+            }
+
+            .navbar-links {
+                gap: 10px;
+            }
+
+            .navbar-link {
+                font-size: 12px;
+                padding: 6px 12px;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>📚 PDF Library</h1>
-            <a href="/upload" class="btn">+ Upload New PDF</a>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>EPUB Converter</h1>
+            <p>PDF to EPUB</p>
         </div>
-        
-        <div class="content">
+        <nav class="sidebar-nav">
+            <a href="/" class="nav-item">
+                <span class="icon icon-home"></span><span>Home</span>
+            </a>
+            <a href="/upload" class="nav-item">
+                <span class="icon icon-upload"></span><span>Upload PDF</span>
+            </a>
+            <a href="/pdfs" class="nav-item active">
+                <span class="icon icon-library"></span><span>PDF Library</span>
+            </a>
+            <a href="/conversions" class="nav-item">
+                <span class="icon icon-conversions"></span><span>Conversions</span>
+            </a>
+            <a href="/api/ai/config" class="nav-item">
+                <span class="icon icon-ai"></span><span>AI Configuration</span>
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <p>© 2024 EPUB Converter</p>
+        </div>
+    </aside>
+
+    <!-- Top Navbar -->
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <span class="icon icon-brand"></span>
+            <span>EPUB Converter</span>
+        </div>
+        <div class="navbar-links">
+            <a href="/" class="navbar-link">Home</a>
+            <a href="/upload" class="navbar-link">Upload</a>
+            <a href="/pdfs" class="navbar-link">Library</a>
+            <a href="/conversions" class="navbar-link">Conversions</a>
+            <a href="/api/ai/config" class="navbar-link">AI Config</a>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="page-header">
+            <h1>PDF Library</h1>
+            <a href="/upload" class="btn btn-primary">
+                <span class="icon icon-upload"></span> Upload New PDF
+            </a>
+        </div>
+
+        <div class="content-card">
             <div class="loading" id="loading">Loading PDFs...</div>
             <div class="pdf-grid" id="pdfGrid" style="display: none;"></div>
             <div class="empty-state" id="emptyState" style="display: none;">
-                <div class="empty-state-icon">📭</div>
+                <div class="empty-state-icon">
+                    <span class="icon icon-file" style="font-size: 64px;"></span>
+                </div>
                 <h2>No PDFs uploaded yet</h2>
                 <p>Upload your first PDF to get started</p>
-                <a href="/upload" class="btn" style="margin-top: 20px;">Upload PDF</a>
-            </div>
-            
-            <div class="nav-links">
-                <a href="/">← Home</a>
-                <a href="/upload">Upload PDF</a>
-                <a href="/api/ai/config">🤖 AI Configuration</a>
+                <a href="/upload" class="btn btn-primary" style="margin-top: 20px;">
+                    <span class="icon icon-upload"></span> Upload PDF
+                </a>
             </div>
         </div>
-    </div>
+    </main>
 
     <script>
         async function loadPDFs() {
@@ -246,45 +566,32 @@
                 const isZipGroup = pdfs.length > 1 && pdfs[0].zipFileGroupId;
                 const zipFileName = isZipGroup ? pdfs[0].zipFileName : null;
                 
-                // Create group container
                 const groupDiv = document.createElement('div');
                 groupDiv.className = 'pdf-group';
-                if (isZipGroup) {
-                    groupDiv.style.backgroundColor = '#f0f4ff';
-                }
                 
-                // Group header
                 const headerDiv = document.createElement('div');
-                headerDiv.style.display = 'flex';
-                headerDiv.style.justifyContent = 'space-between';
-                headerDiv.style.alignItems = 'center';
-                headerDiv.style.marginBottom = '20px';
-                headerDiv.style.paddingBottom = '15px';
-                headerDiv.style.borderBottom = '2px solid #e0e0e0';
+                headerDiv.className = 'group-header';
                 
                 const titleDiv = document.createElement('div');
                 titleDiv.innerHTML = `
-                    <h3 style="margin: 0; color: #667eea;">
-                        ${isZipGroup ? '📦 ' + (zipFileName || 'ZIP Archive') : '📄 Individual PDF'}
-                    </h3>
-                    <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">
+                    <div class="group-title">
+                        ${isZipGroup ? '<span class="icon icon-zip"></span> ' + (zipFileName || 'ZIP Archive') : '<span class="icon icon-file"></span> Individual PDF'}
+                    </div>
+                    <div class="group-subtitle">
                         ${pdfs.length} file${pdfs.length > 1 ? 's' : ''}
-                    </p>
+                    </div>
                 `;
                 headerDiv.appendChild(titleDiv);
                 
                 if (isZipGroup && pdfs.length > 1) {
                     const bulkConvertBtn = document.createElement('button');
-                    bulkConvertBtn.className = 'btn';
-                    bulkConvertBtn.style.background = '#667eea';
-                    bulkConvertBtn.style.color = 'white';
-                    bulkConvertBtn.textContent = '🔄 Bulk Convert All';
+                    bulkConvertBtn.className = 'bulk-convert-btn';
+                    bulkConvertBtn.innerHTML = '<span class="icon icon-convert"></span> Bulk Convert All';
                     bulkConvertBtn.onclick = () => bulkConvertPDFs(pdfs.map(p => p.id));
                     headerDiv.appendChild(bulkConvertBtn);
                 }
                 groupDiv.appendChild(headerDiv);
                 
-                // PDF cards grid
                 const cardsGrid = document.createElement('div');
                 cardsGrid.className = 'pdf-grid';
                 
@@ -292,15 +599,29 @@
                     const card = document.createElement('div');
                     card.className = 'pdf-card';
                     card.innerHTML = `
-                        <div class="pdf-icon">📄</div>
+                        <div class="pdf-icon">
+                            <span class="icon icon-file" style="font-size: 48px;"></span>
+                        </div>
                         <div class="pdf-title">${pdf.originalFileName}</div>
-                        <div class="pdf-info">📏 Size: ${formatFileSize(pdf.fileSize)}</div>
-                        <div class="pdf-info">📄 Pages: ${pdf.totalPages || 'N/A'}</div>
-                        <div class="pdf-info">📅 ${formatDate(pdf.createdAt)}</div>
+                        <div class="pdf-info">
+                            <span class="icon icon-size"></span> Size: ${formatFileSize(pdf.fileSize)}
+                        </div>
+                        <div class="pdf-info">
+                            <span class="icon icon-pages"></span> Pages: ${pdf.totalPages || 'N/A'}
+                        </div>
+                        <div class="pdf-info">
+                            <span class="icon icon-date"></span> ${formatDate(pdf.createdAt)}
+                        </div>
                         <div class="pdf-actions">
-                            <button class="action-btn convert-btn" onclick="convertPDF(${pdf.id})">Convert</button>
-                            <button class="action-btn download-btn" onclick="downloadPDF(${pdf.id})">Download</button>
-                            <button class="action-btn analyze-btn" onclick="analyzePDF(${pdf.id})">Analyze</button>
+                            <button class="action-btn convert-btn" onclick="convertPDF(${pdf.id})">
+                                <span class="icon icon-convert"></span> Convert
+                            </button>
+                            <button class="action-btn download-btn" onclick="downloadPDF(${pdf.id})">
+                                <span class="icon icon-download"></span> Download
+                            </button>
+                            <button class="action-btn analyze-btn" onclick="analyzePDF(${pdf.id})">
+                                <span class="icon icon-analyze"></span> Analyze
+                            </button>
                         </div>
                     `;
                     cardsGrid.appendChild(card);
@@ -327,7 +648,7 @@
                 
                 const result = await response.json();
                 alert(`Bulk conversion started!\n\nStarted: ${result.totalStarted}\nFailed: ${result.totalFailed}`);
-                loadPDFs(); // Reload to show updated status
+                loadPDFs();
             } catch (error) {
                 alert('Bulk conversion failed: ' + error.message);
             }
@@ -348,22 +669,16 @@
         }
 
         async function convertPDF(id) {
-            console.log('convertPDF called with id:', id);
             if (!confirm('Start conversion for this PDF?')) {
-                console.log('User cancelled conversion');
                 return;
             }
             
-            console.log('Sending POST request to /api/conversions/start/' + id);
             try {
                 const response = await fetch(`/api/conversions/start/${id}`, { method: 'POST' });
-                console.log('Response status:', response.status);
                 const result = await response.json();
-                console.log('Response data:', result);
                 alert(`Conversion started!\nJob ID: ${result.id}\nStatus: ${result.status}`);
-                loadPDFs(); // Reload to show updated status
+                loadPDFs();
             } catch (error) {
-                console.error('Conversion error:', error);
                 alert('Conversion failed: ' + error.message);
             }
         }
@@ -382,10 +697,7 @@
             }
         }
 
-        // Load PDFs on page load
         loadPDFs();
-        
-        // Auto-refresh every 10 seconds
         setInterval(loadPDFs, 10000);
     </script>
 </body>

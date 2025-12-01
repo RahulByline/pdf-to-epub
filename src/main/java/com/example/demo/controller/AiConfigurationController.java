@@ -42,9 +42,9 @@ public class AiConfigurationController {
         if (configOpt.isPresent()) {
             AiConfiguration config = configOpt.get();
             dto.setId(config.getId());
-            // Don't mask API key in the form - show empty so user can enter it
-            // Only mask when displaying in response, not in form
-            dto.setApiKey(""); // Always show empty field for security
+            // Show the actual API key so it persists in the field when user returns
+            // This allows user to see/edit it - it's stored in their own database
+            dto.setApiKey(config.getApiKey() != null ? config.getApiKey() : "");
             dto.setModelName(config.getModelName());
             dto.setIsActive(config.getIsActive());
             dto.setDescription(config.getDescription());
