@@ -160,6 +160,15 @@ public class ConversionOrchestrationService {
             saveIntermediateData(job, structure);
             logger.info("Job {}: Math & tables processing completed", jobId);
 
+            // Step 6.5: Final AI Enhancement (if enabled) - optimize for EPUB3 readability
+            if (geminiAiService.isAiEnabled()) {
+                logger.info("Job {}: Final AI optimization for EPUB3 readability", jobId);
+                updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_6_SPECIAL_CONTENT, 80);
+                structure = geminiAiService.finalizeForEpub3(structure);
+                saveIntermediateData(job, structure);
+                logger.info("Job {}: Final AI optimization completed", jobId);
+            }
+
             // Step 7: EPUB3 Generation
             logger.info("Job {}: Starting Step 7 - EPUB Generation", jobId);
             updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_7_EPUB_GENERATION, 85);
@@ -171,7 +180,7 @@ public class ConversionOrchestrationService {
             );
             // Update EPUB path in separate transaction
             updateJobEpubPath(jobId, epubPath);
-            logger.info("Job {}: EPUB generated at: {}", jobId, epubPath);
+            logger.info("Job {}: EPUB3 generated at: {} (AI-enhanced for optimal readability)", jobId, epubPath);
 
             // Step 8: QA & Confidence Scoring
             logger.info("Job {}: Starting Step 8 - QA Review", jobId);

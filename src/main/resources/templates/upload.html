@@ -1,205 +1,482 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>PDF Upload - EPUB Converter</title>
+    <title>Upload PDF - EPUB Converter</title>
     <style>
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
+
         body {
-            font-family: 'Arial', sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #fafafa;
+            color: #555;
+            display: flex;
             min-height: 100vh;
-            padding: 20px;
         }
-        .container {
-            max-width: 800px;
-            margin: 40px auto;
+
+        /* Top Navbar */
+        .navbar {
+            position: fixed;
+            top: 0;
+            left: 300px;
+            right: 0;
+            height: 60px;
             background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            overflow: hidden;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 30px;
+            z-index: 999;
         }
-        .header {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
+
+        .navbar-brand {
+            font-size: 20px;
+            font-weight: 600;
+            color: #8b7fa8;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .navbar-links {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .navbar-link {
+            color: #6b5b95;
+            text-decoration: none;
+            font-size: 14px;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+
+        .navbar-link:hover {
+            background: #f5f5f5;
+            color: #8b7fa8;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 300px;
+            background: white;
+            color: #5a5a5a;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.08);
+            z-index: 1000;
+            border-right: 1px solid #e8e8e8;
+        }
+
+        .sidebar-header {
+            padding: 25px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .sidebar-header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #8b7fa8;
+            margin-bottom: 5px;
+        }
+
+        .sidebar-header p {
+            font-size: 12px;
+            color: #9a9a9a;
+        }
+
+        .sidebar-nav {
+            padding: 20px 0;
+        }
+
+        .nav-item {
+            display: block;
+            padding: 14px 20px;
+            color: #6b5b95;
+            text-decoration: none;
+            transition: all 0.3s;
+            border-left: 3px solid transparent;
+            font-size: 15px;
+        }
+
+        .nav-item:hover {
+            background: #f8f8f8;
+            border-left-color: #b8d4e3;
+            color: #8b7fa8;
+        }
+
+        .nav-item.active {
+            background: #f0f0f0;
+            border-left-color: #d4a5d4;
+            color: #8b7fa8;
+            font-weight: 500;
+        }
+
+        .nav-item i {
+            margin-right: 12px;
+            width: 20px;
+            display: inline-block;
             text-align: center;
         }
-        .header h1 {
-            font-size: 32px;
-            margin-bottom: 10px;
+
+        /* Icon Styles */
+        .icon {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            margin-right: 10px;
+            vertical-align: middle;
         }
-        .header p {
-            font-size: 16px;
-            opacity: 0.9;
+
+        .icon-home::before {
+            content: "⌂";
+            font-size: 18px;
         }
-        .content {
-            padding: 40px;
+
+        .icon-upload::before {
+            content: "↑";
+            font-size: 18px;
         }
+
+        .icon-library::before {
+            content: "☰";
+            font-size: 18px;
+        }
+
+        .icon-conversions::before {
+            content: "↻";
+            font-size: 18px;
+        }
+
+        .icon-ai::before {
+            content: "⚙";
+            font-size: 18px;
+        }
+
+        .icon-brand::before {
+            content: "◉";
+            font-size: 20px;
+        }
+
+        .icon-file::before {
+            content: "▣";
+            font-size: 24px;
+        }
+
+        .sidebar-footer {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            padding: 20px;
+            border-top: 1px solid rgba(255,255,255,0.1);
+            font-size: 12px;
+            color: rgba(255,255,255,0.6);
+            text-align: center;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            margin-left: 300px;
+            margin-top: 60px;
+            padding: 30px;
+            min-height: calc(100vh - 60px);
+            max-width: 100%;
+        }
+
+        .page-header {
+            background: white;
+            padding: 20px 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 30px;
+        }
+
+        .page-header h1 {
+            font-size: 28px;
+            color: #8b7fa8;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .page-header p {
+            color: #9a9a9a;
+            font-size: 14px;
+        }
+
+        .content-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            padding: 30px;
+            margin-bottom: 30px;
+            width: 100%;
+        }
+
         .upload-area {
-            border: 3px dashed #667eea;
-            border-radius: 15px;
+            border: 3px dashed #b8d4e3;
+            border-radius: 12px;
             padding: 60px 20px;
             text-align: center;
             transition: all 0.3s;
             cursor: pointer;
-            background: #f8f9ff;
+            background: #f0f8ff;
         }
+
         .upload-area:hover {
-            border-color: #764ba2;
-            background: #f0f2ff;
+            border-color: #a8c5d3;
+            background: #e8f4ff;
         }
+
         .upload-area.dragover {
-            border-color: #764ba2;
-            background: #e8ebff;
+            border-color: #98b5c3;
+            background: #e0f0ff;
             transform: scale(1.02);
         }
+
         .upload-icon {
             font-size: 64px;
             margin-bottom: 20px;
         }
+
         .upload-area h3 {
-            color: #667eea;
+            color: #8b7fa8;
             font-size: 24px;
             margin-bottom: 10px;
         }
+
         .upload-area p {
-            color: #666;
+            color: #9a9a9a;
             font-size: 14px;
         }
+
         input[type="file"] {
             display: none;
         }
+
         .btn {
             display: inline-block;
-            padding: 15px 40px;
-            background: #667eea;
-            color: white;
+            padding: 12px 24px;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 14px;
+            font-weight: 500;
             border: none;
-            border-radius: 10px;
-            font-size: 16px;
             cursor: pointer;
             transition: all 0.3s;
-            margin-top: 20px;
         }
-        .btn:hover {
-            background: #764ba2;
+
+        .btn-primary {
+            background: #a8d5e2;
+            color: #5a5a5a;
+        }
+
+        .btn-primary:hover {
+            background: #9bc5d2;
             transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+            box-shadow: 0 4px 12px rgba(168, 213, 226, 0.4);
         }
+
         .btn:disabled {
-            background: #ccc;
+            background: #cbd5e1;
             cursor: not-allowed;
             transform: none;
         }
+
         .file-list {
             margin-top: 30px;
         }
+
         .file-item {
             display: flex;
             align-items: center;
             justify-content: space-between;
             padding: 15px;
-            background: #f8f9ff;
-            border-radius: 10px;
+            background: #f8fafc;
+            border-radius: 8px;
             margin-bottom: 10px;
+            border: 1px solid #e2e8f0;
         }
+
         .file-info {
             display: flex;
             align-items: center;
             gap: 15px;
         }
+
         .file-icon {
             font-size: 24px;
         }
+
         .file-name {
-            font-weight: bold;
-            color: #333;
+            font-weight: 600;
+            color: #1e293b;
         }
+
         .file-size {
-            color: #666;
-            font-size: 14px;
+            color: #64748b;
+            font-size: 13px;
         }
+
         .remove-btn {
-            background: #ff4757;
+            background: #ef4444;
             color: white;
             border: none;
-            padding: 8px 15px;
-            border-radius: 5px;
+            padding: 8px 16px;
+            border-radius: 6px;
             cursor: pointer;
             transition: all 0.3s;
+            font-size: 13px;
         }
+
         .remove-btn:hover {
-            background: #ff3838;
+            background: #dc2626;
         }
+
         .progress-container {
             margin-top: 20px;
             display: none;
         }
+
         .progress-bar {
             width: 100%;
             height: 30px;
-            background: #f0f0f0;
+            background: #e2e8f0;
             border-radius: 15px;
             overflow: hidden;
         }
+
         .progress-fill {
             height: 100%;
-            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(90deg, #b8d4e3 0%, #d4a5d4 100%);
             width: 0%;
             transition: width 0.3s;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: white;
-            font-weight: bold;
+            color: #5a5a5a;
+            font-weight: 600;
+            font-size: 13px;
         }
+
         .message {
             margin-top: 20px;
             padding: 15px;
-            border-radius: 10px;
+            border-radius: 8px;
             display: none;
         }
+
         .message.success {
-            background: #d4edda;
-            color: #155724;
-            border: 1px solid #c3e6cb;
+            background: #d1fae5;
+            color: #065f46;
+            border: 1px solid #a7f3d0;
         }
+
         .message.error {
-            background: #f8d7da;
-            color: #721c24;
-            border: 1px solid #f5c6cb;
+            background: #fee2e2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
         }
-        .nav-links {
-            margin-top: 30px;
-            text-align: center;
-        }
-        .nav-links a {
-            color: #667eea;
-            text-decoration: none;
-            margin: 0 15px;
-            transition: color 0.3s;
-        }
-        .nav-links a:hover {
-            color: #764ba2;
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 70px;
+            }
+
+            .navbar {
+                left: 70px;
+                height: 60px;
+            }
+
+            .sidebar-header h1,
+            .sidebar-header p,
+            .nav-item span {
+                display: none;
+            }
+
+            .main-content {
+                margin-left: 70px;
+                margin-top: 60px;
+                padding: 20px;
+            }
+
+            .navbar-links {
+                gap: 10px;
+            }
+
+            .navbar-link {
+                font-size: 12px;
+                padding: 6px 12px;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>📄 PDF to EPUB Converter</h1>
-            <p>Upload your PDF files to convert them to EPUB format</p>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>EPUB Converter</h1>
+            <p>PDF to EPUB</p>
         </div>
-        
-        <div class="content">
+        <nav class="sidebar-nav">
+            <a href="/" class="nav-item">
+                <span class="icon icon-home"></span><span>Home</span>
+            </a>
+            <a href="/upload" class="nav-item active">
+                <span class="icon icon-upload"></span><span>Upload PDF</span>
+            </a>
+            <a href="/pdfs" class="nav-item">
+                <span class="icon icon-library"></span><span>PDF Library</span>
+            </a>
+            <a href="/conversions" class="nav-item">
+                <span class="icon icon-conversions"></span><span>Conversions</span>
+            </a>
+            <a href="/api/ai/config" class="nav-item">
+                <span class="icon icon-ai"></span><span>AI Configuration</span>
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <p>© 2024 EPUB Converter</p>
+        </div>
+    </aside>
+
+    <!-- Top Navbar -->
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <span class="icon icon-brand"></span>
+            <span>EPUB Converter</span>
+        </div>
+        <div class="navbar-links">
+            <a href="/" class="navbar-link">Home</a>
+            <a href="/upload" class="navbar-link">Upload</a>
+            <a href="/pdfs" class="navbar-link">Library</a>
+            <a href="/conversions" class="navbar-link">Conversions</a>
+            <a href="/api/ai/config" class="navbar-link">AI Config</a>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="page-header">
+            <h1>Upload PDF Files</h1>
+            <p>Upload your PDF documents to convert them to EPUB format</p>
+        </div>
+
+        <div class="content-card">
             <div class="upload-area" id="uploadArea">
-                <div class="upload-icon">📁</div>
+                <div class="upload-icon">
+                    <span class="icon icon-file" style="font-size: 48px; display: block; margin-bottom: 10px;"></span>
+                </div>
                 <h3>Drop PDF files here</h3>
                 <p>or click to browse</p>
                 <input type="file" id="fileInput" accept=".pdf" multiple>
@@ -207,8 +484,8 @@
             
             <div class="file-list" id="fileList"></div>
             
-            <div style="text-align: center;">
-                <button class="btn" id="uploadBtn" disabled>Upload Files</button>
+            <div style="text-align: center; margin-top: 20px;">
+                <button class="btn btn-primary" id="uploadBtn" disabled>Upload Files</button>
             </div>
             
             <div class="progress-container" id="progressContainer">
@@ -218,14 +495,8 @@
             </div>
             
             <div class="message" id="message"></div>
-            
-            <div class="nav-links">
-                <a href="/">← Home</a>
-                <a href="/pdfs">View All PDFs</a>
-                <a href="/api/ai/config">🤖 AI Configuration</a>
-            </div>
         </div>
-    </div>
+    </main>
 
     <script>
         const uploadArea = document.getElementById('uploadArea');
@@ -238,10 +509,8 @@
         
         let selectedFiles = [];
 
-        // Click to browse
         uploadArea.addEventListener('click', () => fileInput.click());
 
-        // Drag and drop
         uploadArea.addEventListener('dragover', (e) => {
             e.preventDefault();
             uploadArea.classList.add('dragover');
@@ -258,7 +527,6 @@
             addFiles(files);
         });
 
-        // File input change
         fileInput.addEventListener('change', (e) => {
             addFiles(Array.from(e.target.files));
         });
@@ -284,7 +552,7 @@
             fileList.innerHTML = selectedFiles.map((file, index) => `
                 <div class="file-item">
                     <div class="file-info">
-                        <span class="file-icon">📄</span>
+                        <span class="file-icon icon icon-file"></span>
                         <div>
                             <div class="file-name">${file.name}</div>
                             <div class="file-size">${formatFileSize(file.size)}</div>
@@ -365,7 +633,6 @@
             message.style.display = 'block';
         }
 
-        // Make removeFile available globally
         window.removeFile = removeFile;
     </script>
 </body>

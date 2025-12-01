@@ -13,43 +13,250 @@
 
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: #fafafa;
+            color: #555;
+            display: flex;
             min-height: 100vh;
-            padding: 20px;
         }
 
-        .container {
-            max-width: 900px;
-            margin: 0 auto;
+        /* Top Navbar */
+        .navbar {
+            position: fixed;
+            top: 0;
+            left: 300px;
+            right: 0;
+            height: 60px;
             background: white;
-            border-radius: 20px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
-            padding: 40px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 30px;
+            z-index: 999;
         }
 
-        .header {
+        .navbar-brand {
+            font-size: 20px;
+            font-weight: 600;
+            color: #8b7fa8;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .navbar-links {
+            display: flex;
+            gap: 20px;
+            align-items: center;
+        }
+
+        .navbar-link {
+            color: #6b5b95;
+            text-decoration: none;
+            font-size: 14px;
+            padding: 8px 16px;
+            border-radius: 8px;
+            transition: all 0.3s;
+        }
+
+        .navbar-link:hover {
+            background: #f5f5f5;
+            color: #8b7fa8;
+        }
+
+        /* Sidebar */
+        .sidebar {
+            width: 300px;
+            background: white;
+            color: #5a5a5a;
+            position: fixed;
+            height: 100vh;
+            overflow-y: auto;
+            box-shadow: 2px 0 10px rgba(0,0,0,0.08);
+            z-index: 1000;
+            border-right: 1px solid #e8e8e8;
+        }
+
+        .sidebar-header {
+            padding: 25px 20px;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .sidebar-header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #8b7fa8;
+            margin-bottom: 5px;
+        }
+
+        .sidebar-header p {
+            font-size: 12px;
+            color: #9a9a9a;
+        }
+
+        .sidebar-nav {
+            padding: 20px 0;
+        }
+
+        .nav-item {
+            display: block;
+            padding: 14px 20px;
+            color: #6b5b95;
+            text-decoration: none;
+            transition: all 0.3s;
+            border-left: 3px solid transparent;
+            font-size: 15px;
+        }
+
+        .nav-item:hover {
+            background: #f8f8f8;
+            border-left-color: #b8d4e3;
+            color: #8b7fa8;
+        }
+
+        .nav-item.active {
+            background: #f0f0f0;
+            border-left-color: #d4a5d4;
+            color: #8b7fa8;
+            font-weight: 500;
+        }
+
+        .nav-item i {
+            margin-right: 12px;
+            width: 20px;
+            display: inline-block;
             text-align: center;
-            margin-bottom: 40px;
         }
 
-        .header h1 {
-            color: #667eea;
-            font-size: 36px;
-            margin-bottom: 10px;
+        /* Icon Styles */
+        .icon {
+            display: inline-block;
+            width: 18px;
+            height: 18px;
+            margin-right: 10px;
+            vertical-align: middle;
         }
 
-        .header p {
-            color: #666;
+        .icon-home::before {
+            content: "⌂";
+            font-size: 18px;
+        }
+
+        .icon-upload::before {
+            content: "↑";
+            font-size: 18px;
+        }
+
+        .icon-library::before {
+            content: "☰";
+            font-size: 18px;
+        }
+
+        .icon-conversions::before {
+            content: "↻";
+            font-size: 18px;
+        }
+
+        .icon-ai::before {
+            content: "⚙";
+            font-size: 18px;
+        }
+
+        .icon-brand::before {
+            content: "◉";
+            font-size: 20px;
+        }
+
+        .icon-info::before {
+            content: "ℹ";
             font-size: 16px;
         }
 
+        .icon-check::before {
+            content: "✓";
+            font-size: 16px;
+        }
+
+        .icon-test::before {
+            content: "◉";
+            font-size: 16px;
+        }
+
+        .icon-save::before {
+            content: "⬇";
+            font-size: 16px;
+        }
+
+        .sidebar-footer {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            padding: 20px;
+            border-top: 1px solid #e8e8e8;
+            font-size: 12px;
+            color: #9a9a9a;
+            text-align: center;
+        }
+
+        /* Main Content */
+        .main-content {
+            flex: 1;
+            margin-left: 300px;
+            margin-top: 60px;
+            padding: 20px 40px;
+            min-height: calc(100vh - 60px);
+            max-width: 100%;
+            width: calc(100% - 300px);
+        }
+
+        .page-header {
+            background: white;
+            padding: 15px 40px;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            margin-bottom: 20px;
+            text-align: center;
+            width: 100%;
+            max-width: 100%;
+        }
+
+        .page-header h1 {
+            font-size: 24px;
+            color: #8b7fa8;
+            font-weight: 600;
+            margin-bottom: 5px;
+        }
+
+        .page-header p {
+            color: #9a9a9a;
+            font-size: 13px;
+        }
+
+        .container {
+            max-width: 100%;
+            margin: 0;
+            width: 100%;
+            padding: 0;
+        }
+
+        .content-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            padding: 20px 40px;
+            margin-bottom: 20px;
+            width: 100%;
+            max-width: 100%;
+        }
+
+
         .status-badge {
             display: inline-block;
-            padding: 8px 16px;
+            padding: 6px 14px;
             border-radius: 20px;
-            font-size: 14px;
+            font-size: 12px;
             font-weight: bold;
-            margin-top: 10px;
+            margin-top: 8px;
         }
 
         .status-active {
@@ -62,26 +269,37 @@
             color: white;
         }
 
+        .form-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            margin-bottom: 15px;
+        }
+
         .form-group {
-            margin-bottom: 25px;
+            margin-bottom: 15px;
+        }
+
+        .form-group.full-width {
+            grid-column: 1 / -1;
         }
 
         .form-group label {
             display: block;
-            margin-bottom: 8px;
+            margin-bottom: 6px;
             color: #333;
             font-weight: 600;
-            font-size: 14px;
+            font-size: 13px;
         }
 
         .form-group input,
         .form-group select,
         .form-group textarea {
             width: 100%;
-            padding: 12px 16px;
+            padding: 10px 14px;
             border: 2px solid #e0e0e0;
             border-radius: 8px;
-            font-size: 14px;
+            font-size: 13px;
             transition: all 0.3s;
         }
 
@@ -89,20 +307,20 @@
         .form-group select:focus,
         .form-group textarea:focus {
             outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border-color: #b8d4e3;
+            box-shadow: 0 0 0 3px rgba(184, 212, 227, 0.2);
         }
 
         .form-group textarea {
             resize: vertical;
-            min-height: 80px;
+            min-height: 60px;
         }
 
         .form-group small {
             display: block;
-            margin-top: 5px;
+            margin-top: 4px;
             color: #666;
-            font-size: 12px;
+            font-size: 11px;
         }
 
         .checkbox-group {
@@ -119,15 +337,15 @@
 
         .button-group {
             display: flex;
-            gap: 15px;
-            margin-top: 30px;
+            gap: 12px;
+            margin-top: 20px;
         }
 
         .btn {
-            padding: 14px 30px;
+            padding: 10px 24px;
             border: none;
             border-radius: 8px;
-            font-size: 16px;
+            font-size: 14px;
             font-weight: 600;
             cursor: pointer;
             transition: all 0.3s;
@@ -135,39 +353,40 @@
         }
 
         .btn-primary {
-            background: #667eea;
-            color: white;
+            background: #a8d5e2;
+            color: #5a5a5a;
         }
 
         .btn-primary:hover {
-            background: #5568d3;
+            background: #9bc5d2;
             transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+            box-shadow: 0 4px 12px rgba(168, 213, 226, 0.4);
         }
 
         .btn-secondary {
-            background: #6c757d;
-            color: white;
+            background: #d4a5d4;
+            color: #5a5a5a;
         }
 
         .btn-secondary:hover {
-            background: #5a6268;
+            background: #c895c8;
         }
 
         .btn-test {
-            background: #17a2b8;
-            color: white;
+            background: #c8e6c9;
+            color: #5a5a5a;
         }
 
         .btn-test:hover {
-            background: #138496;
+            background: #b8d6b9;
         }
 
         .alert {
-            padding: 15px 20px;
+            padding: 12px 18px;
             border-radius: 8px;
-            margin-bottom: 20px;
+            margin-bottom: 15px;
             display: none;
+            font-size: 13px;
         }
 
         .alert-success {
@@ -189,42 +408,25 @@
         }
 
         .info-box {
-            background: #f8f9fa;
-            border-left: 4px solid #667eea;
-            padding: 15px;
-            margin-bottom: 25px;
-            border-radius: 4px;
+            background: #f5f5f5;
+            border-left: 4px solid #b8d4e3;
+            padding: 12px 15px;
+            margin-bottom: 15px;
+            border-radius: 8px;
         }
 
         .info-box h3 {
-            color: #667eea;
-            font-size: 16px;
-            margin-bottom: 10px;
+            color: #8b7fa8;
+            font-size: 15px;
+            margin-bottom: 8px;
         }
 
         .info-box p {
             color: #666;
-            font-size: 14px;
-            line-height: 1.6;
+            font-size: 13px;
+            line-height: 1.5;
         }
 
-        .nav-links {
-            text-align: center;
-            margin-top: 30px;
-            padding-top: 30px;
-            border-top: 1px solid #e0e0e0;
-        }
-
-        .nav-links a {
-            color: #667eea;
-            text-decoration: none;
-            margin: 0 15px;
-            font-size: 14px;
-        }
-
-        .nav-links a:hover {
-            text-decoration: underline;
-        }
 
         .loading {
             display: none;
@@ -234,12 +436,50 @@
 
         .spinner {
             border: 3px solid #f3f3f3;
-            border-top: 3px solid #667eea;
+            border-top: 3px solid #b8d4e3;
             border-radius: 50%;
             width: 30px;
             height: 30px;
             animation: spin 1s linear infinite;
             margin: 0 auto 10px;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .sidebar {
+                width: 70px;
+            }
+
+            .navbar {
+                left: 70px;
+                height: 60px;
+            }
+
+            .sidebar-header h1,
+            .sidebar-header p,
+            .nav-item span {
+                display: none;
+            }
+
+            .main-content {
+                margin-left: 70px;
+                margin-top: 60px;
+                padding: 15px;
+                width: calc(100% - 70px);
+            }
+
+            .navbar-links {
+                gap: 10px;
+            }
+
+            .navbar-link {
+                font-size: 12px;
+                padding: 6px 12px;
+            }
+
+            .form-row {
+                grid-template-columns: 1fr;
+            }
         }
 
         @keyframes spin {
@@ -249,18 +489,67 @@
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>🤖 AI Configuration</h1>
-            <p>Configure Google Gemini AI for enhanced EPUB conversion</p>
-            <div th:if="${isAiEnabled}" class="status-badge status-active">AI Enabled</div>
-            <div th:unless="${isAiEnabled}" class="status-badge status-inactive">AI Disabled</div>
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>EPUB Converter</h1>
+            <p>PDF to EPUB</p>
         </div>
+        <nav class="sidebar-nav">
+            <a href="/" class="nav-item">
+                <span class="icon icon-home"></span><span>Home</span>
+            </a>
+            <a href="/upload" class="nav-item">
+                <span class="icon icon-upload"></span><span>Upload PDF</span>
+            </a>
+            <a href="/pdfs" class="nav-item">
+                <span class="icon icon-library"></span><span>PDF Library</span>
+            </a>
+            <a href="/conversions" class="nav-item">
+                <span class="icon icon-conversions"></span><span>Conversions</span>
+            </a>
+            <a href="/api/ai/config" class="nav-item active">
+                <span class="icon icon-ai"></span><span>AI Configuration</span>
+            </a>
+        </nav>
+        <div class="sidebar-footer">
+            <p>© 2024 EPUB Converter</p>
+        </div>
+    </aside>
+
+    <!-- Top Navbar -->
+    <nav class="navbar">
+        <div class="navbar-brand">
+            <span class="icon icon-brand"></span>
+            <span>EPUB Converter</span>
+        </div>
+        <div class="navbar-links">
+            <a href="/" class="navbar-link">Home</a>
+            <a href="/upload" class="navbar-link">Upload</a>
+            <a href="/pdfs" class="navbar-link">Library</a>
+            <a href="/conversions" class="navbar-link">Conversions</a>
+            <a href="/api/ai/config" class="navbar-link">AI Config</a>
+        </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <div class="container">
+            <div class="page-header">
+                <h1><span class="icon icon-ai"></span> AI Configuration</h1>
+                <p>Configure Google Gemini AI for enhanced EPUB conversion</p>
+                <div style="margin-top: 10px;">
+                    <div th:if="${isAiEnabled}" class="status-badge status-active">AI Enabled</div>
+                    <div th:unless="${isAiEnabled}" class="status-badge status-inactive">AI Disabled</div>
+                </div>
+            </div>
+
+            <div class="content-card">
 
         <div id="alert" class="alert"></div>
 
         <div class="info-box">
-            <h3>📋 About AI Enhancement</h3>
+            <h3><span class="icon icon-info"></span> About AI Enhancement</h3>
             <p>
                 The AI system uses Google Gemini to improve your EPUB conversions by:
                 <br>• Fixing spelling errors and OCR mistakes
@@ -272,7 +561,7 @@
         </div>
 
         <div th:if="${config.id != null}" class="info-box" style="background: #e8f5e9; border-left-color: #4caf50;">
-            <h3>✅ Configuration Saved</h3>
+            <h3><span class="icon icon-check"></span> Configuration Saved</h3>
             <p>
                 Your AI configuration is saved permanently in the database.
                 <br>Configuration ID: <strong th:text="${config.id}"></strong>
@@ -283,52 +572,57 @@
         <form id="aiConfigForm">
             <input type="hidden" id="configId" th:value="${config.id}">
 
-            <div class="form-group">
-                <label for="apiKey">Gemini API Key *</label>
-                <div style="position: relative;">
-                    <input 
-                        type="password" 
-                        id="apiKey" 
-                        th:value="${config.apiKey != null && config.apiKey.length() > 0 && !config.apiKey.contains('*') ? config.apiKey : ''}" 
-                        placeholder="Enter your Google Gemini API key"
-                        required
-                        style="padding-right: 50px;">
-                    <button 
-                        type="button" 
-                        onclick="toggleApiKeyVisibility()" 
-                        style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 18px; color: #667eea;"
-                        title="Show/Hide API Key">
-                        👁️
-                    </button>
+            <div class="form-row">
+                <div class="form-group full-width">
+                    <label for="apiKey">Gemini API Key *</label>
+                    <div style="position: relative;">
+                        <input 
+                            type="password" 
+                            id="apiKey" 
+                            th:value="${config.apiKey != null && config.apiKey.length() > 0 ? config.apiKey : ''}" 
+                            placeholder="Enter your Google Gemini API key"
+                            th:required="${config.id == null}"
+                            style="padding-right: 50px;">
+                        <button 
+                            type="button" 
+                            onclick="toggleApiKeyVisibility()" 
+                            style="position: absolute; right: 10px; top: 50%; transform: translateY(-50%); background: none; border: none; cursor: pointer; font-size: 18px; color: #b8d4e3;"
+                            title="Show/Hide API Key"
+                            id="toggleVisibilityBtn">
+                            ⊙
+                        </button>
+                    </div>
+                    <small>
+                        Get your API key from 
+                        <a href="https://makersuite.google.com/app/apikey" target="_blank">Google AI Studio</a>
+                        <span th:if="${config.id != null && config.apiKey != null && config.apiKey.length() > 0}"> | Your API key is stored. Edit it or leave as is to keep the existing key.</span>
+                        <span th:unless="${config.id != null && config.apiKey != null && config.apiKey.length() > 0}"> | Your API key will be stored permanently once you save.</span>
+                    </small>
                 </div>
-                <small>
-                    Get your API key from 
-                    <a href="https://makersuite.google.com/app/apikey" target="_blank">Google AI Studio</a>
-                    <br>
-                    <strong th:if="${config.id != null}">Note:</strong>
-                    <span th:if="${config.id != null}"> Your API key is stored securely. Leave this field empty to keep your existing API key, or enter a new one to update it.</span>
-                    <span th:unless="${config.id != null}"> Your API key will be stored permanently in the database once you save.</span>
-                </small>
             </div>
 
-            <div class="form-group">
-                <label for="modelName">Gemini Model *</label>
-                <select id="modelName" th:value="${config.modelName}" required>
-                    <option th:each="model : ${availableModels}" 
-                            th:value="${model}" 
-                            th:text="${model}"
-                            th:selected="${config.modelName == model}">
-                    </option>
-                </select>
-                <small>Select the Gemini model to use for AI processing</small>
-            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label for="modelName">Gemini Model *</label>
+                    <select id="modelName" th:value="${config.modelName}" required>
+                        <option th:each="model : ${availableModels}" 
+                                th:value="${model}" 
+                                th:text="${model}"
+                                th:selected="${config.modelName == model}">
+                        </option>
+                    </select>
+                    <small>Select the Gemini model to use</small>
+                </div>
 
-            <div class="form-group">
-                <label for="description">Description (Optional)</label>
-                <textarea 
-                    id="description" 
-                    th:text="${config.description}"
-                    placeholder="Add a description for this configuration"></textarea>
+                <div class="form-group">
+                    <label for="description">Description (Optional)</label>
+                    <input 
+                        type="text" 
+                        id="description" 
+                        th:value="${config.description}"
+                        placeholder="Add a description for this configuration">
+                    <small>Optional description for this configuration</small>
+                </div>
             </div>
 
             <div class="form-group">
@@ -346,29 +640,25 @@
 
             <div class="button-group">
                 <button type="button" class="btn btn-test" onclick="testConnection()">
-                    🧪 Test Connection
+                    <span class="icon icon-test"></span> Test Connection
                 </button>
                 <button type="button" class="btn btn-secondary" onclick="window.location.href='/'">
                     ← Back to Home
                 </button>
                 <button type="submit" class="btn btn-primary">
-                    💾 Save Configuration
+                    <span class="icon icon-save"></span> Save Configuration
                 </button>
             </div>
         </form>
 
-        <div class="nav-links">
-            <a href="/">Home</a>
-            <a href="/upload">Upload PDF</a>
-            <a href="/pdfs">View Library</a>
-            <a href="/conversions">Conversions</a>
-        </div>
 
         <div id="loading" class="loading">
             <div class="spinner"></div>
             <p>Processing...</p>
         </div>
-    </div>
+            </div>
+        </div>
+    </main>
 
     <script>
         const form = document.getElementById('aiConfigForm');
@@ -446,7 +736,7 @@
                 savedIndicator.style.background = '#e8f5e9';
                 savedIndicator.style.borderLeftColor = '#4caf50';
                 savedIndicator.innerHTML = `
-                    <h3>✅ Configuration Saved</h3>
+                    <h3><span class="icon icon-check"></span> Configuration Saved</h3>
                     <p>
                         Your AI configuration is saved permanently in the database.
                         <br>Configuration ID: <strong>${configId}</strong>
@@ -465,14 +755,14 @@
 
         function toggleApiKeyVisibility() {
             const apiKeyInput = document.getElementById('apiKey');
-            const button = event.target;
+            const button = document.getElementById('toggleVisibilityBtn');
             
             if (apiKeyInput.type === 'password') {
                 apiKeyInput.type = 'text';
-                button.textContent = '🙈';
+                button.textContent = '◉';
             } else {
                 apiKeyInput.type = 'password';
-                button.textContent = '👁️';
+                button.textContent = '⊙';
             }
         }
 
