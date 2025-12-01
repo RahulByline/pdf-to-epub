@@ -292,6 +292,11 @@
             color: #c62828;
         }
 
+        .status-CANCELLED {
+            background: #f5f5f5;
+            color: #757575;
+        }
+
         .status-REVIEW_REQUIRED {
             background: #fff3e0;
             color: #e65100;
@@ -374,6 +379,28 @@
             background: #9bc5d2;
         }
 
+        .btn-stop {
+            background: #ffebee;
+            color: #c62828;
+        }
+        .btn-stop:hover {
+            background: #ffcdd2;
+        }
+        .btn-retry {
+            background: #fff3e0;
+            color: #e65100;
+        }
+        .btn-retry:hover {
+            background: #ffe0b2;
+        }
+        .btn-cancel {
+            background: #f5f5f5;
+            color: #757575;
+        }
+        .btn-cancel:hover {
+            background: #e0e0e0;
+        }
+
         .error-message {
             background: #ffebee;
             color: #c62828;
@@ -433,20 +460,23 @@
             }
         }
         .status-nav {
-            background: #f8f9ff;
-            border-bottom: 2px solid #e0e0e0;
+            background: white;
+            border-bottom: 2px solid #e8e8e8;
             padding: 0;
             display: flex;
-            justify-content: center;
+            justify-content: flex-start;
             gap: 0;
+            margin-bottom: 30px;
+            border-radius: 12px 12px 0 0;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
         }
         .status-nav-item {
-            padding: 15px 30px;
+            padding: 18px 30px;
             cursor: pointer;
             border: none;
             background: transparent;
-            color: #666;
-            font-size: 16px;
+            color: #9a9a9a;
+            font-size: 15px;
             font-weight: 500;
             transition: all 0.3s;
             border-bottom: 3px solid transparent;
@@ -454,33 +484,35 @@
             display: flex;
             align-items: center;
             gap: 8px;
+            white-space: nowrap;
         }
         .status-nav-item:hover {
-            background: #f0f0f5;
-            color: #667eea;
+            background: #f5f5f5;
+            color: #8b7fa8;
         }
         .status-nav-item.active {
-            color: #667eea;
-            border-bottom-color: #667eea;
-            background: #f0f0f5;
+            color: #8b7fa8;
+            border-bottom-color: #8b7fa8;
+            background: #f5f5f5;
+            font-weight: 600;
         }
         .status-count {
-            background: #e0e0e0;
-            color: #666;
-            padding: 2px 8px;
+            background: #e8e8e8;
+            color: #9a9a9a;
+            padding: 3px 10px;
             border-radius: 12px;
             font-size: 12px;
-            font-weight: bold;
-            min-width: 24px;
+            font-weight: 600;
+            min-width: 28px;
             text-align: center;
         }
         .status-nav-item.active .status-count {
-            background: #667eea;
+            background: #8b7fa8;
             color: white;
         }
         .status-nav-item:hover .status-count {
-            background: #667eea;
-            color: white;
+            background: #b8d4e3;
+            color: #5a5a5a;
         }
     </style>
 </head>
@@ -532,6 +564,30 @@
     <main class="main-content">
         <div class="page-header">
             <h1>Conversion Jobs</h1>
+        </div>
+
+        <!-- Status Navigation Bar -->
+        <div class="status-nav">
+            <button class="status-nav-item active" data-status="ALL" onclick="filterByStatus('ALL')">
+                All
+                <span class="status-count" id="count-ALL">0</span>
+            </button>
+            <button class="status-nav-item" data-status="COMPLETED" onclick="filterByStatus('COMPLETED')">
+                Completed
+                <span class="status-count" id="count-COMPLETED">0</span>
+            </button>
+            <button class="status-nav-item" data-status="PENDING" onclick="filterByStatus('PENDING')">
+                Pending
+                <span class="status-count" id="count-PENDING">0</span>
+            </button>
+            <button class="status-nav-item" data-status="IN_PROGRESS" onclick="filterByStatus('IN_PROGRESS')">
+                In Process
+                <span class="status-count" id="count-IN_PROGRESS">0</span>
+            </button>
+            <button class="status-nav-item" data-status="FAILED" onclick="filterByStatus('FAILED')">
+                Failed
+                <span class="status-count" id="count-FAILED">0</span>
+            </button>
         </div>
 
         <div class="content-card">
@@ -740,6 +796,81 @@
                 alert(details);
             } catch (error) {
                 alert('Error loading job details: ' + error.message);
+            }
+        }
+
+        async function stopJob(jobId) {
+            if (!confirm('Are you sure you want to stop this conversion?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/conversions/${jobId}/stop`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    alert('Conversion stopped successfully');
+                    loadJobs(); // Refresh the list
+                } else {
+                    const error = await response.text();
+                    alert('Error stopping conversion: ' + error);
+                }
+            } catch (error) {
+                alert('Error stopping conversion: ' + error.message);
+            }
+        }
+
+        async function cancelJob(jobId) {
+            if (!confirm('Are you sure you want to cancel this conversion? It will not be processed.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/conversions/${jobId}/stop`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    alert('Conversion cancelled successfully');
+                    loadJobs(); // Refresh the list
+                } else {
+                    const error = await response.text();
+                    alert('Error cancelling conversion: ' + error);
+                }
+            } catch (error) {
+                alert('Error cancelling conversion: ' + error.message);
+            }
+        }
+
+        async function retryJob(jobId) {
+            if (!confirm('Are you sure you want to retry this conversion?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/conversions/${jobId}/retry`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    alert('Conversion restarted successfully');
+                    loadJobs(); // Refresh the list
+                } else {
+                    const error = await response.text();
+                    alert('Error retrying conversion: ' + error);
+                }
+            } catch (error) {
+                alert('Error retrying conversion: ' + error.message);
             }
         }
 
