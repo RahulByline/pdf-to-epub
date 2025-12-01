@@ -93,6 +93,10 @@
             background: #ff7675;
             color: #d63031;
         }
+        .status-CANCELLED {
+            background: #b2bec3;
+            color: #636e72;
+        }
         .status-REVIEW_REQUIRED {
             background: #fdcb6e;
             color: #e17055;
@@ -161,6 +165,29 @@
         .btn-details:hover {
             background: #764ba2;
         }
+        .btn-stop {
+            background: #ff7675;
+            color: white;
+        }
+        .btn-stop:hover {
+            background: #d63031;
+        }
+        .btn-retry {
+            background: #fdcb6e;
+            color: #333;
+        }
+        .btn-retry:hover {
+            background: #e17055;
+            color: white;
+        }
+        .btn-cancel {
+            background: #b2bec3;
+            color: #333;
+        }
+        .btn-cancel:hover {
+            background: #636e72;
+            color: white;
+        }
         .error-message {
             background: #ff7675;
             color: white;
@@ -190,12 +217,85 @@
         .nav-links a:hover {
             color: #764ba2;
         }
+        .status-nav {
+            background: #f8f9ff;
+            border-bottom: 2px solid #e0e0e0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            gap: 0;
+        }
+        .status-nav-item {
+            padding: 15px 30px;
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            color: #666;
+            font-size: 16px;
+            font-weight: 500;
+            transition: all 0.3s;
+            border-bottom: 3px solid transparent;
+            position: relative;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .status-nav-item:hover {
+            background: #f0f0f5;
+            color: #667eea;
+        }
+        .status-nav-item.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+            background: #f0f0f5;
+        }
+        .status-count {
+            background: #e0e0e0;
+            color: #666;
+            padding: 2px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: bold;
+            min-width: 24px;
+            text-align: center;
+        }
+        .status-nav-item.active .status-count {
+            background: #667eea;
+            color: white;
+        }
+        .status-nav-item:hover .status-count {
+            background: #667eea;
+            color: white;
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <div class="header">
             <h1>🔄 Conversion Jobs</h1>
+        </div>
+        
+        <div class="status-nav">
+            <button class="status-nav-item active" data-status="ALL" onclick="filterByStatus('ALL')">
+                All
+                <span class="status-count" id="count-ALL">0</span>
+            </button>
+            <button class="status-nav-item" data-status="COMPLETED" onclick="filterByStatus('COMPLETED')">
+                Completed
+                <span class="status-count" id="count-COMPLETED">0</span>
+            </button>
+            <button class="status-nav-item" data-status="PENDING" onclick="filterByStatus('PENDING')">
+                Pending
+                <span class="status-count" id="count-PENDING">0</span>
+            </button>
+            <button class="status-nav-item" data-status="IN_PROGRESS" onclick="filterByStatus('IN_PROGRESS')">
+                In Process
+                <span class="status-count" id="count-IN_PROGRESS">0</span>
+            </button>
+            <button class="status-nav-item" data-status="FAILED" onclick="filterByStatus('FAILED')">
+                Failed
+                <span class="status-count" id="count-FAILED">0</span>
+            </button>
         </div>
         
         <div class="content">
@@ -217,6 +317,9 @@
     </div>
 
     <script>
+        let allJobs = [];
+        let currentFilter = 'ALL';
+
         async function loadJobs() {
             try {
                 const response = await fetch('/api/conversions/status/IN_PROGRESS');
@@ -231,19 +334,79 @@
                 const response4 = await fetch('/api/conversions/status/PENDING');
                 const pending = await response4.json();
                 
-                const allJobs = [...pending, ...inProgress, ...completed, ...failed];
+                const response5 = await fetch('/api/conversions/status/CANCELLED');
+                const cancelled = await response5.json().catch(() => []); // Handle if endpoint doesn't exist
+                
+                allJobs = [...pending, ...inProgress, ...completed, ...failed, ...cancelled];
+                
+                // Update counts
+                updateStatusCounts();
+                
+                // Apply current filter
+                applyFilter(currentFilter);
                 
                 document.getElementById('loading').style.display = 'none';
-                
-                if (allJobs.length === 0) {
-                    document.getElementById('emptyState').style.display = 'block';
-                    return;
-                }
-                
-                document.getElementById('jobsList').style.display = 'block';
-                renderJobs(allJobs);
             } catch (error) {
                 document.getElementById('loading').textContent = 'Error loading jobs: ' + error.message;
+            }
+        }
+
+        function updateStatusCounts() {
+            const counts = {
+                'ALL': allJobs.length,
+                'COMPLETED': allJobs.filter(j => j.status === 'COMPLETED').length,
+                'PENDING': allJobs.filter(j => j.status === 'PENDING').length,
+                'IN_PROGRESS': allJobs.filter(j => j.status === 'IN_PROGRESS').length,
+                'FAILED': allJobs.filter(j => j.status === 'FAILED').length
+            };
+            
+            Object.keys(counts).forEach(status => {
+                const countEl = document.getElementById(`count-${status}`);
+                if (countEl) {
+                    countEl.textContent = counts[status];
+                }
+            });
+        }
+
+        function filterByStatus(status) {
+            currentFilter = status;
+            
+            // Update active tab
+            document.querySelectorAll('.status-nav-item').forEach(item => {
+                item.classList.remove('active');
+            });
+            document.querySelector(`[data-status="${status}"]`).classList.add('active');
+            
+            // Apply filter
+            applyFilter(status);
+        }
+
+        function applyFilter(status) {
+            let filteredJobs = allJobs;
+            
+            if (status !== 'ALL') {
+                filteredJobs = allJobs.filter(job => job.status === status);
+            }
+            
+            // Sort jobs: IN_PROGRESS first, then by creation date (newest first)
+            filteredJobs.sort((a, b) => {
+                if (a.status === 'IN_PROGRESS' && b.status !== 'IN_PROGRESS') return -1;
+                if (a.status !== 'IN_PROGRESS' && b.status === 'IN_PROGRESS') return 1;
+                return new Date(b.createdAt) - new Date(a.createdAt);
+            });
+            
+            if (filteredJobs.length === 0) {
+                document.getElementById('emptyState').style.display = 'block';
+                document.getElementById('jobsList').style.display = 'none';
+                document.getElementById('emptyState').querySelector('h2').textContent = 
+                    status === 'ALL' ? 'No conversion jobs yet' : `No ${status.replace('_', ' ').toLowerCase()} jobs`;
+                document.getElementById('emptyState').querySelector('p').textContent = 
+                    status === 'ALL' ? 'Start converting PDFs to see jobs here' : 
+                    `There are no ${status.replace('_', ' ').toLowerCase()} jobs at the moment`;
+            } else {
+                document.getElementById('emptyState').style.display = 'none';
+                document.getElementById('jobsList').style.display = 'block';
+                renderJobs(filteredJobs);
             }
         }
 
@@ -286,6 +449,21 @@
                     ` : ''}
                     
                     <div class="job-actions">
+                        ${job.status === 'IN_PROGRESS' ? `
+                        <button class="btn btn-stop" onclick="stopJob(${job.id})">
+                            ⏹️ Stop
+                        </button>
+                        ` : ''}
+                        ${job.status === 'PENDING' ? `
+                        <button class="btn btn-cancel" onclick="cancelJob(${job.id})">
+                            ❌ Cancel
+                        </button>
+                        ` : ''}
+                        ${job.status === 'FAILED' || job.status === 'CANCELLED' ? `
+                        <button class="btn btn-retry" onclick="retryJob(${job.id})">
+                            🔄 Retry
+                        </button>
+                        ` : ''}
                         <button class="btn btn-download" 
                                 onclick="downloadEpub(${job.id})" 
                                 ${job.status !== 'COMPLETED' ? 'disabled' : ''}>
@@ -334,11 +512,86 @@
             }
         }
 
+        async function stopJob(jobId) {
+            if (!confirm('Are you sure you want to stop this conversion?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/conversions/${jobId}/stop`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    alert('Conversion stopped successfully');
+                    loadJobs(); // Refresh the list
+                } else {
+                    const error = await response.text();
+                    alert('Error stopping conversion: ' + error);
+                }
+            } catch (error) {
+                alert('Error stopping conversion: ' + error.message);
+            }
+        }
+
+        async function cancelJob(jobId) {
+            if (!confirm('Are you sure you want to cancel this conversion? It will not be processed.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/conversions/${jobId}/stop`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    alert('Conversion cancelled successfully');
+                    loadJobs(); // Refresh the list
+                } else {
+                    const error = await response.text();
+                    alert('Error cancelling conversion: ' + error);
+                }
+            } catch (error) {
+                alert('Error cancelling conversion: ' + error.message);
+            }
+        }
+
+        async function retryJob(jobId) {
+            if (!confirm('Are you sure you want to retry this conversion?')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/conversions/${jobId}/retry`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                if (response.ok) {
+                    alert('Conversion restarted successfully');
+                    loadJobs(); // Refresh the list
+                } else {
+                    const error = await response.text();
+                    alert('Error retrying conversion: ' + error);
+                }
+            } catch (error) {
+                alert('Error retrying conversion: ' + error.message);
+            }
+        }
+
         // Load jobs on page load
         loadJobs();
         
-        // Auto-refresh every 5 seconds
-        setInterval(loadJobs, 5000);
+        // Auto-refresh every 1 second for real-time updates
+        setInterval(loadJobs, 1000);
     </script>
 </body>
 </html>
