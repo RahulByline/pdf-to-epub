@@ -25,6 +25,8 @@ public class PdfUploadResponse {
     private Boolean hasMultiColumn;
     private Integer scannedPagesCount;
     private Integer digitalPagesCount;
+    private String zipFileName; // Name of the ZIP file this PDF was extracted from
+    private String zipFileGroupId; // Unique ID to group PDFs from the same ZIP upload
     private LocalDateTime createdAt;
 }
 

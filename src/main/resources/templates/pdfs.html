@@ -61,9 +61,19 @@
             font-size: 18px;
         }
         .pdf-grid {
+            display: block;
+            margin-top: 20px;
+        }
+        .pdf-group {
+            margin-bottom: 30px;
+            border: 2px solid #e0e0e0;
+            border-radius: 15px;
+            padding: 20px;
+        }
+        .pdf-group .pdf-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-            gap: 20px;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 15px;
             margin-top: 20px;
         }
         .pdf-card {
@@ -210,39 +220,117 @@
     <script>
         async function loadPDFs() {
             try {
-                const response = await fetch('/api/pdfs');
-                const pdfs = await response.json();
+                const response = await fetch('/api/pdfs/grouped');
+                const grouped = await response.json();
                 
                 document.getElementById('loading').style.display = 'none';
                 
-                if (pdfs.length === 0) {
+                const allPdfs = Object.values(grouped).flat();
+                if (allPdfs.length === 0) {
                     document.getElementById('emptyState').style.display = 'block';
                     return;
                 }
                 
-                document.getElementById('pdfGrid').style.display = 'grid';
-                renderPDFs(pdfs);
+                document.getElementById('pdfGrid').style.display = 'block';
+                renderGroupedPDFs(grouped);
             } catch (error) {
                 document.getElementById('loading').textContent = 'Error loading PDFs: ' + error.message;
             }
         }
 
-        function renderPDFs(pdfs) {
+        function renderGroupedPDFs(grouped) {
             const grid = document.getElementById('pdfGrid');
-            grid.innerHTML = pdfs.map(pdf => `
-                <div class="pdf-card">
-                    <div class="pdf-icon">📄</div>
-                    <div class="pdf-title">${pdf.originalFileName}</div>
-                    <div class="pdf-info">📏 Size: ${formatFileSize(pdf.fileSize)}</div>
-                    <div class="pdf-info">📄 Pages: ${pdf.totalPages || 'N/A'}</div>
-                    <div class="pdf-info">📅 ${formatDate(pdf.createdAt)}</div>
-                    <div class="pdf-actions">
-                        <button class="action-btn convert-btn" onclick="convertPDF(${pdf.id})">Convert</button>
-                        <button class="action-btn download-btn" onclick="downloadPDF(${pdf.id})">Download</button>
-                        <button class="action-btn analyze-btn" onclick="analyzePDF(${pdf.id})">Analyze</button>
-                    </div>
-                </div>
-            `).join('');
+            grid.innerHTML = '';
+            
+            Object.entries(grouped).forEach(([groupId, pdfs]) => {
+                const isZipGroup = pdfs.length > 1 && pdfs[0].zipFileGroupId;
+                const zipFileName = isZipGroup ? pdfs[0].zipFileName : null;
+                
+                // Create group container
+                const groupDiv = document.createElement('div');
+                groupDiv.className = 'pdf-group';
+                if (isZipGroup) {
+                    groupDiv.style.backgroundColor = '#f0f4ff';
+                }
+                
+                // Group header
+                const headerDiv = document.createElement('div');
+                headerDiv.style.display = 'flex';
+                headerDiv.style.justifyContent = 'space-between';
+                headerDiv.style.alignItems = 'center';
+                headerDiv.style.marginBottom = '20px';
+                headerDiv.style.paddingBottom = '15px';
+                headerDiv.style.borderBottom = '2px solid #e0e0e0';
+                
+                const titleDiv = document.createElement('div');
+                titleDiv.innerHTML = `
+                    <h3 style="margin: 0; color: #667eea;">
+                        ${isZipGroup ? '📦 ' + (zipFileName || 'ZIP Archive') : '📄 Individual PDF'}
+                    </h3>
+                    <p style="margin: 5px 0 0 0; color: #666; font-size: 14px;">
+                        ${pdfs.length} file${pdfs.length > 1 ? 's' : ''}
+                    </p>
+                `;
+                headerDiv.appendChild(titleDiv);
+                
+                if (isZipGroup && pdfs.length > 1) {
+                    const bulkConvertBtn = document.createElement('button');
+                    bulkConvertBtn.className = 'btn';
+                    bulkConvertBtn.style.background = '#667eea';
+                    bulkConvertBtn.style.color = 'white';
+                    bulkConvertBtn.textContent = '🔄 Bulk Convert All';
+                    bulkConvertBtn.onclick = () => bulkConvertPDFs(pdfs.map(p => p.id));
+                    headerDiv.appendChild(bulkConvertBtn);
+                }
+                groupDiv.appendChild(headerDiv);
+                
+                // PDF cards grid
+                const cardsGrid = document.createElement('div');
+                cardsGrid.className = 'pdf-grid';
+                
+                pdfs.forEach(pdf => {
+                    const card = document.createElement('div');
+                    card.className = 'pdf-card';
+                    card.innerHTML = `
+                        <div class="pdf-icon">📄</div>
+                        <div class="pdf-title">${pdf.originalFileName}</div>
+                        <div class="pdf-info">📏 Size: ${formatFileSize(pdf.fileSize)}</div>
+                        <div class="pdf-info">📄 Pages: ${pdf.totalPages || 'N/A'}</div>
+                        <div class="pdf-info">📅 ${formatDate(pdf.createdAt)}</div>
+                        <div class="pdf-actions">
+                            <button class="action-btn convert-btn" onclick="convertPDF(${pdf.id})">Convert</button>
+                            <button class="action-btn download-btn" onclick="downloadPDF(${pdf.id})">Download</button>
+                            <button class="action-btn analyze-btn" onclick="analyzePDF(${pdf.id})">Analyze</button>
+                        </div>
+                    `;
+                    cardsGrid.appendChild(card);
+                });
+                
+                groupDiv.appendChild(cardsGrid);
+                grid.appendChild(groupDiv);
+            });
+        }
+        
+        async function bulkConvertPDFs(pdfIds) {
+            if (!confirm(`Start conversion for ${pdfIds.length} PDF(s)?`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch('/api/conversions/start/bulk', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ pdfIds: pdfIds })
+                });
+                
+                const result = await response.json();
+                alert(`Bulk conversion started!\n\nStarted: ${result.totalStarted}\nFailed: ${result.totalFailed}`);
+                loadPDFs(); // Reload to show updated status
+            } catch (error) {
+                alert('Bulk conversion failed: ' + error.message);
+            }
         }
 
         function formatFileSize(bytes) {
