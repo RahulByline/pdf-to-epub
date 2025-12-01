@@ -14,6 +14,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -60,6 +61,48 @@ public class ConversionController {
 
         return ResponseEntity.status(HttpStatus.CREATED)
             .body(convertToResponse(job));
+    }
+
+    @PostMapping("/start/bulk")
+    public ResponseEntity<BulkConversionResponse> startBulkConversion(@RequestBody BulkConversionRequest request) {
+        logger.info("=== BULK CONVERSION START REQUEST for {} PDFs ===", request.getPdfIds().size());
+        
+        BulkConversionResponse bulkResponse = new BulkConversionResponse();
+        List<ConversionJobResponse> successfulJobs = new ArrayList<>();
+        List<BulkConversionResponse.ConversionError> errors = new ArrayList<>();
+        
+        for (Long pdfDocumentId : request.getPdfIds()) {
+            try {
+                // Verify PDF document exists
+                PdfDocument pdfDocument = pdfDocumentRepository.findById(pdfDocumentId)
+                    .orElseThrow(() -> new RuntimeException("PDF document not found with id: " + pdfDocumentId));
+
+                // Create conversion job
+                ConversionJob job = new ConversionJob();
+                job.setPdfDocumentId(pdfDocumentId);
+                job.setStatus(ConversionJob.JobStatus.PENDING);
+                job.setCurrentStep(ConversionJob.ConversionStep.STEP_0_CLASSIFICATION);
+                job.setProgressPercentage(0);
+                job = conversionJobRepository.save(job);
+
+                // Start async conversion
+                orchestrationService.processConversion(job.getId());
+                
+                successfulJobs.add(convertToResponse(job));
+            } catch (Exception e) {
+                errors.add(new BulkConversionResponse.ConversionError(
+                    pdfDocumentId,
+                    e.getMessage() != null ? e.getMessage() : "Unknown error occurred"
+                ));
+            }
+        }
+        
+        bulkResponse.setTotalStarted(successfulJobs.size());
+        bulkResponse.setTotalFailed(errors.size());
+        bulkResponse.setJobs(successfulJobs);
+        bulkResponse.setErrors(errors);
+        
+        return ResponseEntity.status(HttpStatus.CREATED).body(bulkResponse);
     }
 
     @PostMapping("/retry/{jobId}")
@@ -214,6 +257,85 @@ public class ConversionController {
         response.setUpdatedAt(job.getUpdatedAt());
         response.setCompletedAt(job.getCompletedAt());
         return response;
+    }
+
+    // DTO for bulk conversion request
+    public static class BulkConversionRequest {
+        private List<Long> pdfIds;
+        
+        public List<Long> getPdfIds() {
+            return pdfIds;
+        }
+        
+        public void setPdfIds(List<Long> pdfIds) {
+            this.pdfIds = pdfIds;
+        }
+    }
+
+    // DTO for bulk conversion response
+    public static class BulkConversionResponse {
+        private int totalStarted;
+        private int totalFailed;
+        private List<ConversionJobResponse> jobs;
+        private List<ConversionError> errors;
+        
+        public int getTotalStarted() {
+            return totalStarted;
+        }
+        
+        public void setTotalStarted(int totalStarted) {
+            this.totalStarted = totalStarted;
+        }
+        
+        public int getTotalFailed() {
+            return totalFailed;
+        }
+        
+        public void setTotalFailed(int totalFailed) {
+            this.totalFailed = totalFailed;
+        }
+        
+        public List<ConversionJobResponse> getJobs() {
+            return jobs;
+        }
+        
+        public void setJobs(List<ConversionJobResponse> jobs) {
+            this.jobs = jobs;
+        }
+        
+        public List<ConversionError> getErrors() {
+            return errors;
+        }
+        
+        public void setErrors(List<ConversionError> errors) {
+            this.errors = errors;
+        }
+        
+        public static class ConversionError {
+            private Long pdfId;
+            private String message;
+            
+            public ConversionError(Long pdfId, String message) {
+                this.pdfId = pdfId;
+                this.message = message;
+            }
+            
+            public Long getPdfId() {
+                return pdfId;
+            }
+            
+            public void setPdfId(Long pdfId) {
+                this.pdfId = pdfId;
+            }
+            
+            public String getMessage() {
+                return message;
+            }
+            
+            public void setMessage(String message) {
+                this.message = message;
+            }
+        }
     }
 
     // DTO for response

@@ -21,8 +21,10 @@ public class AsyncConversionService {
         logger.info("Async thread started for job ID: {}", jobId);
         try {
             orchestrationService.executeConversion(jobId);
-        } catch (Exception e) {
-            logger.error("Error in async conversion for job {}: {}", jobId, e.getMessage(), e);
+        } catch (Throwable e) {
+            // Catch both Exception and Error types (like java.lang.Error: Invalid memory access)
+            logger.error("Error/Exception in async conversion for job {} ({}): {}", 
+                        jobId, e.getClass().getSimpleName(), e.getMessage(), e);
             orchestrationService.handleConversionError(jobId, e);
         }
     }

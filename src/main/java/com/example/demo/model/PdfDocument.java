@@ -68,6 +68,12 @@ public class PdfDocument {
     @Column(name = "analysis_metadata", columnDefinition = "TEXT")
     private String analysisMetadata;
 
+    @Column(name = "zip_file_name")
+    private String zipFileName; // Name of the ZIP file this PDF was extracted from
+
+    @Column(name = "zip_file_group_id")
+    private String zipFileGroupId; // Unique ID to group PDFs from the same ZIP upload
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;
