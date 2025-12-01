@@ -105,33 +105,16 @@ public class ConversionController {
         return ResponseEntity.status(HttpStatus.CREATED).body(bulkResponse);
     }
 
-    @PostMapping("/retry/{jobId}")
-    public ResponseEntity<ConversionJobResponse> retryConversion(@PathVariable Long jobId) {
-        logger.info("=== RETRY CONVERSION REQUEST for Job ID: {} ===", jobId);
-        
-        ConversionJob job = conversionJobRepository.findById(jobId)
-            .orElseThrow(() -> new RuntimeException("Conversion job not found with id: " + jobId));
-
-        // Reset job status
-        job.setStatus(ConversionJob.JobStatus.PENDING);
-        job.setCurrentStep(ConversionJob.ConversionStep.STEP_0_CLASSIFICATION);
-        job.setProgressPercentage(0);
-        job.setErrorMessage(null);
-        job = conversionJobRepository.save(job);
-        
-        logger.info("Reset job {} to PENDING, calling processConversion", jobId);
-        orchestrationService.processConversion(jobId);
-        logger.info("processConversion called for retry");
-
-        return ResponseEntity.ok(convertToResponse(job));
-    }
-
     @GetMapping("/{jobId}")
     public ResponseEntity<ConversionJobResponse> getConversionJob(@PathVariable Long jobId) {
         ConversionJob job = conversionJobRepository.findById(jobId)
             .orElseThrow(() -> new RuntimeException("Conversion job not found with id: " + jobId));
 
-        return ResponseEntity.ok(convertToResponse(job));
+        return ResponseEntity.ok()
+            .header("Cache-Control", "no-cache, no-store, must-revalidate")
+            .header("Pragma", "no-cache")
+            .header("Expires", "0")
+            .body(convertToResponse(job));
     }
 
     @GetMapping("/pdf/{pdfDocumentId}")
@@ -147,6 +130,7 @@ public class ConversionController {
     @GetMapping("/status/{status}")
     public ResponseEntity<List<ConversionJobResponse>> getConversionsByStatus(
             @PathVariable String status) {
+        // Add cache-control headers to prevent caching
         try {
             ConversionJob.JobStatus jobStatus = ConversionJob.JobStatus.valueOf(status.toUpperCase());
             List<ConversionJob> jobs = conversionJobRepository.findByStatus(jobStatus);
@@ -154,7 +138,11 @@ public class ConversionController {
                 .map(this::convertToResponse)
                 .collect(Collectors.toList());
 
-            return ResponseEntity.ok(responses);
+            return ResponseEntity.ok()
+                .header("Cache-Control", "no-cache, no-store, must-revalidate")
+                .header("Pragma", "no-cache")
+                .header("Expires", "0")
+                .body(responses);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().build();
         }
@@ -202,6 +190,54 @@ public class ConversionController {
         job.setReviewedAt(java.time.LocalDateTime.now());
         job = conversionJobRepository.save(job);
 
+        return ResponseEntity.ok(convertToResponse(job));
+    }
+
+    @PostMapping("/{jobId}/stop")
+    public ResponseEntity<ConversionJobResponse> stopConversion(@PathVariable Long jobId) {
+        logger.info("Stop conversion request for job ID: {}", jobId);
+        
+        ConversionJob job = conversionJobRepository.findById(jobId)
+            .orElseThrow(() -> new RuntimeException("Conversion job not found with id: " + jobId));
+        
+        if (job.getStatus() != ConversionJob.JobStatus.IN_PROGRESS && 
+            job.getStatus() != ConversionJob.JobStatus.PENDING) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(convertToResponse(job));
+        }
+        
+        orchestrationService.cancelJob(jobId);
+        
+        // Reload job to get updated status
+        job = conversionJobRepository.findById(jobId)
+            .orElseThrow(() -> new RuntimeException("Conversion job not found with id: " + jobId));
+        
+        return ResponseEntity.ok(convertToResponse(job));
+    }
+
+    @PostMapping("/{jobId}/retry")
+    public ResponseEntity<ConversionJobResponse> retryConversion(@PathVariable Long jobId) {
+        logger.info("Retry conversion request for job ID: {}", jobId);
+        
+        ConversionJob job = conversionJobRepository.findById(jobId)
+            .orElseThrow(() -> new RuntimeException("Conversion job not found with id: " + jobId));
+        
+        if (job.getStatus() != ConversionJob.JobStatus.FAILED && 
+            job.getStatus() != ConversionJob.JobStatus.CANCELLED) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(convertToResponse(job));
+        }
+        
+        // Reset job status and start new conversion
+        job.setStatus(ConversionJob.JobStatus.PENDING);
+        job.setCurrentStep(ConversionJob.ConversionStep.STEP_0_CLASSIFICATION);
+        job.setProgressPercentage(0);
+        job.setErrorMessage(null);
+        job = conversionJobRepository.save(job);
+        
+        // Start async conversion
+        orchestrationService.processConversion(job.getId());
+        
         return ResponseEntity.ok(convertToResponse(job));
     }
 

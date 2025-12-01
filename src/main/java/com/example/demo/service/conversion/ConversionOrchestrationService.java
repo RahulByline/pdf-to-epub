@@ -15,6 +15,8 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import jakarta.persistence.EntityManager;
+import jakarta.persistence.PersistenceContext;
 
 import java.io.File;
 import java.io.IOException;
@@ -63,6 +65,9 @@ public class ConversionOrchestrationService {
 
     @Autowired
     private com.example.demo.service.GeminiAiService geminiAiService;
+    
+    @PersistenceContext
+    private EntityManager entityManager;
 
     @Value("${file.upload.dir:uploads}")
     private String uploadDir;
@@ -76,20 +81,28 @@ public class ConversionOrchestrationService {
         asyncConversionService.startAsyncConversion(jobId);
     }
 
-    @Transactional
+    /**
+     * Executes the conversion process. This method is NOT transactional to avoid timeout issues
+     * during long-running conversions. All database operations use separate transactions.
+     */
     public void executeConversion(Long jobId) throws IOException {
-        ConversionJob job = conversionJobRepository.findById(jobId)
-            .orElseThrow(() -> new RuntimeException("Conversion job not found: " + jobId));
+        // Initialize job status in separate transaction
+        initializeJobStatus(jobId);
+        
+        // Small delay to ensure status is visible before starting conversion
+        try {
+            Thread.sleep(100); // 100ms delay
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
 
         try {
-            logger.info("Setting job {} to IN_PROGRESS", jobId);
-            job.setStatus(ConversionJob.JobStatus.IN_PROGRESS);
-            job.setCurrentStep(ConversionJob.ConversionStep.STEP_0_CLASSIFICATION);
-            conversionJobRepository.saveAndFlush(job); // Flush immediately to make status visible
-
             // Get PDF document with languages eagerly loaded
-            PdfDocument pdfDocument = pdfDocumentRepository.findByIdWithLanguages(job.getPdfDocumentId())
-                .orElseThrow(() -> new RuntimeException("PDF document not found"));
+            PdfDocument pdfDocument = pdfDocumentRepository.findByIdWithLanguages(
+                conversionJobRepository.findById(jobId)
+                    .orElseThrow(() -> new RuntimeException("Conversion job not found: " + jobId))
+                    .getPdfDocumentId()
+            ).orElseThrow(() -> new RuntimeException("PDF document not found"));
 
             File pdfFile = new File(pdfDocument.getFilePath());
             if (!pdfFile.exists()) {
@@ -100,46 +113,69 @@ public class ConversionOrchestrationService {
 
             // Step 1: Text Extraction & OCR
             logger.info("Job {}: Starting Step 1 - Text Extraction", jobId);
-            updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_1_TEXT_EXTRACTION, 10);
-            if (pdfDocument.getPageQuality() == PdfDocument.PageQuality.SCANNED ||
-                pdfDocument.getPageQuality() == PdfDocument.PageQuality.MIXED) {
-                // Use OCR for scanned pages
-                logger.info("Job {}: Using OCR for scanned/mixed pages", jobId);
-                structure = extractWithOcr(pdfFile, pdfDocument);
-            } else {
-                // Extract text directly
-                logger.info("Job {}: Extracting text directly from digital PDF", jobId);
-                structure = textExtractionService.extractTextAndStructure(pdfFile, pdfDocument);
+            try {
+                updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_1_TEXT_EXTRACTION, 10);
+            } catch (Exception progressError) {
+                logger.warn("Failed to update progress for job {} at step 1: {}", jobId, progressError.getMessage());
             }
-            logger.info("Job {}: Text extraction completed, saving intermediate data", jobId);
-            saveIntermediateData(job, structure);
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            
+            try {
+                if (pdfDocument.getPageQuality() == PdfDocument.PageQuality.SCANNED ||
+                    pdfDocument.getPageQuality() == PdfDocument.PageQuality.MIXED) {
+                    // Use OCR for scanned pages
+                    logger.info("Job {}: Using OCR for scanned/mixed pages", jobId);
+                    structure = extractWithOcr(pdfFile, pdfDocument);
+                } else {
+                    // Extract text directly
+                    logger.info("Job {}: Extracting text directly from digital PDF", jobId);
+                    structure = textExtractionService.extractTextAndStructure(pdfFile, pdfDocument);
+                }
+                
+                if (structure == null) {
+                    throw new RuntimeException("Text extraction returned null structure");
+                }
+                
+                logger.info("Job {}: Text extraction completed, saving intermediate data", jobId);
+                saveIntermediateData(jobId, structure);
+            } catch (Exception e) {
+                logger.error("Job {}: Text extraction failed: {}", jobId, e.getMessage(), e);
+                throw new RuntimeException("Text extraction failed: " + e.getMessage(), e);
+            }
 
             // Step 2: Layout & Structure Understanding
             logger.info("Job {}: Starting Step 2 - Layout Analysis", jobId);
             updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_2_LAYOUT_ANALYSIS, 25);
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             structure = layoutAnalysisService.analyzeLayout(structure);
-            saveIntermediateData(job, structure);
+            if (structure == null) {
+                throw new RuntimeException("Layout analysis returned null structure");
+            }
+            saveIntermediateData(jobId, structure);
             logger.info("Job {}: Layout analysis completed", jobId);
 
             // Step 3: Semantic & Educational Structuring
             logger.info("Job {}: Starting Step 3 - Semantic Structuring", jobId);
             updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_3_SEMANTIC_STRUCTURING, 40);
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             structure = semanticStructuringService.addSemanticStructure(structure);
-            saveIntermediateData(job, structure);
+            saveIntermediateData(jobId, structure);
             logger.info("Job {}: Semantic structuring completed", jobId);
 
             // Step 4: Accessibility & Alt Text
             logger.info("Job {}: Starting Step 4 - Accessibility Enhancement", jobId);
             updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_4_ACCESSIBILITY, 50);
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             structure = accessibilityService.enhanceAccessibility(structure);
-            saveIntermediateData(job, structure);
+            saveIntermediateData(jobId, structure);
             logger.info("Job {}: Accessibility enhancement completed", jobId);
 
             // Step 5: Content Cleanup & Normalization
             logger.info("Job {}: Starting Step 5 - Content Cleanup", jobId);
             updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_5_CONTENT_CLEANUP, 60);
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             structure = contentCleanupService.cleanupAndNormalize(structure);
-            saveIntermediateData(job, structure);
+            saveIntermediateData(jobId, structure);
             logger.info("Job {}: Content cleanup completed", jobId);
 
             // Step 5.5: AI-Powered Content Improvement (if enabled)
@@ -147,7 +183,7 @@ public class ConversionOrchestrationService {
                 logger.info("Job {}: Starting AI-powered content improvement", jobId);
                 updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_5_CONTENT_CLEANUP, 65);
                 structure = geminiAiService.improveDocumentStructure(structure);
-                saveIntermediateData(job, structure);
+                saveIntermediateData(jobId, structure);
                 logger.info("Job {}: AI improvement completed", jobId);
             } else {
                 logger.info("Job {}: AI is not enabled, skipping AI improvement", jobId);
@@ -156,17 +192,19 @@ public class ConversionOrchestrationService {
             // Step 6: Math, Tables & Special Content
             logger.info("Job {}: Starting Step 6 - Math & Tables Processing", jobId);
             updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_6_SPECIAL_CONTENT, 75);
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             structure = mathAndTablesService.processMathAndTables(structure);
-            saveIntermediateData(job, structure);
+            saveIntermediateData(jobId, structure);
             logger.info("Job {}: Math & tables processing completed", jobId);
 
             // Step 7: EPUB3 Generation
             logger.info("Job {}: Starting Step 7 - EPUB Generation", jobId);
             updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_7_EPUB_GENERATION, 85);
+            try { Thread.sleep(200); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
             String epubPath = epubGenerationService.generateEpub(
                 structure,
                 epubOutputDir,
-                "converted_" + job.getId(),
+                "converted_" + jobId,
                 pdfFile  // Pass PDF file for fixed-layout EPUB generation
             );
             // Update EPUB path in separate transaction
@@ -188,14 +226,8 @@ public class ConversionOrchestrationService {
             // Catch both Exception and Error types
             logger.error("Conversion job {} failed ({}): {}", jobId, e.getClass().getSimpleName(), 
                         e.getMessage(), e);
-            job.setStatus(ConversionJob.JobStatus.FAILED);
-            String errorMsg = e.getMessage() != null ? e.getMessage() : 
-                            e.getClass().getSimpleName() + " occurred";
-            if (errorMsg.length() > 500) {
-                errorMsg = errorMsg.substring(0, 497) + "...";
-            }
-            job.setErrorMessage(errorMsg);
-            conversionJobRepository.save(job);
+            // Update failure status in separate transaction to ensure visibility
+            failJob(jobId, e);
             // Re-throw as RuntimeException to be caught by async wrapper
             throw new RuntimeException("Conversion failed", e);
         }
@@ -281,22 +313,36 @@ public class ConversionOrchestrationService {
      */
     @Transactional(propagation = Propagation.REQUIRES_NEW)
     public void updateJobProgress(Long jobId, ConversionJob.ConversionStep step, int progress) {
-        // Reload job in new transaction to get latest state
-        ConversionJob currentJob = conversionJobRepository.findById(jobId)
-            .orElseThrow(() -> new RuntimeException("Job not found: " + jobId));
-        
-        // Ensure status is IN_PROGRESS (don't let it revert to PENDING or jump to COMPLETED)
-        if (currentJob.getStatus() != ConversionJob.JobStatus.IN_PROGRESS && 
-            currentJob.getStatus() != ConversionJob.JobStatus.COMPLETED &&
-            currentJob.getStatus() != ConversionJob.JobStatus.FAILED) {
-            currentJob.setStatus(ConversionJob.JobStatus.IN_PROGRESS);
+        try {
+            // Detach any existing entity to ensure fresh load
+            entityManager.clear();
+            
+            // Reload job in new transaction to get latest state
+            ConversionJob currentJob = conversionJobRepository.findById(jobId)
+                .orElseThrow(() -> new RuntimeException("Job not found: " + jobId));
+            
+            // Ensure status is IN_PROGRESS (don't let it revert to PENDING or jump to COMPLETED)
+            if (currentJob.getStatus() != ConversionJob.JobStatus.IN_PROGRESS && 
+                currentJob.getStatus() != ConversionJob.JobStatus.COMPLETED &&
+                currentJob.getStatus() != ConversionJob.JobStatus.FAILED) {
+                currentJob.setStatus(ConversionJob.JobStatus.IN_PROGRESS);
+                logger.debug("Job {} status changed to IN_PROGRESS during progress update", jobId);
+            }
+            
+            currentJob.setCurrentStep(step);
+            currentJob.setProgressPercentage(progress);
+            
+            // Save and flush immediately (saveAndFlush already flushes)
+            conversionJobRepository.saveAndFlush(currentJob);
+            
+            logger.info("Job {} progress updated: status={}, step={}, progress={}%", 
+                       jobId, currentJob.getStatus(), step, progress);
+        } catch (Exception e) {
+            // Log error but don't throw - we don't want progress update failures to stop conversion
+            logger.error("Failed to update job progress for job {} at step {} ({}%): {}", 
+                        jobId, step, progress, e.getMessage(), e);
+            // Don't re-throw - allow conversion to continue even if progress update fails
         }
-        
-        currentJob.setCurrentStep(step);
-        currentJob.setProgressPercentage(progress);
-        conversionJobRepository.saveAndFlush(currentJob); // Save and flush immediately
-        logger.info("Job {} progress updated: status={}, step={}, progress={}%", 
-                   jobId, currentJob.getStatus(), step, progress);
     }
 
     /**
@@ -308,6 +354,69 @@ public class ConversionOrchestrationService {
             .orElseThrow(() -> new RuntimeException("Job not found: " + jobId));
         currentJob.setEpubFilePath(epubPath);
         conversionJobRepository.saveAndFlush(currentJob);
+    }
+
+    /**
+     * Cancels a job in a separate transaction to ensure immediate visibility
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void cancelJob(Long jobId) {
+        try {
+            entityManager.clear();
+            ConversionJob currentJob = conversionJobRepository.findById(jobId)
+                .orElseThrow(() -> new RuntimeException("Job not found: " + jobId));
+            
+            if (currentJob.getStatus() == ConversionJob.JobStatus.IN_PROGRESS || 
+                currentJob.getStatus() == ConversionJob.JobStatus.PENDING) {
+                currentJob.setStatus(ConversionJob.JobStatus.CANCELLED);
+                currentJob.setErrorMessage("Cancelled by user");
+                conversionJobRepository.saveAndFlush(currentJob);
+                logger.info("Job {} marked as CANCELLED", jobId);
+            }
+        } catch (Exception ex) {
+            logger.error("Failed to cancel job {}: {}", jobId, ex.getMessage(), ex);
+        }
+    }
+
+    /**
+     * Checks if a job has been cancelled
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW, readOnly = true)
+    public boolean isJobCancelled(Long jobId) {
+        try {
+            ConversionJob job = conversionJobRepository.findById(jobId).orElse(null);
+            return job != null && job.getStatus() == ConversionJob.JobStatus.CANCELLED;
+        } catch (Exception e) {
+            logger.warn("Error checking cancellation status for job {}: {}", jobId, e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Marks job as failed in a separate transaction to ensure immediate visibility
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void failJob(Long jobId, Throwable e) {
+        try {
+            entityManager.clear(); // Clear any cached entities
+            
+            ConversionJob currentJob = conversionJobRepository.findById(jobId)
+                .orElseThrow(() -> new RuntimeException("Job not found: " + jobId));
+            
+            currentJob.setStatus(ConversionJob.JobStatus.FAILED);
+            String errorMsg = e.getMessage() != null ? e.getMessage() : 
+                            e.getClass().getSimpleName() + " occurred";
+            if (errorMsg.length() > 500) {
+                errorMsg = errorMsg.substring(0, 497) + "...";
+            }
+            currentJob.setErrorMessage(errorMsg);
+            
+            conversionJobRepository.saveAndFlush(currentJob); // saveAndFlush already flushes
+            
+            logger.error("Job {} marked as FAILED: {}", jobId, errorMsg);
+        } catch (Exception ex) {
+            logger.error("Failed to update job {} failure status: {}", jobId, ex.getMessage(), ex);
+        }
     }
 
     /**
@@ -326,13 +435,34 @@ public class ConversionOrchestrationService {
         logger.info("Job {} marked as COMPLETED with confidence: {}", jobId, confidence);
     }
 
-    private void saveIntermediateData(ConversionJob job, DocumentStructure structure) {
+    /**
+     * Initializes job status to IN_PROGRESS in a separate transaction
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void initializeJobStatus(Long jobId) {
+        ConversionJob job = conversionJobRepository.findById(jobId)
+            .orElseThrow(() -> new RuntimeException("Conversion job not found: " + jobId));
+        logger.info("Setting job {} to IN_PROGRESS", jobId);
+        job.setStatus(ConversionJob.JobStatus.IN_PROGRESS);
+        job.setCurrentStep(ConversionJob.ConversionStep.STEP_0_CLASSIFICATION);
+        conversionJobRepository.saveAndFlush(job); // saveAndFlush already flushes, no need for extra flush
+        logger.info("Job {} status set to IN_PROGRESS and flushed", jobId);
+    }
+
+    /**
+     * Saves intermediate data in a separate transaction to avoid timeout issues
+     */
+    @Transactional(propagation = Propagation.REQUIRES_NEW)
+    public void saveIntermediateData(Long jobId, DocumentStructure structure) {
         try {
+            entityManager.clear(); // Clear any cached entities to ensure fresh load
+            ConversionJob job = conversionJobRepository.findById(jobId)
+                .orElseThrow(() -> new RuntimeException("Job not found: " + jobId));
             String json = objectMapper.writeValueAsString(structure);
             job.setIntermediateData(json);
-            conversionJobRepository.save(job);
+            conversionJobRepository.saveAndFlush(job); // saveAndFlush already flushes
         } catch (Exception e) {
-            logger.error("Failed to save intermediate data", e);
+            logger.error("Failed to save intermediate data for job {}", jobId, e);
         }
     }
 
