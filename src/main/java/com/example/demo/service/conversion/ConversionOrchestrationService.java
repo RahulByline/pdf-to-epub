@@ -202,7 +202,7 @@ public class ConversionOrchestrationService {
                 logger.info("Job {}: Final AI optimization for EPUB3 readability", jobId);
                 updateJobProgress(jobId, ConversionJob.ConversionStep.STEP_6_SPECIAL_CONTENT, 80);
                 structure = geminiAiService.finalizeForEpub3(structure);
-                saveIntermediateData(job, structure);
+                saveIntermediateData(jobId, structure);
                 logger.info("Job {}: Final AI optimization completed", jobId);
             }
 
