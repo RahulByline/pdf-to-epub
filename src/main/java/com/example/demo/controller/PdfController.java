@@ -20,10 +20,26 @@ public class PdfController {
     private PdfDocumentService pdfDocumentService;
 
     @PostMapping("/upload")
-    public ResponseEntity<PdfUploadResponse> uploadPdf(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<?> uploadPdf(@RequestParam("file") MultipartFile file) {
         try {
-            PdfUploadResponse response = pdfDocumentService.uploadAndAnalyzePdf(file);
-            return ResponseEntity.status(HttpStatus.CREATED).body(response);
+            // Check if file is a ZIP file
+            if (file.getContentType() != null && 
+                (file.getContentType().equals("application/zip") || 
+                 file.getContentType().equals("application/x-zip-compressed") ||
+                 file.getOriginalFilename() != null && file.getOriginalFilename().toLowerCase().endsWith(".zip"))) {
+                // Extract and process ZIP file - return bulk response
+                List<PdfUploadResponse> uploadedPdfs = pdfDocumentService.extractAndUploadPdfsFromZip(file);
+                BulkUploadResponse bulkResponse = new BulkUploadResponse();
+                bulkResponse.setTotalUploaded(uploadedPdfs.size());
+                bulkResponse.setTotalFailed(0);
+                bulkResponse.setSuccessfulUploads(uploadedPdfs);
+                bulkResponse.setErrors(new ArrayList<>());
+                return ResponseEntity.status(HttpStatus.CREATED).body(bulkResponse);
+            } else {
+                // Process as regular PDF
+                PdfUploadResponse response = pdfDocumentService.uploadAndAnalyzePdf(file);
+                return ResponseEntity.status(HttpStatus.CREATED).body(response);
+            }
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
         } catch (Exception e) {
@@ -39,8 +55,19 @@ public class PdfController {
         
         for (MultipartFile file : files) {
             try {
-                PdfUploadResponse response = pdfDocumentService.uploadAndAnalyzePdf(file);
-                successfulUploads.add(response);
+                // Check if file is a ZIP file
+                if (file.getContentType() != null && 
+                    (file.getContentType().equals("application/zip") || 
+                     file.getContentType().equals("application/x-zip-compressed") ||
+                     file.getOriginalFilename() != null && file.getOriginalFilename().toLowerCase().endsWith(".zip"))) {
+                    // Extract and process ZIP file
+                    List<PdfUploadResponse> zipResults = pdfDocumentService.extractAndUploadPdfsFromZip(file);
+                    successfulUploads.addAll(zipResults);
+                } else {
+                    // Process as regular PDF
+                    PdfUploadResponse response = pdfDocumentService.uploadAndAnalyzePdf(file);
+                    successfulUploads.add(response);
+                }
             } catch (Exception e) {
                 errors.add(new BulkUploadResponse.UploadError(
                     file.getOriginalFilename(),
@@ -57,11 +84,68 @@ public class PdfController {
         return ResponseEntity.status(HttpStatus.OK).body(bulkResponse);
     }
 
+    @PostMapping("/upload/zip")
+    public ResponseEntity<BulkUploadResponse> uploadZipFile(@RequestParam("file") MultipartFile zipFile) {
+        BulkUploadResponse bulkResponse = new BulkUploadResponse();
+        List<PdfUploadResponse> successfulUploads = new ArrayList<>();
+        List<BulkUploadResponse.UploadError> errors = new ArrayList<>();
+        
+        try {
+            // Validate ZIP file
+            if (zipFile.isEmpty()) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(bulkResponse);
+            }
+            
+            if (zipFile.getContentType() != null && 
+                !zipFile.getContentType().equals("application/zip") && 
+                !zipFile.getContentType().equals("application/x-zip-compressed") &&
+                (zipFile.getOriginalFilename() == null || !zipFile.getOriginalFilename().toLowerCase().endsWith(".zip"))) {
+                errors.add(new BulkUploadResponse.UploadError(
+                    zipFile.getOriginalFilename(),
+                    "File must be a ZIP archive"
+                ));
+                bulkResponse.setTotalUploaded(0);
+                bulkResponse.setTotalFailed(1);
+                bulkResponse.setErrors(errors);
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(bulkResponse);
+            }
+            
+            // Extract and process ZIP file
+            successfulUploads = pdfDocumentService.extractAndUploadPdfsFromZip(zipFile);
+            
+            bulkResponse.setTotalUploaded(successfulUploads.size());
+            bulkResponse.setTotalFailed(errors.size());
+            bulkResponse.setSuccessfulUploads(successfulUploads);
+            bulkResponse.setErrors(errors);
+            
+            return ResponseEntity.status(HttpStatus.OK).body(bulkResponse);
+        } catch (Exception e) {
+            errors.add(new BulkUploadResponse.UploadError(
+                zipFile.getOriginalFilename(),
+                e.getMessage() != null ? e.getMessage() : "Unknown error occurred"
+            ));
+            bulkResponse.setTotalUploaded(0);
+            bulkResponse.setTotalFailed(1);
+            bulkResponse.setErrors(errors);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(bulkResponse);
+        }
+    }
+
     @GetMapping
     public ResponseEntity<List<PdfUploadResponse>> getAllPdfs() {
         try {
             List<PdfUploadResponse> pdfs = pdfDocumentService.getAllPdfs();
             return ResponseEntity.ok(pdfs);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+        }
+    }
+
+    @GetMapping("/grouped")
+    public ResponseEntity<java.util.Map<String, List<PdfUploadResponse>>> getPdfsGroupedByZip() {
+        try {
+            java.util.Map<String, List<PdfUploadResponse>> grouped = pdfDocumentService.getPdfsGroupedByZip();
+            return ResponseEntity.ok(grouped);
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
         }
