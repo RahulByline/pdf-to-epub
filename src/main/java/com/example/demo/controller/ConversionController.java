@@ -16,6 +16,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @RestController
@@ -35,6 +36,9 @@ public class ConversionController {
 
     @Autowired
     private ObjectMapper objectMapper;
+
+    @Autowired
+    private com.example.demo.service.AudioSyncService audioSyncService;
 
     @PostMapping("/start/{pdfDocumentId}")
     public ResponseEntity<ConversionJobResponse> startConversion(@PathVariable Long pdfDocumentId) {
@@ -420,6 +424,49 @@ public class ConversionController {
         public void setUpdatedAt(java.time.LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
         public java.time.LocalDateTime getCompletedAt() { return completedAt; }
         public void setCompletedAt(java.time.LocalDateTime completedAt) { this.completedAt = completedAt; }
+    }
+
+    @DeleteMapping("/{jobId}")
+    public ResponseEntity<?> deleteConversionJob(@PathVariable Long jobId) {
+        try {
+            ConversionJob job = conversionJobRepository.findById(jobId)
+                .orElseThrow(() -> new RuntimeException("Conversion job not found with id: " + jobId));
+            
+            // Delete EPUB file if it exists
+            if (job.getEpubFilePath() != null) {
+                try {
+                    java.io.File epubFile = new java.io.File(job.getEpubFilePath());
+                    if (epubFile.exists()) {
+                        epubFile.delete();
+                        logger.info("Deleted EPUB file: {}", job.getEpubFilePath());
+                    }
+                } catch (Exception e) {
+                    logger.warn("Error deleting EPUB file: {}", e.getMessage());
+                    // Continue with deletion even if file deletion fails
+                }
+            }
+            
+            // Delete associated audio syncs
+            try {
+                audioSyncService.deleteAudioSyncsByJobId(jobId);
+            } catch (Exception e) {
+                logger.warn("Error deleting audio syncs: {}", e.getMessage());
+                // Continue with deletion
+            }
+            
+            // Delete the job
+            conversionJobRepository.delete(job);
+            logger.info("Deleted conversion job: {}", jobId);
+            
+            return ResponseEntity.noContent().build();
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Conversion job not found"));
+        } catch (Exception e) {
+            logger.error("Error deleting conversion job {}: {}", jobId, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Error deleting conversion job"));
+        }
     }
 }
 

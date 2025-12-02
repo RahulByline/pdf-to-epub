@@ -74,6 +74,15 @@ public class PdfDocument {
     @Column(name = "zip_file_group_id")
     private String zipFileGroupId; // Unique ID to group PDFs from the same ZIP upload
 
+    @Column(name = "audio_file_path")
+    private String audioFilePath; // Path to the associated audio file
+
+    @Column(name = "audio_file_name")
+    private String audioFileName; // Original name of the audio file
+
+    @Column(name = "audio_synced")
+    private Boolean audioSynced = false; // Whether audio has been synchronized
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

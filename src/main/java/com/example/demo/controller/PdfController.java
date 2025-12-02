@@ -11,6 +11,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/pdfs")
@@ -20,7 +21,9 @@ public class PdfController {
     private PdfDocumentService pdfDocumentService;
 
     @PostMapping("/upload")
-    public ResponseEntity<?> uploadPdf(@RequestParam("file") MultipartFile file) {
+    public ResponseEntity<?> uploadPdf(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "audioFile", required = false) MultipartFile audioFile) {
         try {
             // Check if file is a ZIP file
             if (file.getContentType() != null && 
@@ -37,13 +40,16 @@ public class PdfController {
                 return ResponseEntity.status(HttpStatus.CREATED).body(bulkResponse);
             } else {
                 // Process as regular PDF
-                PdfUploadResponse response = pdfDocumentService.uploadAndAnalyzePdf(file);
+                PdfUploadResponse response = pdfDocumentService.uploadAndAnalyzePdf(file, audioFile);
                 return ResponseEntity.status(HttpStatus.CREATED).body(response);
             }
         } catch (IllegalArgumentException e) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Invalid request"));
         } catch (Exception e) {
-            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).build();
+            e.printStackTrace(); // Log the error for debugging
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Internal server error"));
         }
     }
 
@@ -176,6 +182,37 @@ public class PdfController {
             return pdfDocumentService.analyzePdfById(id);
         } catch (RuntimeException e) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+        }
+    }
+
+    @GetMapping("/{id}/audio")
+    public ResponseEntity<?> getAudioFile(@PathVariable Long id) {
+        try {
+            return pdfDocumentService.downloadAudio(id);
+        } catch (RuntimeException e) {
+            // Return JSON error response, not audio content type
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Audio file not found"));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .contentType(org.springframework.http.MediaType.APPLICATION_JSON)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Error retrieving audio file"));
+        }
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<?> deletePdfDocument(@PathVariable Long id) {
+        try {
+            pdfDocumentService.deletePdfDocument(id);
+            return ResponseEntity.noContent().build();
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "PDF document not found"));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Error deleting PDF document"));
         }
     }
 }

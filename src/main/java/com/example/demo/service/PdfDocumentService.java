@@ -34,6 +34,12 @@ public class PdfDocumentService {
     
     @Autowired
     private PdfAnalysisService pdfAnalysisService;
+
+    @Autowired
+    private com.example.demo.repository.ConversionJobRepository conversionJobRepository;
+
+    @Autowired
+    private com.example.demo.service.AudioSyncService audioSyncService;
     
     @Value("${file.upload.dir:uploads}")
     private String uploadDir;
@@ -59,6 +65,10 @@ public class PdfDocumentService {
     }
 
     public PdfUploadResponse uploadAndAnalyzePdf(MultipartFile file) throws IOException {
+        return uploadAndAnalyzePdf(file, null);
+    }
+
+    public PdfUploadResponse uploadAndAnalyzePdf(MultipartFile file, MultipartFile audioFile) throws IOException {
         // Validate file
         if (file.isEmpty()) {
             throw new IllegalArgumentException("File is empty");
@@ -106,6 +116,31 @@ public class PdfDocumentService {
         pdfDocument.setScannedPagesCount(analysisResult.getScannedPagesCount());
         pdfDocument.setDigitalPagesCount(analysisResult.getDigitalPagesCount());
         pdfDocument.setAnalysisMetadata(analysisResult.getAnalysisMetadata());
+        
+        // Handle audio file if provided
+        if (audioFile != null && !audioFile.isEmpty()) {
+            try {
+                String audioOriginalFileName = audioFile.getOriginalFilename();
+                System.out.println("Processing audio file: " + audioOriginalFileName + ", size: " + audioFile.getSize());
+                String audioFileExtension = audioOriginalFileName != null && audioOriginalFileName.contains(".") 
+                    ? audioOriginalFileName.substring(audioOriginalFileName.lastIndexOf(".")) 
+                    : ".mp3";
+                String uniqueAudioFileName = UUID.randomUUID().toString() + audioFileExtension;
+                Path audioFilePath = uploadPath.resolve("audio_" + uniqueAudioFileName);
+                Files.copy(audioFile.getInputStream(), audioFilePath, StandardCopyOption.REPLACE_EXISTING);
+                
+                pdfDocument.setAudioFilePath(audioFilePath.toString());
+                pdfDocument.setAudioFileName(audioOriginalFileName);
+                pdfDocument.setAudioSynced(false);
+                System.out.println("Audio file saved successfully: " + audioFilePath.toString());
+            } catch (Exception e) {
+                System.err.println("Error processing audio file: " + e.getMessage());
+                e.printStackTrace();
+                // Continue without audio if there's an error
+            }
+        } else {
+            System.out.println("No audio file provided or audio file is empty");
+        }
         
         PdfDocument saved = pdfDocumentRepository.save(pdfDocument);
         
@@ -160,6 +195,54 @@ public class PdfDocumentService {
             return org.springframework.http.ResponseEntity.ok(result);
         } catch (Exception e) {
             throw new RuntimeException("Error analyzing PDF: " + e.getMessage());
+        }
+    }
+
+    @Transactional(readOnly = true)
+    public org.springframework.http.ResponseEntity<org.springframework.core.io.Resource> downloadAudio(Long id) {
+        PdfDocument document = pdfDocumentRepository.findById(id)
+            .orElseThrow(() -> new RuntimeException("PDF document not found with id: " + id));
+        
+        if (document.getAudioFilePath() == null || document.getAudioFilePath().isEmpty()) {
+            throw new RuntimeException("No audio file associated with this PDF document");
+        }
+        
+        try {
+            Path audioPath = Paths.get(document.getAudioFilePath());
+            org.springframework.core.io.Resource resource = new org.springframework.core.io.UrlResource(audioPath.toUri());
+            
+            if (resource.exists() && resource.isReadable()) {
+                // Determine content type based on file extension
+                String contentType = "audio/mpeg"; // Default to MP3
+                String fileName = document.getAudioFileName();
+                if (fileName != null) {
+                    String extension = fileName.substring(fileName.lastIndexOf(".") + 1).toLowerCase();
+                    switch (extension) {
+                        case "mp3":
+                            contentType = "audio/mpeg";
+                            break;
+                        case "wav":
+                            contentType = "audio/wav";
+                            break;
+                        case "ogg":
+                            contentType = "audio/ogg";
+                            break;
+                        case "m4a":
+                            contentType = "audio/mp4";
+                            break;
+                    }
+                }
+                
+                return org.springframework.http.ResponseEntity.ok()
+                    .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION, 
+                        "inline; filename=\"" + (document.getAudioFileName() != null ? document.getAudioFileName() : "audio") + "\"")
+                    .header(org.springframework.http.HttpHeaders.CONTENT_TYPE, contentType)
+                    .body(resource);
+            } else {
+                throw new RuntimeException("Audio file not found or not readable");
+            }
+        } catch (Exception e) {
+            throw new RuntimeException("Error downloading audio file: " + e.getMessage());
         }
     }
 
@@ -326,6 +409,72 @@ public class PdfDocumentService {
         return grouped;
     }
 
+    @Transactional
+    public void deletePdfDocument(Long id) throws IOException {
+        PdfDocument document = pdfDocumentRepository.findById(id)
+            .orElseThrow(() -> new RuntimeException("PDF document not found with id: " + id));
+        
+        // Delete PDF file
+        if (document.getFilePath() != null) {
+            try {
+                Path pdfPath = Paths.get(document.getFilePath());
+                if (Files.exists(pdfPath)) {
+                    Files.delete(pdfPath);
+                    System.out.println("Deleted PDF file: " + pdfPath);
+                }
+            } catch (IOException e) {
+                System.err.println("Error deleting PDF file: " + e.getMessage());
+                // Continue with deletion even if file deletion fails
+            }
+        }
+        
+        // Delete audio file
+        if (document.getAudioFilePath() != null) {
+            try {
+                Path audioPath = Paths.get(document.getAudioFilePath());
+                if (Files.exists(audioPath)) {
+                    Files.delete(audioPath);
+                    System.out.println("Deleted audio file: " + audioPath);
+                }
+            } catch (IOException e) {
+                System.err.println("Error deleting audio file: " + e.getMessage());
+                // Continue with deletion even if file deletion fails
+            }
+        }
+        
+        // Delete associated conversion jobs and their EPUB files
+        List<com.example.demo.model.ConversionJob> jobs = conversionJobRepository.findByPdfDocumentId(id);
+        for (com.example.demo.model.ConversionJob job : jobs) {
+            // Delete EPUB file if it exists
+            if (job.getEpubFilePath() != null) {
+                try {
+                    java.io.File epubFile = new java.io.File(job.getEpubFilePath());
+                    if (epubFile.exists()) {
+                        epubFile.delete();
+                        System.out.println("Deleted EPUB file: " + job.getEpubFilePath());
+                    }
+                } catch (Exception e) {
+                    System.err.println("Error deleting EPUB file: " + e.getMessage());
+                }
+            }
+            
+            // Delete associated audio syncs
+            try {
+                audioSyncService.deleteAudioSyncsByJobId(job.getId());
+            } catch (Exception e) {
+                System.err.println("Error deleting audio syncs: " + e.getMessage());
+            }
+            
+            // Delete the job
+            conversionJobRepository.delete(job);
+            System.out.println("Deleted conversion job: " + job.getId());
+        }
+        
+        // Delete from database
+        pdfDocumentRepository.delete(document);
+        System.out.println("Deleted PDF document from database: " + id);
+    }
+
     private PdfUploadResponse convertToResponse(PdfDocument document) {
         PdfUploadResponse response = new PdfUploadResponse();
         response.setId(document.getId());
@@ -343,6 +492,9 @@ public class PdfDocumentService {
         response.setDigitalPagesCount(document.getDigitalPagesCount());
         response.setZipFileName(document.getZipFileName());
         response.setZipFileGroupId(document.getZipFileGroupId());
+        response.setAudioFilePath(document.getAudioFilePath());
+        response.setAudioFileName(document.getAudioFileName());
+        response.setAudioSynced(document.getAudioSynced());
         response.setCreatedAt(document.getCreatedAt());
         return response;
     }
