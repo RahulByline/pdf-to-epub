@@ -400,6 +400,20 @@
         .btn-cancel:hover {
             background: #e0e0e0;
         }
+        .btn-audio {
+            background: #9c27b0;
+            color: white;
+        }
+        .btn-audio:hover {
+            background: #7b1fa2;
+        }
+        .btn-delete {
+            background: #ffebee;
+            color: #c62828;
+        }
+        .btn-delete:hover {
+            background: #ffcdd2;
+        }
 
         .error-message {
             background: #ffebee;
@@ -751,13 +765,19 @@
                             🔄 Retry
                         </button>
                         ` : ''}
-                        <button class="btn btn-download" 
-                                onclick="downloadEpub(${job.id})" 
-                                ${job.status !== 'COMPLETED' ? 'disabled' : ''}>
+                        ${job.status === 'COMPLETED' ? `
+                        <button class="btn btn-download" onclick="downloadEpub(${job.id})">
                             <span class="icon icon-download"></span> Download EPUB
                         </button>
+                        <button class="btn btn-audio" onclick="openAudioSync(${job.id})">
+                            🎵 Audio Sync
+                        </button>
+                        ` : ''}
                         <button class="btn btn-details" onclick="viewDetails(${job.id})">
                             <span class="icon icon-details"></span> View Details
+                        </button>
+                        <button class="btn btn-delete" onclick="deleteJob(${job.id})">
+                            🗑️ Delete
                         </button>
                     </div>
                 </div>
@@ -777,6 +797,10 @@
 
         function downloadEpub(jobId) {
             window.location.href = `/api/conversions/${jobId}/download`;
+        }
+
+        function openAudioSync(jobId) {
+            window.location.href = `/audio-sync/${jobId}`;
         }
 
         async function viewDetails(jobId) {
@@ -871,6 +895,28 @@
                 }
             } catch (error) {
                 alert('Error retrying conversion: ' + error.message);
+            }
+        }
+
+        async function deleteJob(jobId) {
+            if (!confirm('Are you sure you want to delete this conversion job?\n\nThis will also delete:\n- The EPUB file (if generated)\n- Associated audio syncs\n\nThis action cannot be undone.')) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/conversions/${jobId}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.status === 204 || response.ok) {
+                    alert('Conversion job deleted successfully!');
+                    loadJobs(); // Refresh the list
+                } else {
+                    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+                    alert('Delete failed: ' + (errorData.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Delete failed: ' + error.message);
             }
         }
 

@@ -27,6 +27,9 @@ public class PdfUploadResponse {
     private Integer digitalPagesCount;
     private String zipFileName; // Name of the ZIP file this PDF was extracted from
     private String zipFileGroupId; // Unique ID to group PDFs from the same ZIP upload
+    private String audioFilePath; // Path to the associated audio file
+    private String audioFileName; // Original name of the audio file
+    private Boolean audioSynced; // Whether audio has been synchronized
     private LocalDateTime createdAt;
 }
 

@@ -2,6 +2,7 @@ package com.example.demo.controller;
 
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 
 @Controller
 public class HomeController {
@@ -29,5 +30,10 @@ public class HomeController {
     @GetMapping("/conversions")
     public String conversions() {
         return "conversions";
+    }
+    
+    @GetMapping("/audio-sync/{jobId}")
+    public String audioSync(@PathVariable Long jobId) {
+        return "audio-sync-visual";
     }
 }

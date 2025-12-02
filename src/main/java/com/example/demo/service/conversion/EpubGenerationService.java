@@ -11,6 +11,7 @@ import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.rendering.ImageType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.imageio.ImageIO;
@@ -28,17 +29,30 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import com.example.demo.model.AudioSync;
 
 @Service
 public class EpubGenerationService {
 
     private static final Logger logger = LoggerFactory.getLogger(EpubGenerationService.class);
+    
+    @Value("${html.intermediate.dir:html_intermediate}")
+    private String htmlIntermediateDir;
+    
+    @Value("${html.intermediate.enabled:true}")
+    private boolean htmlIntermediateEnabled;
 
     public String generateEpub(DocumentStructure structure, String outputDir, String fileName) throws IOException {
-        return generateEpub(structure, outputDir, fileName, null);
+        return generateEpub(structure, outputDir, fileName, null, null, null);
     }
 
     public String generateEpub(DocumentStructure structure, String outputDir, String fileName, File pdfFile) throws IOException {
+        return generateEpub(structure, outputDir, fileName, pdfFile, null, null);
+    }
+
+    public String generateEpub(DocumentStructure structure, String outputDir, String fileName, File pdfFile, 
+                                File audioFile, List<AudioSync> audioSyncs) throws IOException {
         Path outputPath = Paths.get(outputDir);
         Files.createDirectories(outputPath);
         
@@ -55,16 +69,28 @@ public class EpubGenerationService {
             Path oebpsDir = tempDir.resolve("OEBPS");
             Files.createDirectories(oebpsDir);
             
+            // Create organized subdirectories in OEBPS
+            Path audioDir = oebpsDir.resolve("audio");
+            Path cssDir = oebpsDir.resolve("css");
+            Path fontDir = oebpsDir.resolve("font");
+            Path imageDir = oebpsDir.resolve("image");
+            Path jsDir = oebpsDir.resolve("js");
+            Files.createDirectories(audioDir);
+            Files.createDirectories(cssDir);
+            Files.createDirectories(fontDir);
+            Files.createDirectories(imageDir);
+            Files.createDirectories(jsDir);
+            
             // Generate mimetype file (must be first, uncompressed)
             createMimetypeFile(tempDir);
             
             // Generate container.xml
             createContainerFile(metaInfDir);
             
-            // Render PDF pages as images for fixed-layout EPUB
+            // Render PDF pages as images for fixed-layout EPUB (save to image/ folder)
             List<String> pageImageNames = new ArrayList<>();
             if (pdfFile != null && pdfFile.exists()) {
-                pageImageNames = renderPdfPagesAsImages(pdfFile, oebpsDir, structure);
+                pageImageNames = renderPdfPagesAsImages(pdfFile, imageDir, structure);
             }
             
             // Generate content.opf with fixed-layout metadata
@@ -73,14 +99,43 @@ public class EpubGenerationService {
             // Generate nav.xhtml (table of contents)
             createNavFile(oebpsDir, structure);
             
-            // Generate fixed-layout content files
-            List<String> contentFileNames = generateFixedLayoutContentFiles(oebpsDir, structure, pageImageNames);
+            // Step 1: Generate intermediate HTML files (if enabled)
+            Path htmlIntermediatePath = null;
+            if (htmlIntermediateEnabled) {
+                htmlIntermediatePath = generateIntermediateHtmlFiles(structure, pageImageNames, fileName);
+                logger.info("Generated intermediate HTML files in: {}", htmlIntermediatePath);
+            }
             
-            // Create CSS for fixed layout
-            createFixedLayoutCSS(oebpsDir);
+            // Step 2: Generate XHTML files from HTML (or directly from structure)
+            List<String> contentFileNames;
+            if (htmlIntermediateEnabled && htmlIntermediatePath != null) {
+                // Convert HTML to XHTML
+                contentFileNames = convertHtmlToXhtml(htmlIntermediatePath, oebpsDir, structure, pageImageNames);
+                logger.info("Converted HTML files to XHTML for EPUB");
+            } else {
+                // Direct XHTML generation (backward compatible)
+                contentFileNames = generateFixedLayoutContentFiles(oebpsDir, structure, pageImageNames);
+            }
             
-            // Copy images if any
-            copyImages(oebpsDir, structure);
+            // Create CSS for fixed layout (save to css/ folder)
+            createFixedLayoutCSS(cssDir);
+            
+            // Copy images if any (save to image/ folder)
+            copyImages(imageDir, structure);
+            
+            // Handle audio and SMIL files if audio syncs are provided
+            String audioFileName = null;
+            List<String> smilFileNames = new ArrayList<>();
+            if (audioFile != null && audioSyncs != null && !audioSyncs.isEmpty()) {
+                audioFileName = copyAudioFile(audioFile, audioDir);
+                smilFileNames = generateSmilFiles(oebpsDir, audioSyncs, audioFileName, structure);
+                
+                // Update content.opf to include audio and SMIL files
+                updateContentOpfForAudio(oebpsDir, audioFileName, smilFileNames, structure, pageImageNames, audioSyncs);
+                
+                // Update content files to reference SMIL
+                updateContentFilesForAudio(oebpsDir, smilFileNames, structure);
+            }
             
             // Create EPUB ZIP file
             String epubPath = outputPath.resolve(fileName + ".epub").toString();
@@ -169,7 +224,7 @@ public class EpubGenerationService {
                 g.dispose();
                 image = rgbImage;
                 
-                // Save as PNG with consistent settings
+                // Save as PNG with consistent settings (in image/ folder)
                 String imageName = "page_" + (i + 1) + ".png";
                 Path imagePath = oebpsDir.resolve(imageName);
                 
@@ -189,7 +244,8 @@ public class EpubGenerationService {
                     writer.dispose();
                 }
                 
-                imageNames.add(imageName);
+                // Return path relative to OEBPS (image/page_X.png)
+                imageNames.add("image/" + imageName);
                 
                 logger.debug("Rendered page {} as image: {} ({}x{} pixels, type: {})", 
                     i + 1, imageName, image.getWidth(), image.getHeight(), image.getType());
@@ -264,15 +320,15 @@ public class EpubGenerationService {
         opf.append("  <manifest>\n");
         opf.append("    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n");
         
-        // Add CSS for fixed layout
+        // Add CSS for fixed layout (in css/ folder)
         if (!pageImageNames.isEmpty()) {
-            opf.append("    <item id=\"css\" href=\"fixed-layout.css\" media-type=\"text/css\"/>\n");
+            opf.append("    <item id=\"css\" href=\"css/fixed-layout.css\" media-type=\"text/css\"/>\n");
         }
         
-        // Add page images
+        // Add page images (in image/ folder)
         int imageId = 1;
         for (String imageName : pageImageNames) {
-            opf.append("    <item id=\"page-img-").append(imageId).append("\" href=\"").append(imageName)
+            opf.append("    <item id=\"page-img-").append(imageId).append("\" href=\"").append(escapeXml(imageName))
                .append("\" media-type=\"image/png\"/>\n");
             imageId++;
         }
@@ -291,11 +347,11 @@ public class EpubGenerationService {
             itemId++;
         }
         
-        // Add other images
+        // Add other images (in image/ folder)
         if (structure.getImages() != null) {
             for (ImageReference image : structure.getImages()) {
                 String imageName = new File(image.getEpubPath() != null ? image.getEpubPath() : image.getOriginalPath()).getName();
-                opf.append("    <item id=\"img-").append(image.getId()).append("\" href=\"").append(imageName)
+                opf.append("    <item id=\"img-").append(image.getId()).append("\" href=\"image/").append(escapeXml(imageName))
                    .append("\" media-type=\"image/png\"/>\n");
             }
         }
@@ -507,12 +563,13 @@ public class EpubGenerationService {
         // EPUB3 fixed-layout viewport - full screen constant display
         html.append("  <meta name=\"viewport\" content=\"width=device-width, height=device-height, initial-scale=1.0, maximum-scale=1.0, user-scalable=no\"/>\n");
         html.append("  <title>Page ").append(pageNumber).append("</title>\n");
-        html.append("  <link rel=\"stylesheet\" type=\"text/css\" href=\"fixed-layout.css\"/>\n");
+        html.append("  <link rel=\"stylesheet\" type=\"text/css\" href=\"css/fixed-layout.css\"/>\n");
         html.append("</head>\n");
         html.append("<body class=\"fixed-layout-page\">\n");
         html.append("  <div class=\"page-container\">\n");
         
         // Page image - decorative, hidden from screen readers since text content is available
+        // imageName already includes "image/" prefix from renderPdfPagesAsImages
         if (imageName != null) {
             html.append("    <img src=\"").append(escapeHtml(imageName)).append("\" alt=\"\" class=\"page-image\" aria-hidden=\"true\"/>\n");
         }
@@ -645,8 +702,14 @@ public class EpubGenerationService {
             "}\n\n" +
             ".page-number {\n" +
             "  display: none;\n" +
+            "}\n\n" +
+            "/* EPUB 3 Media Overlay - Highlight active text during read-aloud */\n" +
+            ".-epub-media-overlay-active {\n" +
+            "  background: yellow !important;\n" +
+            "  color: black !important;\n" +
             "}\n";
         
+        // Save CSS to css/ folder (oebpsDir is already the cssDir)
         Files.write(oebpsDir.resolve("fixed-layout.css"), css.getBytes(StandardCharsets.UTF_8));
     }
 
@@ -937,6 +1000,349 @@ public class EpubGenerationService {
         });
     }
 
+    /**
+     * Copies audio file to EPUB package
+     */
+    private String copyAudioFile(File audioFile, Path audioDir) throws IOException {
+        String audioFileName = "audio_" + UUID.randomUUID().toString();
+        String originalName = audioFile.getName();
+        String extension = "";
+        if (originalName.contains(".")) {
+            extension = originalName.substring(originalName.lastIndexOf("."));
+        } else {
+            // Default to mp3 if no extension
+            extension = ".mp3";
+        }
+        audioFileName += extension;
+        
+        Path audioPath = audioDir.resolve(audioFileName);
+        Files.copy(audioFile.toPath(), audioPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        logger.info("Audio file copied to EPUB: {}", audioPath);
+        // Return path relative to OEBPS (audio/filename.ext)
+        return "audio/" + audioFileName;
+    }
+
+    /**
+     * Generates SMIL files for media overlay synchronization
+     */
+    private List<String> generateSmilFiles(Path oebpsDir, List<AudioSync> audioSyncs, 
+                                          String audioFileName, DocumentStructure structure) throws IOException {
+        List<String> smilFileNames = new ArrayList<>();
+        
+        // Group syncs by page number (can have multiple syncs per page for block-level syncs)
+        Map<Integer, List<AudioSync>> syncsByPage = audioSyncs.stream()
+            .collect(Collectors.groupingBy(AudioSync::getPageNumber));
+        
+        // Generate SMIL file for each page that has audio syncs
+        for (int i = 0; i < structure.getPages().size(); i++) {
+            int pageNumber = i + 1;
+            List<AudioSync> pageSyncs = syncsByPage.get(pageNumber);
+            
+            if (pageSyncs != null && !pageSyncs.isEmpty()) {
+                String smilFileName = "page_" + pageNumber + ".smil";
+                String smilContent = generateSmilContent(pageNumber, pageSyncs, audioFileName, structure);
+                Files.write(oebpsDir.resolve(smilFileName), smilContent.getBytes(StandardCharsets.UTF_8));
+                smilFileNames.add(smilFileName);
+                logger.debug("Generated SMIL file for page {} with {} syncs: {}", pageNumber, pageSyncs.size(), smilFileName);
+            }
+        }
+        
+        return smilFileNames;
+    }
+
+    /**
+     * Generates SMIL content for a single page with proper EPUB 3 Read-Aloud structure
+     * Creates multiple <par> elements for each text block, sequenced with <seq>
+     * Supports both block-level syncs (with blockId) and page-level syncs (proportional distribution)
+     */
+    private String generateSmilContent(int pageNumber, List<AudioSync> pageSyncs, String audioFileName, 
+                                       DocumentStructure structure) {
+        StringBuilder smil = new StringBuilder();
+        smil.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        smil.append("<smil xmlns=\"http://www.w3.org/ns/SMIL\" version=\"3.0\">\n");
+        smil.append("  <body>\n");
+        smil.append("    <seq>\n");
+        
+        // Get text blocks for this page
+        PageStructure page = null;
+        if (structure != null && structure.getPages() != null && pageNumber <= structure.getPages().size()) {
+            page = structure.getPages().get(pageNumber - 1);
+        }
+        
+        // Check if we have block-level syncs (syncs with blockId)
+        final PageStructure finalPage = page; // Make final for lambda
+        List<AudioSync> blockLevelSyncs = pageSyncs.stream()
+            .filter(s -> s.getBlockId() != null && !s.getBlockId().isEmpty())
+            .sorted((a, b) -> {
+                // Sort by reading order if available, otherwise by start time
+                if (finalPage != null && finalPage.getTextBlocks() != null) {
+                    int orderA = getBlockReadingOrder(finalPage, a.getBlockId());
+                    int orderB = getBlockReadingOrder(finalPage, b.getBlockId());
+                    if (orderA != orderB) return Integer.compare(orderA, orderB);
+                }
+                return Double.compare(a.getStartTime(), b.getStartTime());
+            })
+            .collect(java.util.stream.Collectors.toList());
+        
+        List<AudioSync> pageLevelSyncs = pageSyncs.stream()
+            .filter(s -> s.getBlockId() == null || s.getBlockId().isEmpty())
+            .collect(java.util.stream.Collectors.toList());
+        
+        if (!blockLevelSyncs.isEmpty()) {
+            // Use block-level syncs - create one <par> per sync
+            int parIndex = 0;
+            for (AudioSync sync : blockLevelSyncs) {
+                String blockId = sync.getBlockId();
+                smil.append("      <par id=\"par-").append(pageNumber).append("-").append(parIndex++).append("\">\n");
+                smil.append("        <text src=\"page_").append(pageNumber).append(".xhtml#").append(escapeXml(blockId)).append("\"/>\n");
+                smil.append("        <audio src=\"").append(escapeXml(audioFileName))
+                    .append("\" clipBegin=\"").append(formatSmilTime(sync.getStartTime()))
+                    .append("\" clipEnd=\"").append(formatSmilTime(sync.getEndTime())).append("\"/>\n");
+                smil.append("      </par>\n");
+            }
+        } else if (!pageLevelSyncs.isEmpty() && page != null && page.getTextBlocks() != null && !page.getTextBlocks().isEmpty()) {
+            // Use page-level syncs - distribute proportionally
+            // Use the first page-level sync (or combine if multiple)
+            AudioSync sync = pageLevelSyncs.get(0);
+            List<TextBlock> blocks = page.getTextBlocks();
+            double totalDuration = sync.getEndTime() - sync.getStartTime();
+            double timePerBlock = totalDuration / blocks.size();
+            
+            int blockIndex = 0;
+            for (TextBlock block : blocks) {
+                String blockId = block.getId();
+                if (blockId == null || blockId.isEmpty()) {
+                    blockId = "s" + (blockIndex + 1);
+                }
+                
+                double blockStartTime = sync.getStartTime() + (blockIndex * timePerBlock);
+                double blockEndTime = sync.getStartTime() + ((blockIndex + 1) * timePerBlock);
+                
+                if (blockIndex == blocks.size() - 1) {
+                    blockEndTime = sync.getEndTime();
+                }
+                
+                smil.append("      <par id=\"par-").append(pageNumber).append("-").append(blockIndex + 1).append("\">\n");
+                smil.append("        <text src=\"page_").append(pageNumber).append(".xhtml#").append(escapeXml(blockId)).append("\"/>\n");
+                smil.append("        <audio src=\"").append(escapeXml(audioFileName))
+                    .append("\" clipBegin=\"").append(formatSmilTime(blockStartTime))
+                    .append("\" clipEnd=\"").append(formatSmilTime(blockEndTime)).append("\"/>\n");
+                smil.append("      </par>\n");
+                
+                blockIndex++;
+            }
+        } else {
+            // Fallback: single par for entire page
+            AudioSync sync = pageSyncs.get(0);
+            smil.append("      <par id=\"page").append(pageNumber).append("-par\">\n");
+            smil.append("        <text src=\"page_").append(pageNumber).append(".xhtml#page").append(pageNumber).append("\"/>\n");
+            smil.append("        <audio src=\"").append(escapeXml(audioFileName))
+                .append("\" clipBegin=\"").append(formatSmilTime(sync.getStartTime()))
+                .append("\" clipEnd=\"").append(formatSmilTime(sync.getEndTime())).append("\"/>\n");
+            smil.append("      </par>\n");
+        }
+        
+        smil.append("    </seq>\n");
+        smil.append("  </body>\n");
+        smil.append("</smil>\n");
+        return smil.toString();
+    }
+    
+    /**
+     * Gets the reading order of a text block by its ID
+     */
+    private int getBlockReadingOrder(PageStructure page, String blockId) {
+        if (page.getTextBlocks() != null) {
+            for (int i = 0; i < page.getTextBlocks().size(); i++) {
+                TextBlock block = page.getTextBlocks().get(i);
+                if (blockId.equals(block.getId())) {
+                    return block.getReadingOrder() != null ? block.getReadingOrder() : i + 1;
+                }
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
+    /**
+     * Formats time in seconds to SMIL time format (HH:MM:SS.mmm)
+     */
+    private String formatSmilTime(double seconds) {
+        int hours = (int) (seconds / 3600);
+        int minutes = (int) ((seconds % 3600) / 60);
+        int secs = (int) (seconds % 60);
+        int millis = (int) ((seconds % 1) * 1000);
+        return String.format("%02d:%02d:%02d.%03d", hours, minutes, secs, millis);
+    }
+
+    /**
+     * Updates content.opf to include audio file and SMIL files, and set media overlay
+     */
+    private void updateContentOpfForAudio(Path oebpsDir, String audioFileName, List<String> smilFileNames,
+                                         DocumentStructure structure, List<String> pageImageNames, 
+                                         List<AudioSync> audioSyncs) throws IOException {
+        Path opfPath = oebpsDir.resolve("content.opf");
+        String opfContent = new String(Files.readAllBytes(opfPath), StandardCharsets.UTF_8);
+        
+        // Determine audio MIME type
+        String audioMimeType = "audio/mpeg"; // Default to MP3
+        if (audioFileName.endsWith(".wav")) {
+            audioMimeType = "audio/wav";
+        } else if (audioFileName.endsWith(".ogg")) {
+            audioMimeType = "audio/ogg";
+        } else if (audioFileName.endsWith(".m4a")) {
+            audioMimeType = "audio/mp4";
+        }
+        
+        // Find manifest section and add audio file
+        int manifestEndIndex = opfContent.indexOf("  </manifest>");
+        if (manifestEndIndex > 0) {
+            StringBuilder newManifest = new StringBuilder();
+            newManifest.append(opfContent.substring(0, manifestEndIndex));
+            // audioFileName already includes "audio/" prefix from copyAudioFile
+            newManifest.append("    <item id=\"audio\" href=\"").append(escapeXml(audioFileName))
+                .append("\" media-type=\"").append(audioMimeType).append("\"/>\n");
+            
+            // Add SMIL files
+            for (String smilFileName : smilFileNames) {
+                int pageNum = extractPageNumber(smilFileName);
+                newManifest.append("    <item id=\"smil-page").append(pageNum)
+                    .append("\" href=\"").append(escapeXml(smilFileName))
+                    .append("\" media-type=\"application/smil+xml\"/>\n");
+            }
+            
+            newManifest.append(opfContent.substring(manifestEndIndex));
+            opfContent = newManifest.toString();
+        }
+        
+        // Update metadata to include media overlay
+        int metadataEndIndex = opfContent.indexOf("  </metadata>");
+        if (metadataEndIndex > 0) {
+            StringBuilder newMetadata = new StringBuilder();
+            newMetadata.append(opfContent.substring(0, metadataEndIndex));
+            
+            // Calculate total audio duration from all syncs
+            double totalDuration = 0.0;
+            if (audioSyncs != null && !audioSyncs.isEmpty()) {
+                for (AudioSync sync : audioSyncs) {
+                    double duration = sync.getEndTime() - sync.getStartTime();
+                    totalDuration += duration;
+                }
+            }
+            String durationStr = formatSmilTime(totalDuration);
+            
+            newMetadata.append("    <meta property=\"media:active-class\">-epub-media-overlay-active</meta>\n");
+            newMetadata.append("    <meta property=\"media:duration\">").append(durationStr).append("</meta>\n");
+            newMetadata.append(opfContent.substring(metadataEndIndex));
+            opfContent = newMetadata.toString();
+        }
+        
+        // Update spine items to reference SMIL files
+        int spineStartIndex = opfContent.indexOf("  <spine");
+        int spineEndIndex = opfContent.indexOf("  </spine>");
+        if (spineStartIndex > 0 && spineEndIndex > 0) {
+            String beforeSpine = opfContent.substring(0, spineStartIndex);
+            String spineContent = opfContent.substring(spineStartIndex, spineEndIndex);
+            String afterSpine = opfContent.substring(spineEndIndex);
+            
+            StringBuilder newSpine = new StringBuilder();
+            newSpine.append(beforeSpine);
+            
+            // Update each itemref to include media-overlay
+            String[] lines = spineContent.split("\n");
+            for (String line : lines) {
+                if (line.contains("<itemref")) {
+                    // Extract page number from itemref
+                    int pageNum = extractPageNumberFromItemref(line);
+                    if (pageNum > 0 && smilFileNames.stream().anyMatch(f -> f.contains("page_" + pageNum))) {
+                        // Add media-overlay attribute before closing tag
+                        if (line.contains("/>")) {
+                            line = line.replace("/>", " media-overlay=\"smil-page" + pageNum + "\"/>");
+                        } else if (line.contains(">")) {
+                            line = line.replace(">", " media-overlay=\"smil-page" + pageNum + "\">");
+                        }
+                    }
+                }
+                newSpine.append(line);
+                if (!line.endsWith("\n")) {
+                    newSpine.append("\n");
+                }
+            }
+            
+            newSpine.append(afterSpine);
+            opfContent = newSpine.toString();
+        }
+        
+        Files.write(opfPath, opfContent.getBytes(StandardCharsets.UTF_8));
+        logger.info("Updated content.opf with audio and SMIL files");
+    }
+
+    /**
+     * Extracts page number from SMIL filename (e.g., "page_5.smil" -> 5)
+     */
+    private int extractPageNumber(String fileName) {
+        try {
+            String name = fileName.replace(".smil", "");
+            return Integer.parseInt(name.substring(name.lastIndexOf("_") + 1));
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    /**
+     * Extracts page number from itemref line
+     */
+    private int extractPageNumberFromItemref(String line) {
+        try {
+            int idrefIndex = line.indexOf("idref=\"page");
+            if (idrefIndex > 0) {
+                int start = idrefIndex + 11; // "idref=\"page".length()
+                int end = line.indexOf("\"", start);
+                if (end > start) {
+                    return Integer.parseInt(line.substring(start, end));
+                }
+            }
+        } catch (Exception e) {
+            // Ignore
+        }
+        return 0;
+    }
+
+    /**
+     * Updates content XHTML files to include ID for SMIL synchronization
+     */
+    private void updateContentFilesForAudio(Path oebpsDir, List<String> smilFileNames, 
+                                           DocumentStructure structure) throws IOException {
+        for (String smilFileName : smilFileNames) {
+            int pageNum = extractPageNumber(smilFileName);
+            String xhtmlFileName = "page_" + pageNum + ".xhtml";
+            Path xhtmlPath = oebpsDir.resolve(xhtmlFileName);
+            
+            if (Files.exists(xhtmlPath)) {
+                String xhtmlContent = new String(Files.readAllBytes(xhtmlPath), StandardCharsets.UTF_8);
+                
+                // Add ID to body or main container for SMIL synchronization
+                if (xhtmlContent.contains("<body") && !xhtmlContent.contains("id=\"page" + pageNum + "\"")) {
+                    // Check if body already has attributes
+                    if (xhtmlContent.contains("<body ")) {
+                        // Body has attributes, add id before closing >
+                        xhtmlContent = xhtmlContent.replaceFirst("<body([^>]*)>", 
+                            "<body$1 id=\"page" + pageNum + "\">");
+                    } else {
+                        // Body tag without attributes
+                        xhtmlContent = xhtmlContent.replace("<body>", "<body id=\"page" + pageNum + "\">");
+                    }
+                } else if (xhtmlContent.contains("<div class=\"page-container\">") && 
+                          !xhtmlContent.contains("id=\"page" + pageNum + "\"")) {
+                    xhtmlContent = xhtmlContent.replace("<div class=\"page-container\">", 
+                        "<div class=\"page-container\" id=\"page" + pageNum + "\">");
+                }
+                
+                Files.write(xhtmlPath, xhtmlContent.getBytes(StandardCharsets.UTF_8));
+                logger.debug("Updated {} with SMIL synchronization ID", xhtmlFileName);
+            }
+        }
+    }
+
     private void deleteDirectory(Path directory) {
         try {
             if (Files.exists(directory)) {
@@ -953,5 +1359,211 @@ public class EpubGenerationService {
         } catch (IOException e) {
             logger.warn("Failed to delete directory: " + directory, e);
         }
+    }
+    
+    /**
+     * Generates intermediate HTML files from DocumentStructure
+     * These HTML files can be used for debugging, preview, or manual editing
+     * 
+     * @param structure The document structure
+     * @param pageImageNames List of page image file names
+     * @param fileName Base file name for output
+     * @return Path to the directory containing generated HTML files
+     */
+    private Path generateIntermediateHtmlFiles(DocumentStructure structure, List<String> pageImageNames, String fileName) throws IOException {
+        Path htmlDir = Paths.get(htmlIntermediateDir).resolve(fileName + "_html");
+        Files.createDirectories(htmlDir);
+        
+        // Identify repetitive headers/footers
+        Set<String> repetitiveText = identifyRepetitiveText(structure);
+        
+        // Generate HTML file for each page
+        for (int i = 0; i < structure.getPages().size(); i++) {
+            PageStructure page = structure.getPages().get(i);
+            String htmlFileName = "page_" + (i + 1) + ".html";
+            String imageName = i < pageImageNames.size() ? pageImageNames.get(i) : null;
+            String htmlContent = generateIntermediatePageHTML(page, imageName, i + 1, repetitiveText);
+            Files.write(htmlDir.resolve(htmlFileName), htmlContent.getBytes(StandardCharsets.UTF_8));
+        }
+        
+        logger.info("Generated {} intermediate HTML files in {}", structure.getPages().size(), htmlDir);
+        return htmlDir;
+    }
+    
+    /**
+     * Generates HTML content for a single page (intermediate format, not XHTML)
+     * This is standard HTML5 without XML declaration or XHTML namespace
+     */
+    private String generateIntermediatePageHTML(PageStructure page, String imageName, int pageNumber, Set<String> repetitiveText) {
+        StringBuilder html = new StringBuilder();
+        html.append("<!DOCTYPE html>\n");
+        html.append("<html lang=\"en\">\n");
+        html.append("<head>\n");
+        html.append("  <meta charset=\"UTF-8\">\n");
+        html.append("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n");
+        html.append("  <title>Page ").append(pageNumber).append("</title>\n");
+        html.append("  <style>\n");
+        html.append("    body { font-family: Arial, sans-serif; margin: 20px; }\n");
+        html.append("    .page-image { max-width: 100%; height: auto; margin-bottom: 20px; }\n");
+        html.append("    .text-content { margin-top: 20px; }\n");
+        html.append("    .text-content p, .text-content h1, .text-content h2, .text-content h3 { margin: 10px 0; }\n");
+        html.append("  </style>\n");
+        html.append("</head>\n");
+        html.append("<body>\n");
+        html.append("  <div class=\"page-container\">\n");
+        
+        // Page image
+        if (imageName != null) {
+            html.append("    <img src=\"").append(escapeHtml(imageName)).append("\" alt=\"Page ").append(pageNumber).append("\" class=\"page-image\">\n");
+        }
+        
+        // Text content
+        html.append("    <div class=\"text-content\">\n");
+        if (page.getTextBlocks() != null && !page.getTextBlocks().isEmpty()) {
+            // Sort by reading order
+            List<TextBlock> sortedBlocks = new ArrayList<>(page.getTextBlocks());
+            sortedBlocks.sort((a, b) -> {
+                Integer orderA = a.getReadingOrder();
+                Integer orderB = b.getReadingOrder();
+                if (orderA == null) orderA = Integer.MAX_VALUE;
+                if (orderB == null) orderB = Integer.MAX_VALUE;
+                return orderA.compareTo(orderB);
+            });
+            
+            // Add blocks
+            for (TextBlock block : sortedBlocks) {
+                // Skip repetitive text
+                if (block.getText() != null && repetitiveText.contains(block.getText().trim().toLowerCase())) {
+                    continue;
+                }
+                
+                String htmlBlock = convertBlockToHTML(block, null);
+                if (htmlBlock != null && !htmlBlock.trim().isEmpty()) {
+                    html.append(htmlBlock);
+                }
+            }
+        }
+        html.append("    </div>\n");
+        
+        html.append("  </div>\n");
+        html.append("</body>\n");
+        html.append("</html>\n");
+        
+        return html.toString();
+    }
+    
+    /**
+     * Converts HTML files to XHTML format for EPUB
+     * Reads HTML files from intermediate directory and converts them to XHTML
+     * 
+     * @param htmlDir Directory containing HTML files
+     * @param oebpsDir OEBPS directory for EPUB
+     * @param structure Document structure
+     * @param pageImageNames List of page image names
+     * @return List of generated XHTML file names
+     */
+    private List<String> convertHtmlToXhtml(Path htmlDir, Path oebpsDir, DocumentStructure structure, List<String> pageImageNames) throws IOException {
+        List<String> xhtmlFileNames = new ArrayList<>();
+        
+        // Identify repetitive text
+        Set<String> repetitiveText = identifyRepetitiveText(structure);
+        
+        // Convert each HTML file to XHTML
+        for (int i = 0; i < structure.getPages().size(); i++) {
+            String htmlFileName = "page_" + (i + 1) + ".html";
+            String xhtmlFileName = "page_" + (i + 1) + ".xhtml";
+            Path htmlPath = htmlDir.resolve(htmlFileName);
+            
+            String xhtmlContent;
+            if (Files.exists(htmlPath)) {
+                // Read HTML file and convert to XHTML
+                String htmlContent = new String(Files.readAllBytes(htmlPath), StandardCharsets.UTF_8);
+                xhtmlContent = convertHtmlStringToXhtml(htmlContent, i + 1, pageImageNames);
+            } else {
+                // Fallback: generate XHTML directly if HTML file doesn't exist
+                logger.warn("HTML file not found: {}, generating XHTML directly", htmlPath);
+                PageStructure page = structure.getPages().get(i);
+                String imageName = i < pageImageNames.size() ? pageImageNames.get(i) : null;
+                xhtmlContent = generateFixedLayoutPageHTML(page, imageName, i + 1, repetitiveText);
+            }
+            
+            // Write XHTML file
+            Files.write(oebpsDir.resolve(xhtmlFileName), xhtmlContent.getBytes(StandardCharsets.UTF_8));
+            xhtmlFileNames.add(xhtmlFileName);
+        }
+        
+        logger.info("Converted {} HTML files to XHTML", xhtmlFileNames.size());
+        return xhtmlFileNames;
+    }
+    
+    /**
+     * Converts HTML string to XHTML format
+     * Adds XML declaration, XHTML namespace, and ensures proper XHTML structure
+     */
+    private String convertHtmlStringToXhtml(String htmlContent, int pageNumber, List<String> pageImageNames) {
+        // Remove existing DOCTYPE and html tag
+        String cleaned = htmlContent
+            .replaceFirst("<!DOCTYPE[^>]*>", "")
+            .replaceFirst("<html[^>]*>", "")
+            .replaceFirst("</html>", "");
+        
+        // Build XHTML structure
+        StringBuilder xhtml = new StringBuilder();
+        xhtml.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
+        xhtml.append("<!DOCTYPE html>\n");
+        xhtml.append("<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n");
+        
+        // Extract and convert head section
+        if (cleaned.contains("<head>")) {
+            int headStart = cleaned.indexOf("<head>");
+            int headEnd = cleaned.indexOf("</head>") + 7;
+            String headContent = cleaned.substring(headStart, headEnd);
+            // Convert HTML meta tags to XHTML format (self-closing)
+            headContent = headContent.replaceAll("<meta([^>]*[^/])>", "<meta$1/>");
+            headContent = headContent.replaceAll("<link([^>]*[^/])>", "<link$1/>");
+            // Add EPUB-specific viewport if not present
+            if (!headContent.contains("viewport")) {
+                headContent = headContent.replace("</head>", 
+                    "  <meta name=\"viewport\" content=\"width=device-width, height=device-height, initial-scale=1.0, maximum-scale=1.0, user-scalable=no\"/>\n" +
+                    "  <link rel=\"stylesheet\" type=\"text/css\" href=\"fixed-layout.css\"/>\n" +
+                    "</head>");
+            }
+            xhtml.append(headContent);
+        } else {
+            // Create head if missing
+            xhtml.append("<head>\n");
+            xhtml.append("  <meta charset=\"UTF-8\"/>\n");
+            xhtml.append("  <meta name=\"viewport\" content=\"width=device-width, height=device-height, initial-scale=1.0, maximum-scale=1.0, user-scalable=no\"/>\n");
+            xhtml.append("  <title>Page ").append(pageNumber).append("</title>\n");
+            xhtml.append("  <link rel=\"stylesheet\" type=\"text/css\" href=\"css/fixed-layout.css\"/>\n");
+            xhtml.append("</head>\n");
+        }
+        
+        // Extract body content
+        String bodyContent = cleaned;
+        if (cleaned.contains("<body")) {
+            int bodyStart = cleaned.indexOf("<body");
+            int bodyTagEnd = cleaned.indexOf(">", bodyStart) + 1;
+            bodyContent = cleaned.substring(bodyTagEnd);
+            if (bodyContent.contains("</body>")) {
+                bodyContent = bodyContent.substring(0, bodyContent.indexOf("</body>"));
+            }
+        }
+        
+        // Ensure body has proper XHTML structure
+        xhtml.append("<body class=\"fixed-layout-page\">\n");
+        xhtml.append("  <div class=\"page-container\">\n");
+        
+        // Convert img tags to XHTML format (self-closing)
+        bodyContent = bodyContent.replaceAll("<img([^>]*[^/])>", "<img$1/>");
+        
+        // Add body content
+        xhtml.append(bodyContent);
+        
+        xhtml.append("  </div>\n");
+        xhtml.append("</body>\n");
+        xhtml.append("</html>\n");
+        
+        return xhtml.toString();
     }
 }

@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Sync - Advanced Editor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f5f5;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        /* Top Header */
+        .top-header {
+            background: white;
+            padding: 12px 20px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            z-index: 100;
+        }
+
+        .header-left {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .page-selector {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .page-selector select {
+            padding: 6px 12px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+
+        .header-right {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: #8b7fa8;
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background: #7a6f98;
+        }
+
+        .btn-secondary {
+            background: #f5f5f5;
+            color: #666;
+        }
+
+        /* Main Content - Side by Side */
+        .main-editor {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+
+        /* Left Sidebar - Pages List */
+        .left-sidebar {
+            width: 250px;
+            background: white;
+            border-right: 1px solid #e0e0e0;
+            overflow-y: auto;
+            padding: 15px;
+        }
+
+        .sidebar-header {
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .sidebar-header h3 {
+            font-size: 14px;
+            color: #333;
+        }
+
+        .page-item {
+            background: #f9f9f9;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 10px;
+            margin-bottom: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .page-item:hover {
+            border-color: #8b7fa8;
+        }
+
+        .page-item.active {
+            border-color: #8b7fa8;
+            background: #f0f0ff;
+        }
+
+        .page-thumbnail {
+            width: 100%;
+            height: 80px;
+            background: #fff;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-bottom: 6px;
+            overflow: hidden;
+        }
+
+        .page-thumbnail img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .page-number {
+            font-size: 12px;
+            font-weight: 600;
+            color: #333;
+        }
+
+        /* PDF Canvas - Left Panel */
+        .pdf-canvas-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #fafafa;
+            border-right: 1px solid #e0e0e0;
+            overflow: hidden;
+        }
+
+        .panel-header {
+            background: white;
+            padding: 10px 15px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .panel-header h4 {
+            font-size: 14px;
+            color: #333;
+        }
+
+        .pdf-canvas-container {
+            flex: 1;
+            overflow: auto;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+
+        .pdf-page-container {
+            position: relative;
+            display: inline-block;
+            background: white;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .pdf-page-image {
+            max-width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .text-block-overlay {
+            position: absolute;
+            padding: 4px 8px;
+            background: rgba(255, 255, 0, 0.3);
+            border: 2px solid rgba(255, 200, 0, 0.8);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.2s;
+            z-index: 10;
+        }
+
+        .text-block-overlay:hover {
+            background: rgba(255, 255, 0, 0.5);
+            border-color: rgba(255, 150, 0, 1);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.4);
+            transform: scale(1.02);
+        }
+
+        .text-block-overlay.selected {
+            background: rgba(76, 175, 80, 0.4);
+            border-color: #4caf50;
+            border-width: 3px;
+            z-index: 20;
+        }
+
+        .text-block-overlay.synced {
+            background: rgba(33, 150, 243, 0.4);
+            border-color: #2196f3;
+        }
+
+        /* XHTML Preview - Right Panel */
+        .xhtml-preview-panel {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            background: #fafafa;
+            overflow: hidden;
+        }
+
+        .xhtml-preview-container {
+            flex: 1;
+            overflow: auto;
+            padding: 20px;
+        }
+
+        .xhtml-content {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+        }
+
+        .xhtml-block {
+            margin: 10px 0;
+            padding: 10px;
+            border: 1px solid #e0e0e0;
+            border-radius: 4px;
+            background: #f9f9f9;
+        }
+
+        .xhtml-block.selected {
+            border-color: #4caf50;
+            background: #e8f5e9;
+        }
+
+        .block-tag {
+            display: inline-block;
+            padding: 2px 8px;
+            background: #8b7fa8;
+            color: white;
+            border-radius: 3px;
+            font-size: 11px;
+            margin-right: 8px;
+            cursor: pointer;
+        }
+
+        .block-actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 8px;
+        }
+
+        .action-btn {
+            padding: 4px 8px;
+            border: 1px solid #ddd;
+            border-radius: 3px;
+            background: white;
+            cursor: pointer;
+            font-size: 11px;
+        }
+
+        .action-btn:hover {
+            background: #f5f5f5;
+        }
+
+        /* Audio Waveform - Bottom Panel */
+        .audio-waveform-panel {
+            height: 200px;
+            background: white;
+            border-top: 2px solid #e0e0e0;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .waveform-header {
+            padding: 8px 15px;
+            border-bottom: 1px solid #e0e0e0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .waveform-container {
+            flex: 1;
+            position: relative;
+            overflow-x: auto;
+            overflow-y: hidden;
+            background: #1a1a1a;
+        }
+
+        .waveform-canvas {
+            width: 100%;
+            height: 100%;
+            cursor: crosshair;
+        }
+
+        .segment-boundary {
+            position: absolute;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: #4caf50;
+            cursor: ew-resize;
+            z-index: 10;
+        }
+
+        .segment-boundary:hover {
+            background: #66bb6a;
+            width: 3px;
+        }
+
+        .segment-boundary.start {
+            background: #2196f3;
+        }
+
+        .segment-boundary.end {
+            background: #f44336;
+        }
+
+        .segment-label {
+            position: absolute;
+            top: 5px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-size: 10px;
+            pointer-events: none;
+        }
+
+        /* Audio Controls */
+        .audio-controls {
+            padding: 10px 15px;
+            border-top: 1px solid #e0e0e0;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .play-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: #8b7fa8;
+            color: white;
+            border: none;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .time-display {
+            font-size: 12px;
+            color: #666;
+            min-width: 100px;
+        }
+
+        .progress-bar {
+            flex: 1;
+            height: 4px;
+            background: #e0e0e0;
+            border-radius: 2px;
+            position: relative;
+            cursor: pointer;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: #8b7fa8;
+            border-radius: 2px;
+            width: 0%;
+        }
+
+        /* Edit Modal */
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .modal.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            max-width: 500px;
+            width: 90%;
+        }
+
+        .modal-header {
+            margin-bottom: 15px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid #e0e0e0;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 13px;
+            color: #333;
+        }
+
+        .form-group input,
+        .form-group select,
+        .form-group textarea {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 13px;
+        }
+
+        .modal-actions {
+            display: flex;
+            justify-content: flex-end;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        audio {
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <!-- Top Header -->
+    <div class="top-header">
+        <div class="header-left">
+            <div class="page-selector">
+                <label>Page:</label>
+                <select id="pageSelect"></select>
+            </div>
+            <span id="currentPageInfo">Page 1 of 16</span>
+        </div>
+        <div class="header-right">
+            <button class="btn btn-secondary" onclick="reRunAlignment()">Re-run Alignment</button>
+            <button class="btn btn-primary" onclick="saveAllChanges()">Save All Changes</button>
+        </div>
+    </div>
+
+    <!-- Main Editor - Side by Side -->
+    <div class="main-editor">
+        <!-- Left Sidebar - Pages -->
+        <div class="left-sidebar">
+            <div class="sidebar-header">
+                <h3>All Pages</h3>
+            </div>
+            <div id="pagesList"></div>
+        </div>
+
+        <!-- PDF Canvas - Left -->
+        <div class="pdf-canvas-panel">
+            <div class="panel-header">
+                <h4>PDF Canvas</h4>
+                <button class="btn btn-secondary" onclick="toggleHighlightMode()">Toggle Highlights</button>
+            </div>
+            <div class="pdf-canvas-container" id="pdfCanvasContainer">
+                <p style="text-align: center; color: #999; padding: 40px;">Loading PDF page...</p>
+            </div>
+        </div>
+
+        <!-- XHTML Preview - Right -->
+        <div class="xhtml-preview-panel">
+            <div class="panel-header">
+                <h4>XHTML Preview</h4>
+                <button class="btn btn-secondary" onclick="toggleXhtmlView()">Toggle View</button>
+            </div>
+            <div class="xhtml-preview-container" id="xhtmlPreviewContainer">
+                <p style="text-align: center; color: #999; padding: 40px;">Select a page to view XHTML</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Audio Waveform - Bottom -->
+    <div class="audio-waveform-panel">
+        <div class="waveform-header">
+            <h4>Audio Waveform</h4>
+            <div class="audio-controls">
+                <button class="play-btn" id="playBtn">▶</button>
+                <div class="time-display" id="timeDisplay">0:00 / 0:00</div>
+                <div class="progress-bar" id="progressBar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+            </div>
+        </div>
+        <div class="waveform-container" id="waveformContainer">
+            <canvas class="waveform-canvas" id="waveformCanvas"></canvas>
+        </div>
+    </div>
+
+    <!-- Edit Modal -->
+    <div class="modal" id="editModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modalTitle">Edit Block</h3>
+            </div>
+            <div id="modalBody">
+                <div class="form-group">
+                    <label>Block Tag:</label>
+                    <select id="blockTagSelect">
+                        <option value="p">Paragraph (p)</option>
+                        <option value="h1">Heading 1 (h1)</option>
+                        <option value="h2">Heading 2 (h2)</option>
+                        <option value="h3">Heading 3 (h3)</option>
+                        <option value="exercise">Exercise</option>
+                        <option value="span">Span</option>
+                        <option value="div">Div</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label>Alt Text:</label>
+                    <textarea id="altTextInput" rows="3"></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Text Content:</label>
+                    <textarea id="textContentInput" rows="4"></textarea>
+                </div>
+            </div>
+            <div class="modal-actions">
+                <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="saveBlockEdit()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <audio id="audioPlayer"></audio>
+
+    <script>
+        let jobId = null;
+        let pdfId = null;
+        let audioUrl = null;
+        let pagesData = [];
+        let currentPageIndex = -1;
+        let selectedBlockId = null;
+        let audioSyncs = [];
+        let audioPlayer = null;
+        let waveformCanvas = null;
+        let waveformCtx = null;
+        let editLog = [];
+
+        // Get job ID from URL
+        const pathParts = window.location.pathname.split('/');
+        jobId = pathParts[pathParts.length - 1];
+
+        async function loadData() {
+            try {
+                // Load job and PDF info
+                const jobResponse = await fetch(`/api/conversions/${jobId}`);
+                const job = await jobResponse.json();
+                pdfId = job.pdfDocumentId;
+
+                // Load XHTML pages from EPUB
+                const xhtmlResponse = await fetch(`/api/audio-sync/job/${jobId}/xhtml-pages`);
+                if (xhtmlResponse.ok) {
+                    const xhtmlResult = await xhtmlResponse.json();
+                    pagesData = xhtmlResult.pages || [];
+                    
+                    if (xhtmlResult.audioUrl) {
+                        audioUrl = xhtmlResult.audioUrl;
+                    }
+                }
+
+                // If audio URL not found, try PDF endpoint
+                if (!audioUrl) {
+                    const pdfResponse = await fetch(`/api/pdfs/${pdfId}`);
+                    const pdf = await pdfResponse.json();
+                    audioUrl = pdf.audioFilePath ? `/api/pdfs/${pdfId}/audio` : null;
+                }
+
+                if (!audioUrl) {
+                    alert('No audio file associated with this PDF.');
+                    return;
+                }
+
+                // Set up audio player
+                audioPlayer = document.getElementById('audioPlayer');
+                audioPlayer.src = audioUrl;
+                audioPlayer.addEventListener('timeupdate', updateTimeDisplay);
+                audioPlayer.addEventListener('loadedmetadata', () => {
+                    updateTimeDisplay();
+                    initializeWaveform();
+                });
+
+                // Load existing syncs
+                const syncsResponse = await fetch(`/api/audio-sync/pdf/${pdfId}/job/${jobId}`);
+                audioSyncs = await syncsResponse.json();
+
+                renderPagesList();
+                renderPageSelect();
+                if (pagesData.length > 0) {
+                    selectPage(0);
+                }
+            } catch (error) {
+                console.error('Error loading data:', error);
+                alert('Error loading data: ' + error.message);
+            }
+        }
+
+        function renderPagesList() {
+            const pagesList = document.getElementById('pagesList');
+            pagesList.innerHTML = '';
+            pagesData.forEach((page, index) => {
+                const pageItem = document.createElement('div');
+                pageItem.className = `page-item ${index === currentPageIndex ? 'active' : ''}`;
+                
+                const thumbnailHtml = page.pdfPageImage 
+                    ? `<img src="${page.pdfPageImage}" alt="Page ${page.pageNumber}">`
+                    : `Page ${page.pageNumber}`;
+                
+                pageItem.innerHTML = `
+                    <div class="page-thumbnail">${thumbnailHtml}</div>
+                    <div class="page-number">Page ${page.pageNumber}</div>
+                `;
+                pageItem.onclick = () => selectPage(index);
+                pagesList.appendChild(pageItem);
+            });
+        }
+
+        function renderPageSelect() {
+            const pageSelect = document.getElementById('pageSelect');
+            pageSelect.innerHTML = '';
+            pagesData.forEach((page, index) => {
+                const option = document.createElement('option');
+                option.value = index;
+                option.textContent = `Page ${page.pageNumber}`;
+                pageSelect.appendChild(option);
+            });
+            pageSelect.onchange = (e) => selectPage(parseInt(e.target.value));
+        }
+
+        function selectPage(index) {
+            currentPageIndex = index;
+            const page = pagesData[index];
+            
+            document.getElementById('currentPageInfo').textContent = `Page ${page.pageNumber} of ${pagesData.length}`;
+            document.getElementById('pageSelect').value = index;
+            
+            renderPdfCanvas(page);
+            renderXhtmlPreview(page);
+            renderPagesList();
+            updateWaveformSegments();
+        }
+
+        function renderPdfCanvas(page) {
+            const container = document.getElementById('pdfCanvasContainer');
+            const blocks = page.textBlocks || [];
+            
+            if (!page.pdfPageImage) {
+                container.innerHTML = '<p style="text-align: center; color: #999; padding: 40px;">No PDF page image available</p>';
+                return;
+            }
+
+            let html = `
+                <div class="pdf-page-container">
+                    <img src="${page.pdfPageImage}" alt="Page ${page.pageNumber}" class="pdf-page-image" id="pdfPageImage">
+            `;
+
+            // Add text blocks as overlays
+            blocks.forEach((block, idx) => {
+                const sync = audioSyncs.find(s => 
+                    s.pageNumber === page.pageNumber && s.blockId === block.id
+                );
+                const isSelected = selectedBlockId === block.id;
+                
+                let style = '';
+                if (block.coordinates) {
+                    const coords = block.coordinates;
+                    if (coords.top != null && coords.left != null) {
+                        style = `position: absolute; top: ${coords.top}px; left: ${coords.left}px;`;
+                        if (coords.width != null) style += ` width: ${coords.width}px;`;
+                        if (coords.height != null) style += ` height: ${coords.height}px;`;
+                    }
+                }
+                
+                if (!style) {
+                    style = `position: absolute; top: ${idx * 80 + 20}px; right: 20px; width: 300px;`;
+                }
+
+                html += `
+                    <div class="text-block-overlay ${isSelected ? 'selected' : ''} ${sync ? 'synced' : ''}" 
+                         onclick="selectBlock('${block.id}', ${idx})"
+                         data-block-id="${block.id}"
+                         style="${style}"
+                         title="${escapeHtml(block.text.substring(0, 50))}...">
+                        <div style="font-size: 11px; font-weight: 500; color: #000;">${escapeHtml(block.text.substring(0, 100))}${block.text.length > 100 ? '...' : ''}</div>
+                    </div>
+                `;
+            });
+
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
+        function renderXhtmlPreview(page) {
+            const container = document.getElementById('xhtmlPreviewContainer');
+            const blocks = page.textBlocks || [];
+            
+            if (blocks.length === 0) {
+                container.innerHTML = '<p style="text-align: center; color: #999; padding: 40px;">No text blocks found</p>';
+                return;
+            }
+
+            let html = '<div class="xhtml-content">';
+            blocks.forEach((block, idx) => {
+                const sync = audioSyncs.find(s => 
+                    s.pageNumber === page.pageNumber && s.blockId === block.id
+                );
+                const isSelected = selectedBlockId === block.id;
+                
+                html += `
+                    <div class="xhtml-block ${isSelected ? 'selected' : ''}" data-block-id="${block.id}">
+                        <div>
+                            <span class="block-tag" onclick="editBlockTag('${block.id}')">${block.tagName || 'p'}</span>
+                            <span>${escapeHtml(block.text.substring(0, 200))}${block.text.length > 200 ? '...' : ''}</span>
+                        </div>
+                        <div class="block-actions">
+                            <button class="action-btn" onclick="editBlock('${block.id}')">Edit</button>
+                            <button class="action-btn" onclick="editAltText('${block.id}')">Alt Text</button>
+                            ${sync ? `<span style="font-size: 11px; color: #2196f3;">Synced: ${formatTime(sync.startTime)} - ${formatTime(sync.endTime)}</span>` : ''}
+                        </div>
+                    </div>
+                `;
+            });
+            html += '</div>';
+            container.innerHTML = html;
+        }
+
+        function selectBlock(blockId, blockIndex) {
+            selectedBlockId = blockId;
+            const page = pagesData[currentPageIndex];
+            renderPdfCanvas(page);
+            renderXhtmlPreview(page);
+            highlightWaveformSegment(blockId);
+        }
+
+        function initializeWaveform() {
+            waveformCanvas = document.getElementById('waveformCanvas');
+            waveformCtx = waveformCanvas.getContext('2d');
+            
+            // Resize canvas
+            const container = document.getElementById('waveformContainer');
+            waveformCanvas.width = container.offsetWidth;
+            waveformCanvas.height = container.offsetHeight - 40;
+            
+            // Draw placeholder waveform (in production, use Web Audio API to generate actual waveform)
+            drawWaveform();
+        }
+
+        function drawWaveform() {
+            if (!waveformCtx || !audioPlayer) return;
+            
+            const width = waveformCanvas.width;
+            const height = waveformCanvas.height;
+            
+            // Clear canvas
+            waveformCtx.fillStyle = '#1a1a1a';
+            waveformCtx.fillRect(0, 0, width, height);
+            
+            // Draw waveform (placeholder - in production, use actual audio data)
+            waveformCtx.strokeStyle = '#4caf50';
+            waveformCtx.lineWidth = 2;
+            waveformCtx.beginPath();
+            
+            const centerY = height / 2;
+            for (let x = 0; x < width; x += 2) {
+                const amplitude = Math.random() * (height / 2 - 20);
+                const y = centerY + (Math.random() > 0.5 ? amplitude : -amplitude);
+                if (x === 0) {
+                    waveformCtx.moveTo(x, y);
+                } else {
+                    waveformCtx.lineTo(x, y);
+                }
+            }
+            waveformCtx.stroke();
+            
+            // Draw segment boundaries
+            updateWaveformSegments();
+        }
+
+        function updateWaveformSegments() {
+            if (!waveformCanvas || !audioPlayer) return;
+            
+            const page = pagesData[currentPageIndex];
+            if (!page) return;
+            
+            const duration = audioPlayer.duration || 0;
+            if (duration === 0) return;
+            
+            const width = waveformCanvas.width;
+            const container = document.getElementById('waveformContainer');
+            
+            // Remove existing boundaries
+            const existing = container.querySelectorAll('.segment-boundary, .segment-label');
+            existing.forEach(el => el.remove());
+            
+            // Add boundaries for each synced block
+            page.textBlocks.forEach(block => {
+                const sync = audioSyncs.find(s => 
+                    s.pageNumber === page.pageNumber && s.blockId === block.id
+                );
+                
+                if (sync && sync.startTime != null && sync.endTime != null) {
+                    const startX = (sync.startTime / duration) * width;
+                    const endX = (sync.endTime / duration) * width;
+                    
+                    // Start boundary
+                    const startBoundary = document.createElement('div');
+                    startBoundary.className = 'segment-boundary start';
+                    startBoundary.style.left = startX + 'px';
+                    startBoundary.dataset.blockId = block.id;
+                    startBoundary.dataset.type = 'start';
+                    startBoundary.onmousedown = (e) => startDragBoundary(e, block.id, 'start');
+                    container.appendChild(startBoundary);
+                    
+                    // End boundary
+                    const endBoundary = document.createElement('div');
+                    endBoundary.className = 'segment-boundary end';
+                    endBoundary.style.left = endX + 'px';
+                    endBoundary.dataset.blockId = block.id;
+                    endBoundary.dataset.type = 'end';
+                    endBoundary.onmousedown = (e) => startDragBoundary(e, block.id, 'end');
+                    container.appendChild(endBoundary);
+                    
+                    // Label
+                    const label = document.createElement('div');
+                    label.className = 'segment-label';
+                    label.style.left = (startX + (endX - startX) / 2) + 'px';
+                    label.textContent = block.text.substring(0, 20) + '...';
+                    container.appendChild(label);
+                }
+            });
+        }
+
+        function highlightWaveformSegment(blockId) {
+            const page = pagesData[currentPageIndex];
+            const sync = audioSyncs.find(s => 
+                s.pageNumber === page.pageNumber && s.blockId === blockId
+            );
+            
+            if (sync && audioPlayer) {
+                audioPlayer.currentTime = sync.startTime;
+                audioPlayer.play();
+            }
+        }
+
+        let isDragging = false;
+        let dragBoundary = null;
+        let dragType = null;
+
+        function startDragBoundary(e, blockId, type) {
+            e.preventDefault();
+            isDragging = true;
+            dragBoundary = blockId;
+            dragType = type;
+            
+            document.onmousemove = (e) => {
+                if (!isDragging) return;
+                const container = document.getElementById('waveformContainer');
+                const rect = container.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const percent = Math.max(0, Math.min(1, x / rect.width));
+                
+                const duration = audioPlayer.duration || 0;
+                const time = percent * duration;
+                
+                // Update boundary position
+                const boundary = e.target;
+                boundary.style.left = x + 'px';
+                
+                // Update sync time
+                updateSyncTime(blockId, type, time);
+            };
+            
+            document.onmouseup = () => {
+                isDragging = false;
+                document.onmousemove = null;
+                document.onmouseup = null;
+                logEdit('boundary_drag', { blockId, type, time: dragType === 'start' ? 'startTime' : 'endTime' });
+            };
+        }
+
+        function updateSyncTime(blockId, type, time) {
+            const page = pagesData[currentPageIndex];
+            let sync = audioSyncs.find(s => 
+                s.pageNumber === page.pageNumber && s.blockId === blockId
+            );
+            
+            if (!sync) {
+                sync = {
+                    pdfDocumentId: pdfId,
+                    conversionJobId: jobId,
+                    pageNumber: page.pageNumber,
+                    blockId: blockId,
+                    startTime: 0,
+                    endTime: 0
+                };
+                audioSyncs.push(sync);
+            }
+            
+            if (type === 'start') {
+                sync.startTime = time;
+            } else {
+                sync.endTime = time;
+            }
+        }
+
+        function editBlock(blockId) {
+            const page = pagesData[currentPageIndex];
+            const block = page.textBlocks.find(b => b.id === blockId);
+            if (!block) return;
+            
+            document.getElementById('modalTitle').textContent = 'Edit Block';
+            document.getElementById('blockTagSelect').value = block.tagName || 'p';
+            document.getElementById('textContentInput').value = block.text;
+            document.getElementById('altTextInput').value = '';
+            
+            document.getElementById('editModal').classList.add('active');
+            document.getElementById('editModal').dataset.blockId = blockId;
+        }
+
+        function editBlockTag(blockId) {
+            editBlock(blockId);
+        }
+
+        function editAltText(blockId) {
+            const page = pagesData[currentPageIndex];
+            const block = page.textBlocks.find(b => b.id === blockId);
+            if (!block) return;
+            
+            document.getElementById('modalTitle').textContent = 'Edit Alt Text';
+            document.getElementById('altTextInput').value = '';
+            document.getElementById('textContentInput').value = '';
+            
+            document.getElementById('editModal').classList.add('active');
+            document.getElementById('editModal').dataset.blockId = blockId;
+        }
+
+        function saveBlockEdit() {
+            const blockId = document.getElementById('editModal').dataset.blockId;
+            const page = pagesData[currentPageIndex];
+            const block = page.textBlocks.find(b => b.id === blockId);
+            
+            if (!block) return;
+            
+            const newTag = document.getElementById('blockTagSelect').value;
+            const newText = document.getElementById('textContentInput').value;
+            const newAltText = document.getElementById('altTextInput').value;
+            
+            // Update block
+            if (newTag) block.tagName = newTag;
+            if (newText) block.text = newText;
+            
+            logEdit('block_edit', { blockId, tag: newTag, text: newText, altText: newAltText });
+            
+            closeModal();
+            renderXhtmlPreview(page);
+            renderPdfCanvas(page);
+        }
+
+        function closeModal() {
+            document.getElementById('editModal').classList.remove('active');
+        }
+
+        function reRunAlignment() {
+            if (!selectedBlockId) {
+                alert('Please select a block first');
+                return;
+            }
+            
+            const page = pagesData[currentPageIndex];
+            const block = page.textBlocks.find(b => b.id === selectedBlockId);
+            
+            if (!block) return;
+            
+            // Call backend to re-run alignment
+            fetch(`/api/audio-sync/job/${jobId}/realign`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ blockId: selectedBlockId, text: block.text })
+            }).then(response => {
+                if (response.ok) {
+                    alert('Re-alignment completed');
+                    loadData();
+                } else {
+                    alert('Re-alignment failed');
+                }
+            });
+            
+            logEdit('realign', { blockId: selectedBlockId });
+        }
+
+        function saveAllChanges() {
+            // Save all syncs
+            const promises = audioSyncs.map(sync => 
+                fetch('/api/audio-sync', {
+                    method: sync.id ? 'PUT' : 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(sync)
+                })
+            );
+            
+            Promise.all(promises).then(() => {
+                // Send edit log
+                fetch(`/api/audio-sync/job/${jobId}/edit-log`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ edits: editLog })
+                }).then(() => {
+                    alert('All changes saved successfully');
+                    editLog = [];
+                });
+            });
+        }
+
+        function logEdit(action, data) {
+            editLog.push({
+                timestamp: new Date().toISOString(),
+                action,
+                data,
+                pageNumber: pagesData[currentPageIndex]?.pageNumber,
+                blockId: selectedBlockId
+            });
+        }
+
+        function toggleHighlightMode() {
+            // Toggle highlight visibility
+            const overlays = document.querySelectorAll('.text-block-overlay');
+            overlays.forEach(overlay => {
+                overlay.style.display = overlay.style.display === 'none' ? 'block' : 'none';
+            });
+        }
+
+        function toggleXhtmlView() {
+            // Toggle between code and preview view
+            const container = document.getElementById('xhtmlPreviewContainer');
+            if (container.classList.contains('code-view')) {
+                container.classList.remove('code-view');
+                renderXhtmlPreview(pagesData[currentPageIndex]);
+            } else {
+                container.classList.add('code-view');
+                const page = pagesData[currentPageIndex];
+                container.innerHTML = `<pre class="xhtml-content">${escapeHtml(page.fullHtml || '')}</pre>`;
+            }
+        }
+
+        function updateTimeDisplay() {
+            if (!audioPlayer) return;
+            const current = audioPlayer.currentTime;
+            const duration = audioPlayer.duration || 0;
+            document.getElementById('timeDisplay').textContent = 
+                `${formatTime(current)} / ${formatTime(duration)}`;
+            const percent = duration > 0 ? (current / duration) * 100 : 0;
+            document.getElementById('progressFill').style.width = percent + '%';
+        }
+
+        function formatTime(seconds) {
+            if (!seconds) return '0:00';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Event listeners
+        document.getElementById('playBtn').onclick = () => {
+            if (audioPlayer.paused) {
+                audioPlayer.play();
+                document.getElementById('playBtn').textContent = '⏸';
+            } else {
+                audioPlayer.pause();
+                document.getElementById('playBtn').textContent = '▶';
+            }
+        };
+
+        document.getElementById('progressBar').onclick = (e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const percent = (e.clientX - rect.left) / rect.width;
+            audioPlayer.currentTime = percent * audioPlayer.duration;
+        };
+
+        // Window resize
+        window.onresize = () => {
+            if (waveformCanvas) {
+                const container = document.getElementById('waveformContainer');
+                waveformCanvas.width = container.offsetWidth;
+                waveformCanvas.height = container.offsetHeight - 40;
+                drawWaveform();
+            }
+        };
+
+        // Initialize
+        loadData();
+    </script>
+</body>
+</html>

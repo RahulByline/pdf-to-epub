@@ -10,8 +10,10 @@ import org.apache.pdfbox.rendering.PDFRenderer;
 import org.apache.pdfbox.rendering.ImageType;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
+import com.example.demo.service.GeminiTextCorrectionService;
 
 import jakarta.annotation.PostConstruct;
 import java.awt.Graphics2D;
@@ -33,7 +35,7 @@ public class OcrService {
 
     @Value("${tesseract.datapath:}")
     private String tesseractDataPath;
-    
+
     @Value("${ocr.enabled:true}")
     private boolean ocrEnabled;
     
@@ -45,6 +47,12 @@ public class OcrService {
     
     // Semaphore to limit concurrent OCR operations (Tesseract is not fully thread-safe)
     private Semaphore ocrSemaphore;
+    
+    @Autowired(required = false)
+    private GeminiTextCorrectionService geminiTextCorrectionService;
+    
+    @Value("${gemini.api.enabled:true}")
+    private boolean geminiEnabled;
 
     /**
      * Gets or creates a thread-local Tesseract instance
@@ -187,35 +195,77 @@ public class OcrService {
             PDFRenderer renderer = new PDFRenderer(document);
             BufferedImage image = renderer.renderImageWithDPI(pageIndex, 300, ImageType.RGB);
 
-            // Perform OCR with comprehensive error handling for assertion failures
-            // Use semaphore to ensure only one OCR operation at a time (Tesseract is not fully thread-safe)
+            // Try Gemini Vision API first if enabled (better accuracy for images)
             String ocrText = null;
-            try {
-                // Acquire semaphore to limit concurrent OCR operations
-                if (ocrSemaphore != null) {
-                    ocrSemaphore.acquire();
-                }
+            if (geminiTextCorrectionService != null && geminiEnabled) {
                 try {
-                    ocrText = performOcrWithFallback(renderer, pageIndex, image, tesseract);
-                } finally {
-                    if (ocrSemaphore != null) {
-                        ocrSemaphore.release();
+                    logger.debug("🖼️ Attempting to extract text from page {} image using Gemini Vision API", pageIndex + 1);
+                    // Convert BufferedImage to byte array
+                    java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                    javax.imageio.ImageIO.write(image, "PNG", baos);
+                    byte[] imageBytes = baos.toByteArray();
+                    
+                    ocrText = geminiTextCorrectionService.extractTextFromImage(imageBytes, "png");
+                    if (ocrText != null && !ocrText.trim().isEmpty()) {
+                        logger.info("✅ Gemini Vision extracted {} characters from page {} image", 
+                                   ocrText.length(), pageIndex + 1);
+                    } else {
+                        logger.debug("⚠️ Gemini Vision returned no text, falling back to Tesseract");
                     }
+                } catch (Exception e) {
+                    logger.warn("⚠️ Error using Gemini Vision API, falling back to Tesseract: {}", e.getMessage());
                 }
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                logger.error("OCR interrupted for page {}", pageIndex);
-                ocrText = "";
+            }
+            
+            // Fallback to Tesseract OCR if Gemini Vision didn't work
+            if (ocrText == null || ocrText.trim().isEmpty()) {
+                // Perform OCR with comprehensive error handling for assertion failures
+                // Use semaphore to ensure only one OCR operation at a time (Tesseract is not fully thread-safe)
+                try {
+                    // Acquire semaphore to limit concurrent OCR operations
+                    if (ocrSemaphore != null) {
+                        ocrSemaphore.acquire();
+                    }
+                    try {
+                        ocrText = performOcrWithFallback(renderer, pageIndex, image, tesseract);
+                    } finally {
+                        if (ocrSemaphore != null) {
+                            ocrSemaphore.release();
+                        }
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    logger.error("OCR interrupted for page {}", pageIndex);
+                    ocrText = "";
+                }
             }
 
             // Process OCR results if we got any text
             if (ocrText != null && !ocrText.trim().isEmpty()) {
-                Double confidence = calculateOcrConfidence(ocrText);
-                pageStructure.setOcrConfidence(confidence);
+            // Use Gemini AI to correct OCR errors if available
+            String correctedOcrText = ocrText;
+            if (geminiTextCorrectionService != null && geminiEnabled) {
+                try {
+                    String context = "OCR result from scanned PDF page " + (pageIndex + 1);
+                    correctedOcrText = geminiTextCorrectionService.correctOcrText(ocrText, context);
+                    if (correctedOcrText == null || correctedOcrText.isEmpty()) {
+                        correctedOcrText = ocrText; // Fallback to original
+                    } else {
+                        logger.info("🤖 AI corrected OCR text for page {} ({} chars -> {} chars)", 
+                                   pageIndex + 1, ocrText.length(), correctedOcrText.length());
+                    }
+                } catch (Exception e) {
+                    logger.warn("Error correcting OCR text with Gemini, using original: {}", e.getMessage());
+                    correctedOcrText = ocrText;
+                }
+            }
+            
+            Double confidence = calculateOcrConfidence(correctedOcrText);
+            pageStructure.setOcrConfidence(confidence);
 
-                // Convert OCR text to text blocks
-                List<TextBlock> textBlocks = parseOcrText(ocrText, pageIndex);
-                pageStructure.setTextBlocks(textBlocks);
+            // Convert OCR text to text blocks
+            List<TextBlock> textBlocks = parseOcrText(correctedOcrText, pageIndex);
+            pageStructure.setTextBlocks(textBlocks);
             } else {
                 // No text extracted - set low confidence
                 logger.warn("No text extracted from page {} via OCR", pageIndex);

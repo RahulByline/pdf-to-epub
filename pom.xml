@@ -134,6 +134,18 @@
             <artifactId>jsoup</artifactId>
             <version>1.17.2</version>
         </dependency>
+        
+        <!-- Google Cloud Text-to-Speech (Optional - for production TTS use) -->
+        <!-- Uncomment and configure API key for actual TTS audio generation -->
+        <!--
+        <dependency>
+            <groupId>com.google.cloud</groupId>
+            <artifactId>google-cloud-texttospeech</artifactId>
+            <version>2.24.0</version>
+        </dependency>
+        -->
+        
+        <!-- Note: WebFlux is already included above for async processing -->
     </dependencies>
     
     <build>

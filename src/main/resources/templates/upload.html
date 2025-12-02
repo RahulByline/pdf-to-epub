@@ -473,19 +473,49 @@
         </div>
 
         <div class="content-card">
-            <div class="upload-area" id="uploadArea">
-                <div class="upload-icon">
-                    <span class="icon icon-file" style="font-size: 48px; display: block; margin-bottom: 10px;"></span>
+            <div style="margin-bottom: 30px;">
+                <h3 style="color: #8b7fa8; margin-bottom: 15px;">Upload PDF with Audio (Single File)</h3>
+                <div class="upload-area" id="singleUploadArea" style="margin-bottom: 15px;">
+                    <div class="upload-icon">
+                        <span class="icon icon-file" style="font-size: 48px; display: block; margin-bottom: 10px;"></span>
+                    </div>
+                    <h3>Drop PDF file here</h3>
+                    <p>or click to browse</p>
+                    <input type="file" id="singleFileInput" accept=".pdf" style="display: none;">
                 </div>
-                <h3>Drop PDF files here</h3>
-                <p>or click to browse</p>
-                <input type="file" id="fileInput" accept=".pdf" multiple>
+                <div style="margin-top: 15px;">
+                    <label style="display: block; margin-bottom: 8px; color: #5a5a5a; font-weight: 500;">
+                        Optional: Audio File (MP3, WAV, OGG, M4A)
+                    </label>
+                    <input type="file" id="audioFileInput" accept=".mp3,.wav,.ogg,.m4a" style="display: none;">
+                    <button type="button" class="btn btn-secondary" onclick="document.getElementById('audioFileInput').click()" style="width: 100%;">
+                        Select Audio File (Optional)
+                    </button>
+                    <div id="audioFileName" style="margin-top: 8px; color: #9a9a9a; font-size: 14px;"></div>
+                </div>
+                <div style="text-align: center; margin-top: 20px;">
+                    <button class="btn btn-primary" id="singleUploadBtn" disabled>Upload PDF with Audio</button>
+                </div>
             </div>
-            
-            <div class="file-list" id="fileList"></div>
-            
-            <div style="text-align: center; margin-top: 20px;">
-                <button class="btn btn-primary" id="uploadBtn" disabled>Upload Files</button>
+
+            <hr style="border: none; border-top: 2px solid #e8e8e8; margin: 30px 0;">
+
+            <div>
+                <h3 style="color: #8b7fa8; margin-bottom: 15px;">Bulk Upload PDFs (Multiple Files)</h3>
+                <div class="upload-area" id="uploadArea">
+                    <div class="upload-icon">
+                        <span class="icon icon-file" style="font-size: 48px; display: block; margin-bottom: 10px;"></span>
+                    </div>
+                    <h3>Drop PDF files here</h3>
+                    <p>or click to browse</p>
+                    <input type="file" id="fileInput" accept=".pdf" multiple>
+                </div>
+                
+                <div class="file-list" id="fileList"></div>
+                
+                <div style="text-align: center; margin-top: 20px;">
+                    <button class="btn btn-primary" id="uploadBtn" disabled>Upload Files</button>
+                </div>
             </div>
             
             <div class="progress-container" id="progressContainer">
@@ -499,6 +529,14 @@
     </main>
 
     <script>
+        // Single file upload with audio
+        const singleUploadArea = document.getElementById('singleUploadArea');
+        const singleFileInput = document.getElementById('singleFileInput');
+        const audioFileInput = document.getElementById('audioFileInput');
+        const audioFileName = document.getElementById('audioFileName');
+        const singleUploadBtn = document.getElementById('singleUploadBtn');
+        
+        // Bulk upload
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
         const fileList = document.getElementById('fileList');
@@ -508,7 +546,108 @@
         const message = document.getElementById('message');
         
         let selectedFiles = [];
+        let selectedPdfFile = null;
+        let selectedAudioFile = null;
 
+        // Single file upload handlers
+        singleUploadArea.addEventListener('click', () => singleFileInput.click());
+        singleFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                selectedPdfFile = e.target.files[0];
+                singleUploadBtn.disabled = false;
+            }
+        });
+        audioFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length > 0) {
+                selectedAudioFile = e.target.files[0];
+                audioFileName.textContent = 'Selected: ' + selectedAudioFile.name;
+                audioFileName.style.color = '#8b7fa8';
+            } else {
+                selectedAudioFile = null;
+                audioFileName.textContent = '';
+            }
+        });
+
+        // Single file upload
+        singleUploadBtn.addEventListener('click', async () => {
+            if (!selectedPdfFile) return;
+
+            singleUploadBtn.disabled = true;
+            progressContainer.style.display = 'block';
+            message.style.display = 'none';
+
+            const formData = new FormData();
+            formData.append('file', selectedPdfFile);
+            if (selectedAudioFile) {
+                formData.append('audioFile', selectedAudioFile);
+                console.log('Adding audio file:', selectedAudioFile.name, selectedAudioFile.size, 'bytes');
+            } else {
+                console.log('No audio file selected');
+            }
+            console.log('Uploading PDF:', selectedPdfFile.name, selectedPdfFile.size, 'bytes');
+
+            try {
+                const xhr = new XMLHttpRequest();
+                
+                xhr.upload.addEventListener('progress', (e) => {
+                    if (e.lengthComputable) {
+                        const percent = Math.round((e.loaded / e.total) * 100);
+                        progressFill.style.width = percent + '%';
+                        progressFill.textContent = percent + '%';
+                    }
+                });
+
+                xhr.addEventListener('load', () => {
+                    if (xhr.status === 201 || xhr.status === 200) {
+                        try {
+                            const response = JSON.parse(xhr.responseText);
+                            console.log('Upload response:', response);
+                            showMessage('success', `Successfully uploaded PDF${selectedAudioFile ? ' with audio' : ''}!`);
+                            selectedPdfFile = null;
+                            selectedAudioFile = null;
+                            singleFileInput.value = '';
+                            audioFileInput.value = '';
+                            audioFileName.textContent = '';
+                            singleUploadBtn.disabled = true;
+                            
+                            setTimeout(() => {
+                                progressContainer.style.display = 'none';
+                                progressFill.style.width = '0%';
+                                progressFill.textContent = '0%';
+                            }, 2000);
+                        } catch (e) {
+                            console.error('Error parsing response:', e);
+                            showMessage('error', 'Upload completed but response parsing failed.');
+                            singleUploadBtn.disabled = false;
+                        }
+                    } else {
+                        try {
+                            const errorResponse = JSON.parse(xhr.responseText);
+                            showMessage('error', 'Upload failed: ' + (errorResponse.error || 'Unknown error'));
+                        } catch (e) {
+                            showMessage('error', 'Upload failed. Status: ' + xhr.status);
+                        }
+                        singleUploadBtn.disabled = false;
+                    }
+                });
+
+                xhr.addEventListener('error', () => {
+                    showMessage('error', 'Upload failed. Please check your connection.');
+                    singleUploadBtn.disabled = false;
+                    progressContainer.style.display = 'none';
+                });
+
+                xhr.open('POST', '/api/pdfs/upload');
+                xhr.send(formData);
+
+            } catch (error) {
+                showMessage('error', 'Upload failed: ' + error.message);
+                singleUploadBtn.disabled = false;
+                progressContainer.style.display = 'none';
+            }
+        });
+
+        // Bulk upload handlers
         uploadArea.addEventListener('click', () => fileInput.click());
 
         uploadArea.addEventListener('dragover', (e) => {

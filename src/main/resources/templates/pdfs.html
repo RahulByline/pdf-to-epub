@@ -381,6 +381,20 @@
             background: #b8d6b9;
         }
 
+        .delete-btn {
+            background: #ffebee;
+            color: #c62828;
+        }
+
+        .delete-btn:hover {
+            background: #ffcdd2;
+        }
+
+        .icon-delete::before {
+            content: "🗑";
+            font-size: 14px;
+        }
+
         .empty-state {
             text-align: center;
             padding: 60px 20px;
@@ -622,6 +636,9 @@
                             <button class="action-btn analyze-btn" onclick="analyzePDF(${pdf.id})">
                                 <span class="icon icon-analyze"></span> Analyze
                             </button>
+                            <button class="action-btn delete-btn" onclick="deletePDF(${pdf.id}, '${pdf.originalFileName}')">
+                                <span class="icon icon-delete"></span> Delete
+                            </button>
                         </div>
                     `;
                     cardsGrid.appendChild(card);
@@ -694,6 +711,28 @@
                 alert(`Analysis Complete!\n\nPages: ${result.pageCount}\nHas Images: ${result.hasImages}\nHas Tables: ${result.hasTables}\nText Density: ${result.textDensity}\nLanguage: ${result.language || 'N/A'}`);
             } catch (error) {
                 alert('Analysis failed: ' + error.message);
+            }
+        }
+
+        async function deletePDF(id, fileName) {
+            if (!confirm(`Are you sure you want to delete "${fileName}"?\n\nThis will also delete:\n- The PDF file\n- Associated audio file (if any)\n- All conversion jobs for this PDF\n\nThis action cannot be undone.`)) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/pdfs/${id}`, {
+                    method: 'DELETE'
+                });
+                
+                if (response.status === 204 || response.ok) {
+                    alert('PDF deleted successfully!');
+                    loadPDFs(); // Refresh the list
+                } else {
+                    const errorData = await response.json().catch(() => ({ error: 'Unknown error' }));
+                    alert('Delete failed: ' + (errorData.error || 'Unknown error'));
+                }
+            } catch (error) {
+                alert('Delete failed: ' + error.message);
             }
         }
 
