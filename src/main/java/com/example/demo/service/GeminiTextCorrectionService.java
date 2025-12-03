@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -11,6 +12,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
 import jakarta.annotation.PostConstruct;
+import com.example.demo.service.ai.RateLimiterService;
 
 import java.util.ArrayList;
 import java.util.Base64;
@@ -36,6 +38,9 @@ public class GeminiTextCorrectionService {
     
     @Value("${gemini.api.url:https://generativelanguage.googleapis.com/v1beta/models}")
     private String apiUrl;
+    
+    @Autowired(required = false)
+    private RateLimiterService rateLimiter;
     
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
@@ -357,6 +362,12 @@ public class GeminiTextCorrectionService {
      * Calls Gemini API for text generation
      */
     private String callGeminiApi(String prompt) {
+        // Check rate limit before making request
+        if (rateLimiter != null && !rateLimiter.acquire("Gemini")) {
+            logger.debug("Rate limit exceeded for Gemini API call, skipping");
+            return null; // Will trigger fallback behavior
+        }
+        
         try {
             String url = String.format("%s/%s:generateContent?key=%s", apiUrl, model, apiKey);
             
@@ -370,14 +381,41 @@ public class GeminiTextCorrectionService {
                 .uri(url)
                 .bodyValue(requestBody)
                 .retrieve()
-                .onStatus(status -> status.isError(), clientResponse -> {
+                .onStatus(status -> status.isError() && status.value() != 429 && status.value() != 503, clientResponse -> {
                     logger.error("❌ Gemini API returned HTTP error: {}", clientResponse.statusCode());
                     return clientResponse.bodyToMono(String.class)
                         .doOnNext(errorBody -> logger.error("❌ Error response body: {}", errorBody))
                         .then(Mono.error(new RuntimeException("Gemini API error: " + clientResponse.statusCode())));
                 })
+                .onStatus(status -> status.value() == 503, clientResponse -> {
+                    logger.warn("⚠️ Gemini API service unavailable (503), falling back to alternative");
+                    return clientResponse.bodyToMono(String.class)
+                        .then(Mono.error(new RuntimeException("Gemini API service unavailable (503)")));
+                })
                 .bodyToMono(String.class)
-                .timeout(java.time.Duration.ofSeconds(30))
+                .timeout(java.time.Duration.ofSeconds(60))
+                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
+                    logger.warn("⚠️ Gemini API request timed out after 60 seconds");
+                    return Mono.just("");
+                })
+                .onErrorResume(org.springframework.web.reactive.function.client.WebClientResponseException.class, e -> {
+                    if (e instanceof org.springframework.web.reactive.function.client.WebClientResponseException.TooManyRequests ||
+                        (e.getStatusCode() != null && e.getStatusCode().value() == 429)) {
+                        logger.warn("⚠️ Gemini API rate limit exceeded (429), falling back to alternative");
+                        return Mono.just(""); // Return empty to trigger fallback
+                    }
+                    if (e.getStatusCode() != null && e.getStatusCode().value() == 503) {
+                        logger.warn("⚠️ Gemini API service unavailable (503), falling back to alternative");
+                        return Mono.just(""); // Return empty to trigger fallback
+                    }
+                    // Handle 503 service unavailable
+                    if (e.getMessage() != null && e.getMessage().contains("503")) {
+                        logger.warn("⚠️ Gemini API service unavailable (503), falling back to alternative");
+                        return Mono.just(""); // Return empty to trigger fallback
+                    }
+                    // Re-throw other errors
+                    return Mono.error(e);
+                })
                 .block();
             
             logger.debug("📥 Received response from Gemini API (length: {})", 
@@ -401,6 +439,12 @@ public class GeminiTextCorrectionService {
      * Calls Gemini Vision API for image text extraction
      */
     private String callGeminiVisionApi(String prompt, String base64Image, String mimeType) {
+        // Check rate limit before making request
+        if (rateLimiter != null && !rateLimiter.acquire("Gemini")) {
+            logger.debug("Rate limit exceeded for Gemini Vision API call, skipping");
+            return null; // Will trigger fallback to Tesseract
+        }
+        
         try {
             String url = String.format("%s/%s:generateContent?key=%s", apiUrl, model, apiKey);
             
@@ -411,8 +455,41 @@ public class GeminiTextCorrectionService {
                 .uri(url)
                 .bodyValue(requestBody)
                 .retrieve()
+                .onStatus(status -> status.isError() && status.value() != 429 && status.value() != 503, clientResponse -> {
+                    logger.error("❌ Gemini Vision API returned HTTP error: {}", clientResponse.statusCode());
+                    return clientResponse.bodyToMono(String.class)
+                        .doOnNext(errorBody -> logger.error("❌ Error response body: {}", errorBody))
+                        .then(Mono.error(new RuntimeException("Gemini Vision API error: " + clientResponse.statusCode())));
+                })
+                .onStatus(status -> status.value() == 503, clientResponse -> {
+                    logger.warn("⚠️ Gemini Vision API service unavailable (503), falling back to Tesseract");
+                    return clientResponse.bodyToMono(String.class)
+                        .then(Mono.error(new RuntimeException("Gemini Vision API service unavailable (503)")));
+                })
                 .bodyToMono(String.class)
                 .timeout(java.time.Duration.ofSeconds(60))
+                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
+                    logger.warn("⚠️ Gemini Vision API request timed out after 60 seconds");
+                    return Mono.just("");
+                })
+                .onErrorResume(org.springframework.web.reactive.function.client.WebClientResponseException.class, e -> {
+                    if (e instanceof org.springframework.web.reactive.function.client.WebClientResponseException.TooManyRequests ||
+                        (e.getStatusCode() != null && e.getStatusCode().value() == 429)) {
+                        logger.warn("⚠️ Gemini Vision API rate limit exceeded (429), falling back to Tesseract");
+                        return Mono.just(""); // Return empty to trigger fallback
+                    }
+                    if (e.getStatusCode() != null && e.getStatusCode().value() == 503) {
+                        logger.warn("⚠️ Gemini Vision API service unavailable (503), falling back to Tesseract");
+                        return Mono.just(""); // Return empty to trigger fallback
+                    }
+                    // Handle 503 service unavailable
+                    if (e.getMessage() != null && e.getMessage().contains("503")) {
+                        logger.warn("⚠️ Gemini Vision API service unavailable (503), falling back to Tesseract");
+                        return Mono.just(""); // Return empty to trigger fallback
+                    }
+                    // Re-throw other errors
+                    return Mono.error(e);
+                })
                 .block();
             
             return parseGeminiResponse(response);

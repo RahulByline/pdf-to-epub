@@ -12,6 +12,7 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
 import com.example.demo.service.ai.RateLimiterService;
 
 /**
@@ -143,7 +144,11 @@ public class FreeTierCleanupAndTaggingService {
                 .bodyValue(requestBody)
                 .retrieve()
                 .bodyToMono(String.class)
-                .timeout(java.time.Duration.ofSeconds(30))
+                .timeout(java.time.Duration.ofSeconds(60))
+                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
+                    logger.warn("⚠️ Gemini API request timed out after 60 seconds");
+                    return Mono.just("");
+                })
                 .block();
             
             return parseGeminiResponse(response);

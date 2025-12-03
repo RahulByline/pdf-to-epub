@@ -579,12 +579,20 @@ public class EpubGenerationService {
         html.append("    <div class=\"text-content\" role=\"article\" aria-label=\"Page ").append(pageNumber).append(" content\">\n");
         if (page.getTextBlocks() != null && !page.getTextBlocks().isEmpty()) {
             // Sort by reading order to ensure correct TTS flow
+            // CRITICAL: This order must match SMIL generation order
             List<TextBlock> sortedBlocks = new ArrayList<>(page.getTextBlocks());
             sortedBlocks.sort((a, b) -> {
                 Integer orderA = a.getReadingOrder();
                 Integer orderB = b.getReadingOrder();
-                if (orderA == null) orderA = Integer.MAX_VALUE;
-                if (orderB == null) orderB = Integer.MAX_VALUE;
+                // If reading order is null, use position in original list as fallback
+                if (orderA == null) {
+                    int indexA = page.getTextBlocks().indexOf(a);
+                    orderA = indexA >= 0 ? indexA : Integer.MAX_VALUE;
+                }
+                if (orderB == null) {
+                    int indexB = page.getTextBlocks().indexOf(b);
+                    orderB = indexB >= 0 ? indexB : Integer.MAX_VALUE;
+                }
                 return orderA.compareTo(orderB);
             });
             
@@ -704,9 +712,29 @@ public class EpubGenerationService {
             "  display: none;\n" +
             "}\n\n" +
             "/* EPUB 3 Media Overlay - Highlight active text during read-aloud */\n" +
-            ".-epub-media-overlay-active {\n" +
-            "  background: yellow !important;\n" +
-            "  color: black !important;\n" +
+            "/* This class is applied by the EPUB reader when text is being read */\n" +
+            "/* Both formats are supported for compatibility */\n" +
+            ".-epub-media-overlay-active,\n" +
+            ".epub-media-overlay-active,\n" +
+            "*.-epub-media-overlay-active,\n" +
+            "*[class*=\"-epub-media-overlay-active\"] {\n" +
+            "  background-color: rgba(255, 255, 0, 0.6) !important;\n" +
+            "  color: #000000 !important;\n" +
+            "  outline: 3px solid #FFD700 !important;\n" +
+            "  outline-offset: 1px !important;\n" +
+            "  border-radius: 2px !important;\n" +
+            "  box-shadow: 0 0 5px rgba(255, 215, 0, 0.5) !important;\n" +
+            "}\n" +
+            "/* Ensure text elements can be highlighted and are visible */\n" +
+            "p, h1, h2, h3, h4, h5, h6, li, span, div[role=\"text\"], div[role=\"article\"] {\n" +
+            "  position: relative !important;\n" +
+            "  display: block !important;\n" +
+            "  visibility: visible !important;\n" +
+            "}\n" +
+            "/* Make sure text content is not hidden */\n" +
+            ".text-content {\n" +
+            "  visibility: visible !important;\n" +
+            "  display: block !important;\n" +
             "}\n";
         
         // Save CSS to css/ folder (oebpsDir is already the cssDir)
@@ -732,10 +760,20 @@ public class EpubGenerationService {
             return "";
         }
         
-        // Ensure block has a valid ID
+        // Ensure block has a valid ID - use consistent format for SMIL sync
         String blockId = block.getId();
         if (blockId == null || blockId.isEmpty()) {
-            blockId = "block_" + System.currentTimeMillis() + "_" + (int)(Math.random() * 1000);
+            // Generate consistent ID based on block type and reading order
+            // Format: {type}_{page}_{order} or {type}_{page}_{index}
+            String blockType = block.getType() != null ? block.getType().name().toLowerCase() : "block";
+            Integer readingOrder = block.getReadingOrder();
+            if (readingOrder != null) {
+                blockId = blockType + "_" + readingOrder;
+            } else {
+                // Fallback: use hash of text content for consistency
+                String textHash = String.valueOf(block.getText() != null ? block.getText().hashCode() : System.currentTimeMillis());
+                blockId = blockType + "_" + Math.abs(textHash.hashCode());
+            }
         }
         
         // Add coordinates as data attributes if available (for audio sync overlay)
@@ -779,7 +817,9 @@ public class EpubGenerationService {
                 html.append("<ul id=\"").append(escapeHtml(blockId)).append("\"");
                 html.append(coordinateAttrs);
                 html.append(">");
-                html.append("<li>").append(escapeHtml(cleanedText)).append("</li>");
+                // List items need their own IDs for SMIL synchronization
+                String liId = blockId + "_li";
+                html.append("<li id=\"").append(escapeHtml(liId)).append("\">").append(escapeHtml(cleanedText)).append("</li>");
                 html.append("</ul>\n");
                 break;
                 
@@ -787,7 +827,9 @@ public class EpubGenerationService {
                 html.append("<ol id=\"").append(escapeHtml(blockId)).append("\"");
                 html.append(coordinateAttrs);
                 html.append(">");
-                html.append("<li>").append(escapeHtml(cleanedText)).append("</li>");
+                // List items need their own IDs for SMIL synchronization
+                String oliId = blockId + "_li";
+                html.append("<li id=\"").append(escapeHtml(oliId)).append("\">").append(escapeHtml(cleanedText)).append("</li>");
                 html.append("</ol>\n");
                 break;
                 
@@ -1118,9 +1160,33 @@ public class EpubGenerationService {
         
         if (!blockLevelSyncs.isEmpty()) {
             // Use block-level syncs - create one <par> per sync
+            // CRITICAL: Sort by reading order to match XHTML order
+            blockLevelSyncs.sort((a, b) -> {
+                if (finalPage != null && finalPage.getTextBlocks() != null) {
+                    int orderA = getBlockReadingOrder(finalPage, a.getBlockId());
+                    int orderB = getBlockReadingOrder(finalPage, b.getBlockId());
+                    if (orderA != orderB) return Integer.compare(orderA, orderB);
+                }
+                return Double.compare(a.getStartTime(), b.getStartTime());
+            });
+            
             int parIndex = 0;
             for (AudioSync sync : blockLevelSyncs) {
                 String blockId = sync.getBlockId();
+                
+                // For list items, ensure ID matches XHTML structure (with _li suffix)
+                if (finalPage != null && finalPage.getTextBlocks() != null) {
+                    for (TextBlock block : finalPage.getTextBlocks()) {
+                        if (blockId.equals(block.getId()) && 
+                            (block.getType() == TextBlock.BlockType.LIST_ITEM ||
+                             block.getType() == TextBlock.BlockType.LIST_UNORDERED ||
+                             block.getType() == TextBlock.BlockType.LIST_ORDERED)) {
+                            blockId = blockId + "_li";
+                            break;
+                        }
+                    }
+                }
+                
                 smil.append("      <par id=\"par-").append(pageNumber).append("-").append(parIndex++).append("\">\n");
                 smil.append("        <text src=\"page_").append(pageNumber).append(".xhtml#").append(escapeXml(blockId)).append("\"/>\n");
                 smil.append("        <audio src=\"").append(escapeXml(audioFileName))
@@ -1132,15 +1198,40 @@ public class EpubGenerationService {
             // Use page-level syncs - distribute proportionally
             // Use the first page-level sync (or combine if multiple)
             AudioSync sync = pageLevelSyncs.get(0);
-            List<TextBlock> blocks = page.getTextBlocks();
+            
+            // CRITICAL: Sort blocks by reading order to match XHTML order
+            List<TextBlock> blocks = new ArrayList<>(page.getTextBlocks());
+            blocks.sort((a, b) -> {
+                Integer orderA = a.getReadingOrder();
+                Integer orderB = b.getReadingOrder();
+                if (orderA == null) orderA = Integer.MAX_VALUE;
+                if (orderB == null) orderB = Integer.MAX_VALUE;
+                return orderA.compareTo(orderB);
+            });
+            
             double totalDuration = sync.getEndTime() - sync.getStartTime();
             double timePerBlock = totalDuration / blocks.size();
             
             int blockIndex = 0;
             for (TextBlock block : blocks) {
+                // Generate ID using same logic as convertBlockToHTML
                 String blockId = block.getId();
                 if (blockId == null || blockId.isEmpty()) {
-                    blockId = "s" + (blockIndex + 1);
+                    String blockType = block.getType() != null ? block.getType().name().toLowerCase() : "block";
+                    Integer readingOrder = block.getReadingOrder();
+                    if (readingOrder != null) {
+                        blockId = blockType + "_" + readingOrder;
+                    } else {
+                        String textHash = String.valueOf(block.getText() != null ? block.getText().hashCode() : blockIndex);
+                        blockId = blockType + "_" + Math.abs(textHash.hashCode());
+                    }
+                }
+                
+                // For list items, append "_li" to match XHTML structure
+                if (block.getType() == TextBlock.BlockType.LIST_ITEM || 
+                    block.getType() == TextBlock.BlockType.LIST_UNORDERED ||
+                    block.getType() == TextBlock.BlockType.LIST_ORDERED) {
+                    blockId = blockId + "_li";
                 }
                 
                 double blockStartTime = sync.getStartTime() + (blockIndex * timePerBlock);
@@ -1258,8 +1349,11 @@ public class EpubGenerationService {
             }
             String durationStr = formatSmilTime(totalDuration);
             
+            // EPUB 3 Media Overlay metadata - specifies CSS class for highlighting
+            // The class name must match what's in the CSS file
             newMetadata.append("    <meta property=\"media:active-class\">-epub-media-overlay-active</meta>\n");
             newMetadata.append("    <meta property=\"media:duration\">").append(durationStr).append("</meta>\n");
+            newMetadata.append("    <meta property=\"media:playback-active-class\">-epub-media-overlay-playing</meta>\n");
             newMetadata.append(opfContent.substring(metadataEndIndex));
             opfContent = newMetadata.toString();
         }
@@ -1348,25 +1442,73 @@ public class EpubGenerationService {
             if (Files.exists(xhtmlPath)) {
                 String xhtmlContent = new String(Files.readAllBytes(xhtmlPath), StandardCharsets.UTF_8);
                 
-                // Add ID to body or main container for SMIL synchronization
+                // Parse XHTML to ensure all elements have IDs for SMIL synchronization
+                try {
+                    org.jsoup.nodes.Document doc = org.jsoup.Jsoup.parse(xhtmlContent, "UTF-8");
+                    doc.outputSettings().syntax(org.jsoup.nodes.Document.OutputSettings.Syntax.xml);
+                    doc.outputSettings().escapeMode(org.jsoup.nodes.Entities.EscapeMode.xhtml);
+                    
+                    // Ensure body has ID
+                    org.jsoup.nodes.Element body = doc.body();
+                    if (body != null && body.id().isEmpty()) {
+                        body.attr("id", "page" + pageNum);
+                    }
+                    
+                    // Ensure all text elements (p, h1-h6, li) have IDs for SMIL synchronization
+                    // This is critical for text highlighting during audio playback
+                    // IMPORTANT: Only add IDs if missing - don't overwrite existing IDs that match SMIL
+                    org.jsoup.select.Elements textElements = doc.select("p, h1, h2, h3, h4, h5, h6, li, span[role=text], div[role=text]");
+                    int idCounter = 1;
+                    for (org.jsoup.nodes.Element elem : textElements) {
+                        if (elem.id().isEmpty()) {
+                            // Generate ID based on element type and position
+                            // Try to match the format used in convertBlockToHTML
+                            String elementType = elem.tagName();
+                            
+                            // Check if parent has reading order info
+                            String parentId = elem.parent() != null ? elem.parent().id() : "";
+                            Integer readingOrder = null;
+                            if (parentId.contains("_")) {
+                                try {
+                                    String[] parts = parentId.split("_");
+                                    if (parts.length > 1) {
+                                        readingOrder = Integer.parseInt(parts[parts.length - 1]);
+                                    }
+                                } catch (Exception e) {
+                                    // Ignore
+                                }
+                            }
+                            
+                            String newId;
+                            if (readingOrder != null) {
+                                newId = elementType + "_" + readingOrder;
+                            } else {
+                                newId = elementType + "_" + pageNum + "_" + idCounter++;
+                            }
+                            elem.attr("id", newId);
+                            logger.debug("Added ID {} to {} element in page {}", newId, elementType, pageNum);
+                        } else {
+                            logger.debug("Element already has ID: {} in page {}", elem.id(), pageNum);
+                        }
+                    }
+                    
+                    xhtmlContent = doc.html();
+                } catch (Exception e) {
+                    logger.warn("Failed to parse XHTML for ID updates, using regex fallback: {}", e.getMessage());
+                    
+                    // Fallback: Add ID to body if missing
                 if (xhtmlContent.contains("<body") && !xhtmlContent.contains("id=\"page" + pageNum + "\"")) {
-                    // Check if body already has attributes
                     if (xhtmlContent.contains("<body ")) {
-                        // Body has attributes, add id before closing >
                         xhtmlContent = xhtmlContent.replaceFirst("<body([^>]*)>", 
                             "<body$1 id=\"page" + pageNum + "\">");
                     } else {
-                        // Body tag without attributes
                         xhtmlContent = xhtmlContent.replace("<body>", "<body id=\"page" + pageNum + "\">");
                     }
-                } else if (xhtmlContent.contains("<div class=\"page-container\">") && 
-                          !xhtmlContent.contains("id=\"page" + pageNum + "\"")) {
-                    xhtmlContent = xhtmlContent.replace("<div class=\"page-container\">", 
-                        "<div class=\"page-container\" id=\"page" + pageNum + "\">");
+                    }
                 }
                 
                 Files.write(xhtmlPath, xhtmlContent.getBytes(StandardCharsets.UTF_8));
-                logger.debug("Updated {} with SMIL synchronization ID", xhtmlFileName);
+                logger.debug("Updated {} with SMIL synchronization IDs", xhtmlFileName);
             }
         }
     }
