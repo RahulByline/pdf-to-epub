@@ -35,7 +35,7 @@ public class XhtmlExtractionService {
     private TextSegmentationService textSegmentationService;
     
     @Autowired(required = false)
-    private GeminiTextCorrectionService geminiTextCorrectionService;
+    private GeminiService geminiService;
 
     /**
      * Extracts XHTML pages from an EPUB file
@@ -287,20 +287,37 @@ public class XhtmlExtractionService {
                 String dataY = elem.attr("data-y");
                 String dataTop = elem.attr("data-top");
                 String dataLeft = elem.attr("data-left");
+                String dataWidth = elem.attr("data-width");
+                String dataHeight = elem.attr("data-height");
                 
                 // Extract coordinates from style or data attributes
-                Coordinates coords = extractCoordinates(elem, style, dataX, dataY, dataTop, dataLeft);
+                Coordinates coords = extractCoordinates(elem, style, dataX, dataY, dataTop, dataLeft, dataWidth, dataHeight);
                 
                 // Use Gemini AI to correct OCR artifacts if available
                 String correctedText = trimmedText;
-                if (geminiTextCorrectionService != null && isLikelyOcrError(trimmedText)) {
+                if (geminiService != null && geminiService.isEnabled() && isLikelyOcrError(trimmedText)) {
                     try {
-                        String context = "PDF page " + pageNumber;
-                        correctedText = geminiTextCorrectionService.correctOcrText(trimmedText, context);
+                        String prompt = String.format("""
+                            You are a text-cleaning engine for EPUB conversion.
+                            
+                            Clean and normalize the following text extracted from PDF page %d:
+                            - Remove OCR artifacts (e.g., "tin4" -> "Time", "ristopher" -> "Christopher")
+                            - Fix missing or incorrect first letters
+                            - Normalize spacing and punctuation
+                            
+                            Return ONLY the cleaned text, nothing else.
+                            
+                            TEXT:
+                            %s
+                            """, pageNumber, trimmedText);
+                        
+                        correctedText = geminiService.generate(prompt);
                         if (correctedText == null || correctedText.isEmpty()) {
                             correctedText = trimmedText; // Fallback to original
+                        } else {
+                            correctedText = correctedText.trim();
+                            logger.debug("Gemini corrected: '{}' -> '{}'", trimmedText, correctedText);
                         }
-                        logger.debug("Gemini corrected: '{}' -> '{}'", trimmedText, correctedText);
                     } catch (Exception e) {
                         logger.warn("Error correcting text with Gemini, using original: {}", e.getMessage());
                         correctedText = trimmedText;
@@ -427,7 +444,8 @@ public class XhtmlExtractionService {
      */
     private Coordinates extractCoordinates(Element elem, String style, 
                                           String dataX, String dataY, 
-                                          String dataTop, String dataLeft) {
+                                          String dataTop, String dataLeft,
+                                          String dataWidth, String dataHeight) {
         Coordinates coords = new Coordinates();
         
         // Try data attributes first
@@ -444,6 +462,23 @@ public class XhtmlExtractionService {
             try {
                 coords.top = Double.parseDouble(dataTop);
                 coords.left = Double.parseDouble(dataLeft);
+            } catch (NumberFormatException e) {
+                // Ignore
+            }
+        }
+        
+        // Extract width and height from data attributes
+        if (!dataWidth.isEmpty()) {
+            try {
+                coords.width = Double.parseDouble(dataWidth);
+            } catch (NumberFormatException e) {
+                // Ignore
+            }
+        }
+        
+        if (!dataHeight.isEmpty()) {
+            try {
+                coords.height = Double.parseDouble(dataHeight);
             } catch (NumberFormatException e) {
                 // Ignore
             }
@@ -759,7 +794,7 @@ public class XhtmlExtractionService {
                     
                     // Extract coordinates
                     String style = elem.attr("style");
-                    Coordinates coords = extractCoordinates(elem, style, "", "", "", "");
+                    Coordinates coords = extractCoordinates(elem, style, "", "", "", "", "", "");
                     block.coordinates = coords;
                     
                     // Segment text

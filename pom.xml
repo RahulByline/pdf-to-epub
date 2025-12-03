@@ -89,6 +89,13 @@
             <version>0.6</version>
         </dependency>
         
+        <!-- Apache OpenNLP for sentence segmentation (local, no AI) -->
+        <dependency>
+            <groupId>org.apache.opennlp</groupId>
+            <artifactId>opennlp-tools</artifactId>
+            <version>2.3.0</version>
+        </dependency>
+        
         <!-- Commons IO for file operations -->
         <dependency>
             <groupId>commons-io</groupId>
@@ -144,6 +151,10 @@
             <version>2.24.0</version>
         </dependency>
         -->
+        
+        <!-- Google Generative AI SDK for Gemini (REST API based) -->
+        <!-- Note: Using REST API approach as official Java SDK may not be available in Maven Central -->
+        <!-- The GeminiService uses WebClient for API calls -->
         
         <!-- Note: WebFlux is already included above for async processing -->
     </dependencies>

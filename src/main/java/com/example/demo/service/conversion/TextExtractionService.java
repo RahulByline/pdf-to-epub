@@ -12,7 +12,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import com.example.demo.service.GeminiTextCorrectionService;
+import com.example.demo.service.GeminiService;
 
 import java.io.File;
 import java.io.IOException;
@@ -25,7 +25,7 @@ public class TextExtractionService {
     private static final Logger logger = LoggerFactory.getLogger(TextExtractionService.class);
     
     @Autowired(required = false)
-    private GeminiTextCorrectionService geminiTextCorrectionService;
+    private GeminiService geminiService;
 
     public DocumentStructure extractTextAndStructure(File pdfFile, PdfDocument pdfDocument) throws IOException {
         logger.info("Starting text extraction for PDF: {}", pdfFile.getName());
@@ -138,16 +138,33 @@ public class TextExtractionService {
                 // Use Gemini AI to correct text extracted from PDF
                 // Apply to all text blocks for better quality, not just obvious errors
                 String correctedText = blockText;
-                if (geminiTextCorrectionService != null) {
+                if (geminiService != null && geminiService.isEnabled()) {
                     try {
-                        String context = "PDF page " + (pageIndex + 1) + " text block extraction";
-                        correctedText = geminiTextCorrectionService.correctOcrText(blockText, context);
+                        String prompt = String.format("""
+                            You are a text-cleaning engine for EPUB conversion.
+                            
+                            Clean and normalize the following text extracted from PDF page %d:
+                            - Remove OCR artifacts (e.g., "tin4" -> "Time", "ristopher" -> "Christopher")
+                            - Fix missing or incorrect first letters
+                            - Normalize spacing and punctuation
+                            - Preserve proper names, titles, and technical terms
+                            
+                            Return ONLY the cleaned text, nothing else.
+                            
+                            TEXT:
+                            %s
+                            """, pageIndex + 1, blockText);
+                        
+                        correctedText = geminiService.generate(prompt);
                         if (correctedText == null || correctedText.isEmpty()) {
                             correctedText = blockText; // Fallback to original
-                        } else if (!correctedText.equals(blockText)) {
-                            logger.info("🤖 AI corrected text block: '{}' -> '{}'", 
-                                       blockText.length() > 50 ? blockText.substring(0, 50) + "..." : blockText,
-                                       correctedText.length() > 50 ? correctedText.substring(0, 50) + "..." : correctedText);
+                        } else {
+                            correctedText = correctedText.trim();
+                            if (!correctedText.equals(blockText)) {
+                                logger.info("🤖 AI corrected text block: '{}' -> '{}'", 
+                                           blockText.length() > 50 ? blockText.substring(0, 50) + "..." : blockText,
+                                           correctedText.length() > 50 ? correctedText.substring(0, 50) + "..." : correctedText);
+                            }
                         }
                     } catch (Exception e) {
                         logger.warn("Error correcting text with Gemini, using original: {}", e.getMessage());
@@ -158,8 +175,21 @@ public class TextExtractionService {
                 TextBlock block = new TextBlock();
                 block.setId("block_" + pageIndex + "_" + blockOrder++);
                 block.setText(correctedText);
-                block.setType(determineBlockType(blockText));
-                block.setLevel(determineHeadingLevel(blockText));
+                
+                // Use Gemini AI to determine structure tag if available, fallback to regex
+                TextBlock.BlockType blockType = determineBlockTypeWithGemini(correctedText, pageIndex + 1);
+                if (blockType == null) {
+                    blockType = determineBlockType(correctedText);
+                }
+                block.setType(blockType);
+                
+                // Determine heading level
+                Integer headingLevel = determineHeadingLevel(correctedText);
+                if (blockType == TextBlock.BlockType.HEADING && headingLevel == null) {
+                    // Use Gemini to determine heading level if it's a heading
+                    headingLevel = determineHeadingLevelWithGemini(correctedText);
+                }
+                block.setLevel(headingLevel);
                 block.setReadingOrder(blockOrder);
                 block.setConfidence(1.0);
                 
@@ -243,16 +273,32 @@ public class TextExtractionService {
             
             // Use Gemini AI to correct text in fallback extraction as well
             String correctedText = trimmed;
-            if (geminiTextCorrectionService != null) {
+            if (geminiService != null && geminiService.isEnabled()) {
                 try {
-                    String context = "PDF page " + (pageIndex + 1) + " plain text extraction (fallback)";
-                    correctedText = geminiTextCorrectionService.correctOcrText(trimmed, context);
+                    String prompt = String.format("""
+                        You are a text-cleaning engine for EPUB conversion.
+                        
+                        Clean and normalize the following text extracted from PDF page %d (fallback extraction):
+                        - Remove OCR artifacts
+                        - Fix missing or incorrect characters
+                        - Normalize spacing and punctuation
+                        
+                        Return ONLY the cleaned text, nothing else.
+                        
+                        TEXT:
+                        %s
+                        """, pageIndex + 1, trimmed);
+                    
+                    correctedText = geminiService.generate(prompt);
                     if (correctedText == null || correctedText.isEmpty()) {
                         correctedText = trimmed; // Fallback to original
-                    } else if (!correctedText.equals(trimmed)) {
-                        logger.info("🤖 AI corrected fallback text: '{}' -> '{}'", 
-                                   trimmed.length() > 50 ? trimmed.substring(0, 50) + "..." : trimmed,
-                                   correctedText.length() > 50 ? correctedText.substring(0, 50) + "..." : correctedText);
+                    } else {
+                        correctedText = correctedText.trim();
+                        if (!correctedText.equals(trimmed)) {
+                            logger.info("🤖 AI corrected fallback text: '{}' -> '{}'", 
+                                       trimmed.length() > 50 ? trimmed.substring(0, 50) + "..." : trimmed,
+                                       correctedText.length() > 50 ? correctedText.substring(0, 50) + "..." : correctedText);
+                        }
                     }
                 } catch (Exception e) {
                     logger.warn("Error correcting fallback text with Gemini, using original: {}", e.getMessage());
@@ -263,8 +309,21 @@ public class TextExtractionService {
             TextBlock block = new TextBlock();
             block.setId("block_" + pageIndex + "_" + blockOrder++);
             block.setText(correctedText);
-            block.setType(determineBlockType(trimmed));
-            block.setLevel(determineHeadingLevel(trimmed));
+            
+            // Use Gemini AI to determine structure tag if available, fallback to regex
+            TextBlock.BlockType blockType = determineBlockTypeWithGemini(correctedText, pageIndex + 1);
+            if (blockType == null) {
+                blockType = determineBlockType(trimmed);
+            }
+            block.setType(blockType);
+            
+            // Determine heading level
+            Integer headingLevel = determineHeadingLevel(trimmed);
+            if (blockType == TextBlock.BlockType.HEADING && headingLevel == null) {
+                // Use Gemini to determine heading level if it's a heading
+                headingLevel = determineHeadingLevelWithGemini(correctedText);
+            }
+            block.setLevel(headingLevel);
             block.setReadingOrder(blockOrder);
             block.setConfidence(1.0);
             
@@ -481,6 +540,123 @@ public class TextExtractionService {
         double maxY = Double.MIN_VALUE;
     }
 
+    /**
+     * Uses Gemini AI to determine the HTML structure tag for a text block
+     * Returns null if Gemini is unavailable or fails
+     */
+    private TextBlock.BlockType determineBlockTypeWithGemini(String text, int pageNumber) {
+        if (geminiService == null || !geminiService.isEnabled() || text == null || text.trim().isEmpty()) {
+            return null;
+        }
+
+        try {
+            String prompt = String.format("""
+                You are an HTML structure analyzer for EPUB conversion.
+                
+                Analyze the following text from PDF page %d and determine the most appropriate HTML tag.
+                Return ONLY the tag name (e.g., "p", "h1", "h2", "h3", "li", "table", "caption").
+                
+                Rules:
+                - Use "h1" for main titles/chapter titles
+                - Use "h2" for major section headings
+                - Use "h3" for subsection headings
+                - Use "p" for regular paragraphs
+                - Use "li" for list items
+                - Use "caption" for image captions
+                - Use "table" for table structures
+                - Use "glossary_term" for glossary entries (format: "Word: definition")
+                
+                Return ONLY the tag name in lowercase, nothing else.
+                
+                TEXT:
+                %s
+                """, pageNumber, text);
+
+            String tagName = geminiService.generate(prompt);
+            if (tagName != null) {
+                tagName = tagName.trim().toLowerCase();
+                
+                // Map tag names to BlockType enum
+                switch (tagName) {
+                    case "h1":
+                    case "h2":
+                    case "h3":
+                    case "h4":
+                    case "h5":
+                    case "h6":
+                        return TextBlock.BlockType.HEADING;
+                    case "li":
+                        return TextBlock.BlockType.LIST_ITEM;
+                    case "ul":
+                        return TextBlock.BlockType.LIST_UNORDERED;
+                    case "ol":
+                        return TextBlock.BlockType.LIST_ORDERED;
+                    case "caption":
+                        return TextBlock.BlockType.CAPTION;
+                    case "table":
+                        return TextBlock.BlockType.OTHER; // Table handling is separate
+                    case "glossary_term":
+                    case "glossary":
+                        return TextBlock.BlockType.GLOSSARY_TERM;
+                    case "p":
+                    default:
+                        return TextBlock.BlockType.PARAGRAPH;
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("Error using Gemini for structure tagging: {}", e.getMessage());
+        }
+
+        return null; // Fallback to regex-based detection
+    }
+
+    /**
+     * Uses Gemini AI to determine heading level (1-6)
+     * Returns null if Gemini is unavailable or fails
+     */
+    private Integer determineHeadingLevelWithGemini(String text) {
+        if (geminiService == null || !geminiService.isEnabled() || text == null || text.trim().isEmpty()) {
+            return null;
+        }
+
+        try {
+            String prompt = String.format("""
+                You are an HTML structure analyzer for EPUB conversion.
+                
+                The following text has been identified as a heading. Determine its heading level (1-6).
+                - Level 1 (h1): Main title, chapter title
+                - Level 2 (h2): Major section heading
+                - Level 3 (h3): Subsection heading
+                - Level 4-6 (h4-h6): Deeper subsections
+                
+                Return ONLY the number (1, 2, 3, 4, 5, or 6), nothing else.
+                
+                TEXT:
+                %s
+                """, text);
+
+            String levelStr = geminiService.generate(prompt);
+            if (levelStr != null) {
+                levelStr = levelStr.trim();
+                // Extract first digit if response contains other text
+                String digit = levelStr.replaceAll("[^1-6]", "");
+                if (!digit.isEmpty()) {
+                    int level = Integer.parseInt(digit.substring(0, 1));
+                    if (level >= 1 && level <= 6) {
+                        return level;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("Error using Gemini for heading level: {}", e.getMessage());
+        }
+
+        return null; // Fallback to regex-based detection
+    }
+
+    /**
+     * Fallback method: Determines block type using regex patterns
+     */
     private TextBlock.BlockType determineBlockType(String text) {
         String trimmed = text.trim();
         

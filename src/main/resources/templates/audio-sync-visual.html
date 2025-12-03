@@ -521,6 +521,8 @@
             <h4>Audio Waveform</h4>
             <div class="audio-controls">
                 <button class="play-btn" id="playBtn">▶</button>
+                <button class="btn btn-secondary" id="markStartBtn" onclick="markStartTime()" title="Mark Start Time (S)">Mark Start</button>
+                <button class="btn btn-secondary" id="markEndBtn" onclick="markEndTime()" title="Mark End Time (E)">Mark End</button>
                 <div class="time-display" id="timeDisplay">0:00 / 0:00</div>
                 <div class="progress-bar" id="progressBar">
                     <div class="progress-fill" id="progressFill"></div>
@@ -1032,6 +1034,66 @@
             
             logEdit('realign', { blockId: selectedBlockId });
         }
+
+        function markStartTime() {
+            if (!selectedBlockId) {
+                alert('Please select a text block first');
+                return;
+            }
+            
+            if (!audioPlayer) {
+                alert('Audio not loaded');
+                return;
+            }
+            
+            const currentTime = audioPlayer.currentTime;
+            updateSyncTime(selectedBlockId, 'start', currentTime);
+            
+            const page = pagesData[currentPageIndex];
+            renderPdfCanvas(page);
+            renderXhtmlPreview(page);
+            updateWaveformSegments();
+            
+            logEdit('mark_start', { blockId: selectedBlockId, time: currentTime });
+        }
+
+        function markEndTime() {
+            if (!selectedBlockId) {
+                alert('Please select a text block first');
+                return;
+            }
+            
+            if (!audioPlayer) {
+                alert('Audio not loaded');
+                return;
+            }
+            
+            const currentTime = audioPlayer.currentTime;
+            updateSyncTime(selectedBlockId, 'end', currentTime);
+            
+            const page = pagesData[currentPageIndex];
+            renderPdfCanvas(page);
+            renderXhtmlPreview(page);
+            updateWaveformSegments();
+            
+            logEdit('mark_end', { blockId: selectedBlockId, time: currentTime });
+        }
+
+        // Keyboard shortcuts
+        document.addEventListener('keydown', (e) => {
+            // Don't trigger if typing in an input field
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') {
+                return;
+            }
+            
+            if (e.key === 's' || e.key === 'S') {
+                e.preventDefault();
+                markStartTime();
+            } else if (e.key === 'e' || e.key === 'E') {
+                e.preventDefault();
+                markEndTime();
+            }
+        });
 
         function saveAllChanges() {
             // Save all syncs
