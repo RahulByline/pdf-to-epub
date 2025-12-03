@@ -738,43 +738,71 @@ public class EpubGenerationService {
             blockId = "block_" + System.currentTimeMillis() + "_" + (int)(Math.random() * 1000);
         }
         
+        // Add coordinates as data attributes if available (for audio sync overlay)
+        String coordinateAttrs = "";
+        if (block.getBoundingBox() != null) {
+            BoundingBox bbox = block.getBoundingBox();
+            // Convert PDF coordinates to viewport-relative percentages or pixels
+            // PDF coordinates are in points (1/72 inch), we'll store them as-is
+            // The frontend can scale them based on the actual rendered image size
+            coordinateAttrs = " data-x=\"" + (bbox.getX() != null ? bbox.getX() : "") + "\"";
+            coordinateAttrs += " data-y=\"" + (bbox.getY() != null ? bbox.getY() : "") + "\"";
+            coordinateAttrs += " data-width=\"" + (bbox.getWidth() != null ? bbox.getWidth() : "") + "\"";
+            coordinateAttrs += " data-height=\"" + (bbox.getHeight() != null ? bbox.getHeight() : "") + "\"";
+            // Also add as data-top and data-left for compatibility with XhtmlExtractionService
+            coordinateAttrs += " data-top=\"" + (bbox.getY() != null ? bbox.getY() : "") + "\"";
+            coordinateAttrs += " data-left=\"" + (bbox.getX() != null ? bbox.getX() : "") + "\"";
+        }
+        
         switch (block.getType()) {
             case HEADING:
                 int level = block.getLevel() != null ? block.getLevel() : 2;
                 // Ensure level is between 1-6
                 level = Math.max(1, Math.min(6, level));
-                html.append("<h").append(level).append(" id=\"").append(escapeHtml(blockId)).append("\">");
+                html.append("<h").append(level).append(" id=\"").append(escapeHtml(blockId)).append("\"");
+                html.append(coordinateAttrs);
+                html.append(">");
                 html.append(escapeHtml(cleanedText));
                 html.append("</h").append(level).append(">\n");
                 break;
                 
             case PARAGRAPH:
-                html.append("<p id=\"").append(escapeHtml(blockId)).append("\">");
+                html.append("<p id=\"").append(escapeHtml(blockId)).append("\"");
+                html.append(coordinateAttrs);
+                html.append(">");
                 html.append(escapeHtml(cleanedText));
                 html.append("</p>\n");
                 break;
                 
             case LIST_ITEM:
             case LIST_UNORDERED:
-                html.append("<ul id=\"").append(escapeHtml(blockId)).append("\">");
+                html.append("<ul id=\"").append(escapeHtml(blockId)).append("\"");
+                html.append(coordinateAttrs);
+                html.append(">");
                 html.append("<li>").append(escapeHtml(cleanedText)).append("</li>");
                 html.append("</ul>\n");
                 break;
                 
             case LIST_ORDERED:
-                html.append("<ol id=\"").append(escapeHtml(blockId)).append("\">");
+                html.append("<ol id=\"").append(escapeHtml(blockId)).append("\"");
+                html.append(coordinateAttrs);
+                html.append(">");
                 html.append("<li>").append(escapeHtml(cleanedText)).append("</li>");
                 html.append("</ol>\n");
                 break;
                 
             case CAPTION:
-                html.append("<p id=\"").append(escapeHtml(blockId)).append("\" class=\"caption\">");
+                html.append("<p id=\"").append(escapeHtml(blockId)).append("\" class=\"caption\"");
+                html.append(coordinateAttrs);
+                html.append(">");
                 html.append(escapeHtml(cleanedText));
                 html.append("</p>\n");
                 break;
                 
             default:
-                html.append("<p id=\"").append(escapeHtml(blockId)).append("\">");
+                html.append("<p id=\"").append(escapeHtml(blockId)).append("\"");
+                html.append(coordinateAttrs);
+                html.append(">");
                 html.append(escapeHtml(cleanedText));
                 html.append("</p>\n");
         }

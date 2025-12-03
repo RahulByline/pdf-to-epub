@@ -1,5 +1,10 @@
 package com.example.demo.service;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -13,6 +18,13 @@ import java.util.regex.Pattern;
 @Service
 public class TextSegmentationService {
 
+    private static final Logger logger = LoggerFactory.getLogger(TextSegmentationService.class);
+
+    @Autowired(required = false)
+    private GeminiService geminiService;
+
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
     // Sentence ending patterns
     private static final Pattern SENTENCE_END = Pattern.compile("[.!?]+\\s*");
     
@@ -22,8 +34,12 @@ public class TextSegmentationService {
     // Word pattern (alphanumeric and common punctuation)
     private static final Pattern WORD_PATTERN = Pattern.compile("\\b\\w+\\b");
 
+    @Autowired(required = false)
+    private com.example.demo.service.OpenNlpSentenceSegmentationService openNlpService;
+    
     /**
      * Segments text into words, sentences, and phrases
+     * Free Tier Friendly: Uses OpenNLP (local) instead of AI
      */
     public TextSegmentation segmentText(String text, String blockId) {
         if (text == null || text.trim().isEmpty()) {
@@ -32,8 +48,15 @@ public class TextSegmentationService {
 
         TextSegmentation segmentation = new TextSegmentation(blockId, text);
         
-        // Segment into sentences
-        List<String> sentences = segmentSentences(text);
+        // Use OpenNLP for sentence segmentation (local, no AI calls)
+        List<String> sentences;
+        if (openNlpService != null && openNlpService.isInitialized()) {
+            sentences = openNlpService.segmentSentences(text);
+        } else {
+            // Fallback to regex-based segmentation
+            sentences = segmentSentences(text);
+        }
+        
         segmentation.sentences = sentences;
         
         // Segment each sentence into phrases
@@ -50,6 +73,67 @@ public class TextSegmentationService {
         }
         
         return segmentation;
+    }
+
+    /**
+     * Uses Gemini AI to segment text into sentences with structured JSON output
+     */
+    private List<String> segmentSentencesWithGemini(String text) {
+        if (geminiService == null || !geminiService.isEnabled()) {
+            return null;
+        }
+
+        try {
+            String prompt = """
+                You are a text segmentation engine for EPUB audio synchronization.
+                
+                Split the following text into sentences and return a JSON array with this exact format:
+                {
+                  "sentences": [
+                    {"id": "s1", "text": "First sentence."},
+                    {"id": "s2", "text": "Second sentence."}
+                  ]
+                }
+                
+                Rules:
+                - Preserve all punctuation and capitalization
+                - Handle abbreviations correctly (e.g., "Dr.", "U.S.A.")
+                - Handle quotes and nested punctuation
+                - Return ONLY valid JSON, no other text
+                
+                TEXT:
+                """ + text;
+
+            String jsonResponse = geminiService.generate(prompt);
+            if (jsonResponse == null || jsonResponse.trim().isEmpty()) {
+                logger.debug("Gemini returned empty response for sentence segmentation");
+                return null;
+            }
+
+            // Parse JSON response
+            JsonNode root = objectMapper.readTree(jsonResponse);
+            JsonNode sentencesNode = root.path("sentences");
+            
+            if (!sentencesNode.isArray()) {
+                logger.warn("Gemini response does not contain sentences array");
+                return null;
+            }
+
+            List<String> sentences = new ArrayList<>();
+            for (JsonNode sentenceNode : sentencesNode) {
+                String sentenceText = sentenceNode.path("text").asText();
+                if (sentenceText != null && !sentenceText.trim().isEmpty()) {
+                    sentences.add(sentenceText.trim());
+                }
+            }
+
+            logger.debug("Gemini segmented text into {} sentences", sentences.size());
+            return sentences.isEmpty() ? null : sentences;
+
+        } catch (Exception e) {
+            logger.warn("Error using Gemini for sentence segmentation, falling back to regex: {}", e.getMessage());
+            return null;
+        }
     }
 
     /**

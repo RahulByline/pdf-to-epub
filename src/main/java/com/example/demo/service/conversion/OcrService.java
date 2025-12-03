@@ -14,6 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import com.example.demo.service.GeminiTextCorrectionService;
+import com.example.demo.service.ai.MultiProviderAiService;
 
 import jakarta.annotation.PostConstruct;
 import java.awt.Graphics2D;
@@ -39,6 +40,9 @@ public class OcrService {
     @Value("${ocr.enabled:true}")
     private boolean ocrEnabled;
     
+    @Value("${ocr.use-ai-providers:false}")
+    private boolean useAiProviders;
+    
     @Value("${ocr.max-image-dimension:2500}")
     private int maxImageDimension;
     
@@ -50,6 +54,9 @@ public class OcrService {
     
     @Autowired(required = false)
     private GeminiTextCorrectionService geminiTextCorrectionService;
+    
+    @Autowired(required = false)
+    private MultiProviderAiService multiProviderAiService;
     
     @Value("${gemini.api.enabled:true}")
     private boolean geminiEnabled;
@@ -195,12 +202,32 @@ public class OcrService {
             PDFRenderer renderer = new PDFRenderer(document);
             BufferedImage image = renderer.renderImageWithDPI(pageIndex, 300, ImageType.RGB);
 
-            // Try Gemini Vision API first if enabled (better accuracy for images)
+            // Try AI providers first (multi-provider with automatic fallback)
+            // Free Tier: Disabled by default - use local Tesseract only
             String ocrText = null;
-            if (geminiTextCorrectionService != null && geminiEnabled) {
+            if (useAiProviders && multiProviderAiService != null && multiProviderAiService.hasAvailableProvider()) {
                 try {
-                    logger.debug("🖼️ Attempting to extract text from page {} image using Gemini Vision API", pageIndex + 1);
+                    logger.debug("🖼️ Attempting to extract text from page {} image using AI providers", pageIndex + 1);
                     // Convert BufferedImage to byte array
+                    java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                    javax.imageio.ImageIO.write(image, "PNG", baos);
+                    byte[] imageBytes = baos.toByteArray();
+                    
+                    ocrText = multiProviderAiService.extractTextFromImage(imageBytes, "png");
+                    if (ocrText != null && !ocrText.trim().isEmpty()) {
+                        logger.info("✅ AI provider extracted {} characters from page {} image", 
+                                   ocrText.length(), pageIndex + 1);
+                    } else {
+                        logger.debug("⚠️ AI providers returned no text, falling back to Tesseract");
+                    }
+                } catch (Exception e) {
+                    logger.warn("⚠️ Error using AI providers, falling back to Tesseract: {}", e.getMessage());
+                }
+            }
+            // Fallback to legacy Gemini service if multi-provider not available
+            else if (geminiTextCorrectionService != null && geminiEnabled) {
+                try {
+                    logger.debug("🖼️ Attempting to extract text from page {} image using Gemini Vision API (legacy)", pageIndex + 1);
                     java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
                     javax.imageio.ImageIO.write(image, "PNG", baos);
                     byte[] imageBytes = baos.toByteArray();
