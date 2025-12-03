@@ -35,6 +35,9 @@ public class AudioSyncController {
     @Autowired
     private XhtmlExtractionService xhtmlExtractionService;
 
+    @Autowired
+    private com.example.demo.service.EpubUpdateService epubUpdateService;
+
     @GetMapping("/pdf/{pdfId}")
     public ResponseEntity<List<AudioSync>> getAudioSyncsByPdf(@PathVariable Long pdfId) {
         try {
@@ -152,6 +155,7 @@ public class AudioSyncController {
                 Map<String, Object> pageData = new java.util.HashMap<>();
                 pageData.put("pageNumber", page.pageNumber);
                 pageData.put("fileName", page.fileName);
+                pageData.put("isTwoPageSpread", page.isTwoPageSpread); // True if this is a two-page spread
                 
                 List<Map<String, Object>> blocks = page.textBlocks.stream().map(block -> {
                     Map<String, Object> blockData = new java.util.HashMap<>();
@@ -159,7 +163,11 @@ public class AudioSyncController {
                     blockData.put("text", block.text);
                     blockData.put("html", block.html); // HTML with images preserved
                     blockData.put("tagName", block.tagName);
+                    blockData.put("blockType", block.blockType); // Semantic block type (HEADING, PARAGRAPH, LIST_ITEM, etc.)
                     blockData.put("readingOrder", block.readingOrder);
+                    blockData.put("isHeader", block.isHeader); // True if header (exclude from reading order)
+                    blockData.put("isFooter", block.isFooter); // True if footer (exclude from reading order)
+                    blockData.put("excludeFromReadingOrder", block.excludeFromReadingOrder); // True if should be excluded
                     
                     // Add coordinates (reading order markers)
                     if (block.coordinates != null) {
@@ -349,6 +357,171 @@ public class AudioSyncController {
         } catch (Exception e) {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    /**
+     * Save all changes back to EPUB file
+     * Updates XHTML content in the EPUB based on user edits
+     */
+    @PostMapping("/job/{jobId}/save-changes")
+    public ResponseEntity<?> saveChangesToEpub(
+            @PathVariable Long jobId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            // Get conversion job
+            com.example.demo.model.ConversionJob job = audioSyncService.getConversionJob(jobId);
+            if (job == null) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("error", "Conversion job not found"));
+            }
+
+            if (job.getEpubFilePath() == null || job.getEpubFilePath().isEmpty()) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("error", "EPUB file path not found for this job"));
+            }
+
+            // Get page updates from request
+            @SuppressWarnings("unchecked")
+            Map<String, Object> pageUpdates = (Map<String, Object>) request.get("pageUpdates");
+            
+            if (pageUpdates == null || pageUpdates.isEmpty()) {
+                return ResponseEntity.ok(Map.of(
+                    "success", true,
+                    "message", "No changes to save",
+                    "updatedPages", 0
+                ));
+            }
+
+            int updatedPages = 0;
+            int failedPages = 0;
+            List<String> errors = new java.util.ArrayList<>();
+
+            // Process each page update
+            for (Map.Entry<String, Object> entry : pageUpdates.entrySet()) {
+                String pageFileName = entry.getKey();
+                @SuppressWarnings("unchecked")
+                Map<String, Object> pageData = (Map<String, Object>) entry.getValue();
+                
+                @SuppressWarnings("unchecked")
+                List<Map<String, Object>> blockUpdates = (List<Map<String, Object>>) pageData.get("blocks");
+
+                if (blockUpdates == null || blockUpdates.isEmpty()) {
+                    continue;
+                }
+
+                // Update text blocks in this page
+                String updatedXhtml = epubUpdateService.updateTextBlocks(
+                    job.getEpubFilePath(), 
+                    pageFileName, 
+                    blockUpdates
+                );
+
+                if (updatedXhtml != null) {
+                    // Save updated XHTML back to EPUB
+                    boolean saved = epubUpdateService.saveXhtmlToEpub(
+                        job.getEpubFilePath(), 
+                        pageFileName, 
+                        updatedXhtml
+                    );
+
+                    if (saved) {
+                        updatedPages++;
+                        logger.info("Successfully updated page {} in EPUB for job {}", pageFileName, jobId);
+                    } else {
+                        failedPages++;
+                        errors.add("Failed to save page: " + pageFileName);
+                        logger.error("Failed to save page {} in EPUB for job {}", pageFileName, jobId);
+                    }
+                } else {
+                    failedPages++;
+                    errors.add("Failed to update page: " + pageFileName);
+                    logger.error("Failed to update page {} in EPUB for job {}", pageFileName, jobId);
+                }
+            }
+
+            Map<String, Object> response = new java.util.HashMap<>();
+            response.put("success", failedPages == 0);
+            response.put("message", String.format("Updated %d page(s), %d failed", updatedPages, failedPages));
+            response.put("updatedPages", updatedPages);
+            response.put("failedPages", failedPages);
+            if (!errors.isEmpty()) {
+                response.put("errors", errors);
+            }
+
+            return ResponseEntity.ok(response);
+
+        } catch (Exception e) {
+            logger.error("Error saving changes to EPUB for job {}: {}", jobId, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Unknown error occurred"));
+        }
+    }
+
+    /**
+     * Update a single text block in EPUB
+     */
+    @PutMapping("/job/{jobId}/page/{pageFileName}/block/{blockId}")
+    public ResponseEntity<?> updateTextBlock(
+            @PathVariable Long jobId,
+            @PathVariable String pageFileName,
+            @PathVariable String blockId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            // Get conversion job
+            com.example.demo.model.ConversionJob job = audioSyncService.getConversionJob(jobId);
+            if (job == null) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("error", "Conversion job not found"));
+            }
+
+            if (job.getEpubFilePath() == null || job.getEpubFilePath().isEmpty()) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("error", "EPUB file path not found for this job"));
+            }
+
+            String newHtml = (String) request.get("html");
+            String newTagName = (String) request.get("tagName");
+            String newBlockType = (String) request.get("blockType");
+
+            // Update the block
+            String updatedXhtml = epubUpdateService.updateTextBlock(
+                job.getEpubFilePath(),
+                pageFileName,
+                blockId,
+                newHtml,
+                newTagName,
+                newBlockType
+            );
+
+            if (updatedXhtml == null) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Map.of("error", "Block not found or update failed"));
+            }
+
+            // Save updated XHTML back to EPUB
+            boolean saved = epubUpdateService.saveXhtmlToEpub(
+                job.getEpubFilePath(),
+                pageFileName,
+                updatedXhtml
+            );
+
+            if (!saved) {
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to save updated XHTML to EPUB"));
+            }
+
+            return ResponseEntity.ok(Map.of(
+                "success", true,
+                "message", "Block updated successfully",
+                "blockId", blockId,
+                "pageFileName", pageFileName
+            ));
+
+        } catch (Exception e) {
+            logger.error("Error updating text block for job {}: {}", jobId, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Unknown error occurred"));
         }
     }
 }

@@ -4,12 +4,14 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Service;
 import org.springframework.web.reactive.function.client.WebClient;
 import reactor.core.publisher.Mono;
+import com.example.demo.service.ai.RateLimiterService;
 
 import java.io.File;
 import java.io.IOException;
@@ -36,6 +38,9 @@ public class GeminiService {
 
     @Value("${gemini.api.url:https://generativelanguage.googleapis.com/v1beta/models}")
     private String apiUrl;
+    
+    @Autowired(required = false)
+    private RateLimiterService rateLimiter;
 
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
@@ -64,6 +69,12 @@ public class GeminiService {
             return null;
         }
 
+        // Check rate limit before making request
+        if (rateLimiter != null && !rateLimiter.acquire("Gemini")) {
+            logger.debug("Rate limit exceeded for Gemini, skipping generation");
+            return null;
+        }
+
         try {
             logger.debug("🤖 Gemini: Generating response for prompt (length: {})", prompt.length());
 
@@ -81,7 +92,11 @@ public class GeminiService {
                         .then(Mono.error(new RuntimeException("Gemini API error: " + clientResponse.statusCode())));
                 })
                 .bodyToMono(String.class)
-                .timeout(java.time.Duration.ofSeconds(30))
+                .timeout(java.time.Duration.ofSeconds(60))
+                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
+                    logger.warn("⚠️ Gemini API request timed out after 60 seconds, returning null");
+                    return Mono.just("");
+                })
                 .block();
 
             String generatedText = parseGeminiResponse(response);
@@ -117,6 +132,12 @@ public class GeminiService {
             return null;
         }
 
+        // Check rate limit before making request
+        if (rateLimiter != null && !rateLimiter.acquire("Gemini")) {
+            logger.debug("Rate limit exceeded for Gemini Vision, skipping image analysis");
+            return null;
+        }
+
         try {
             logger.debug("🤖 Gemini Vision: Analyzing image {} with prompt (length: {})", 
                         imageFile.getName(), prompt.length());
@@ -137,6 +158,10 @@ public class GeminiService {
                 .retrieve()
                 .bodyToMono(String.class)
                 .timeout(java.time.Duration.ofSeconds(60))
+                .onErrorResume(java.util.concurrent.TimeoutException.class, e -> {
+                    logger.warn("⚠️ Gemini Vision API request timed out after 60 seconds");
+                    return Mono.just("");
+                })
                 .block();
 
             String generatedText = parseGeminiResponse(response);
