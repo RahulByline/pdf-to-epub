@@ -18,5 +18,6 @@ public class PageStructure {
     private ReadingOrder readingOrder;
     private Boolean isScanned;
     private Double ocrConfidence;
+    private Boolean isTwoPageSpread; // True if this is a two-page spread (split page with 2 pages)
 }
 

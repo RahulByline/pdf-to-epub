@@ -8,6 +8,7 @@ import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -209,38 +210,51 @@ public class PdfDocumentService {
         
         try {
             Path audioPath = Paths.get(document.getAudioFilePath());
-            org.springframework.core.io.Resource resource = new org.springframework.core.io.UrlResource(audioPath.toUri());
+            File audioFile = audioPath.toFile();
             
-            if (resource.exists() && resource.isReadable()) {
-                // Determine content type based on file extension
-                String contentType = "audio/mpeg"; // Default to MP3
-                String fileName = document.getAudioFileName();
-                if (fileName != null) {
-                    String extension = fileName.substring(fileName.lastIndexOf(".") + 1).toLowerCase();
-                    switch (extension) {
-                        case "mp3":
-                            contentType = "audio/mpeg";
-                            break;
-                        case "wav":
-                            contentType = "audio/wav";
-                            break;
-                        case "ogg":
-                            contentType = "audio/ogg";
-                            break;
-                        case "m4a":
-                            contentType = "audio/mp4";
-                            break;
-                    }
-                }
-                
-                return org.springframework.http.ResponseEntity.ok()
-                    .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION, 
-                        "inline; filename=\"" + (document.getAudioFileName() != null ? document.getAudioFileName() : "audio") + "\"")
-                    .header(org.springframework.http.HttpHeaders.CONTENT_TYPE, contentType)
-                    .body(resource);
-            } else {
-                throw new RuntimeException("Audio file not found or not readable");
+            // Check if file exists and is readable
+            if (!audioFile.exists() || !audioFile.canRead()) {
+                throw new RuntimeException("Audio file not found or not readable: " + audioPath);
             }
+            
+            // Check if file is empty
+            long fileSize = audioFile.length();
+            if (fileSize == 0) {
+                throw new RuntimeException("Audio file is empty: " + audioPath);
+            }
+            
+            org.springframework.core.io.Resource resource = new FileSystemResource(audioFile);
+            
+            // Determine content type based on file extension
+            String contentType = "audio/mpeg"; // Default to MP3
+            String fileName = document.getAudioFileName();
+            if (fileName != null) {
+                String extension = fileName.substring(fileName.lastIndexOf(".") + 1).toLowerCase();
+                switch (extension) {
+                    case "mp3":
+                        contentType = "audio/mpeg";
+                        break;
+                    case "wav":
+                        contentType = "audio/wav";
+                        break;
+                    case "ogg":
+                        contentType = "audio/ogg";
+                        break;
+                    case "m4a":
+                        contentType = "audio/mp4";
+                        break;
+                }
+            }
+            
+            // Build response with proper headers for Range request support
+            org.springframework.http.ResponseEntity.BodyBuilder builder = org.springframework.http.ResponseEntity.ok()
+                .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION, 
+                    "inline; filename=\"" + (document.getAudioFileName() != null ? document.getAudioFileName() : "audio") + "\"")
+                .header(org.springframework.http.HttpHeaders.CONTENT_TYPE, contentType)
+                .header(org.springframework.http.HttpHeaders.ACCEPT_RANGES, "bytes")
+                .contentLength(fileSize);
+            
+            return builder.body(resource);
         } catch (Exception e) {
             throw new RuntimeException("Error downloading audio file: " + e.getMessage());
         }

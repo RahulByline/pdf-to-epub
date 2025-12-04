@@ -58,6 +58,9 @@ public class OcrService {
     @Autowired(required = false)
     private MultiProviderAiService multiProviderAiService;
     
+    @Autowired(required = false)
+    private com.example.demo.service.TextSegmentationService textSegmentationService;
+    
     @Value("${gemini.api.enabled:true}")
     private boolean geminiEnabled;
 
@@ -321,10 +324,29 @@ public class OcrService {
 
             TextBlock block = new TextBlock();
             block.setId("ocr_block_" + pageIndex + "_" + blockOrder++);
-            block.setText(line.trim());
+            String text = line.trim();
+            block.setText(text);
             block.setType(TextBlock.BlockType.PARAGRAPH); // OCR typically doesn't preserve structure
             block.setReadingOrder(blockOrder);
             block.setConfidence(0.8); // OCR has lower confidence than digital text
+            
+            // Perform text segmentation (words, sentences, phrases) for audio sync
+            if (textSegmentationService != null && text != null && !text.trim().isEmpty()) {
+                try {
+                    com.example.demo.service.TextSegmentationService.TextSegmentation segmentation = 
+                        textSegmentationService.segmentText(text, block.getId());
+                    block.setWords(segmentation.words);
+                    block.setSentences(segmentation.sentences);
+                    block.setPhrases(segmentation.phrases);
+                    block.setWordCount(segmentation.getWordCount());
+                    block.setSentenceCount(segmentation.getSentenceCount());
+                    block.setPhraseCount(segmentation.getPhraseCount());
+                } catch (Exception e) {
+                    logger.debug("Error segmenting OCR text for block {}: {}", block.getId(), e.getMessage());
+                    // Continue without segmentation if it fails
+                }
+            }
+            
             blocks.add(block);
         }
 
