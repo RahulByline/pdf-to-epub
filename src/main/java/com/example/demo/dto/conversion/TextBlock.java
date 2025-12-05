@@ -24,6 +24,14 @@ public class TextBlock {
     private Double confidence;
     private List<String> languages = new ArrayList<>();
     
+    // Text segmentation for audio sync (words, sentences, phrases)
+    private List<String> words = new ArrayList<>();
+    private List<String> sentences = new ArrayList<>();
+    private List<String> phrases = new ArrayList<>();
+    private Integer wordCount;
+    private Integer sentenceCount;
+    private Integer phraseCount;
+    
     public enum BlockType {
         HEADING,
         PARAGRAPH,

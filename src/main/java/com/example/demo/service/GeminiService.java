@@ -16,7 +16,9 @@ import com.example.demo.service.ai.RateLimiterService;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.List;
 
 /**
  * Service wrapper for Google Gemini AI operations using REST API
@@ -491,6 +493,152 @@ public class GeminiService {
         } catch (Exception e) {
             logger.warn("Error generating spoken-friendly text with Gemini: {}", e.getMessage());
             return text;
+        }
+    }
+
+    /**
+     * Corrects and segments text in a single AI call
+     * Returns structured JSON with corrected text and segmentation (words, sentences, phrases)
+     * 
+     * @param text The original text extracted from PDF
+     * @param pageNumber Page number for context
+     * @return Structured result with corrected text and segmentation, or null if error
+     */
+    public CorrectedAndSegmentedText correctAndSegmentText(String text, int pageNumber) {
+        if (!isEnabled() || text == null || text.trim().isEmpty()) {
+            return null;
+        }
+
+        try {
+            String prompt = String.format("""
+                You are a text-processing engine for EPUB conversion with audio synchronization.
+                
+                Process the following text extracted from PDF page %d:
+                
+                1. CORRECT the text:
+                   - Remove OCR artifacts (e.g., "tin4" -> "Time", "ristopher" -> "Christopher")
+                   - Fix missing or incorrect first letters
+                   - Normalize spacing and punctuation
+                   - Preserve proper names, titles, and technical terms
+                
+                2. SEGMENT the corrected text:
+                   - Split into sentences (handle abbreviations like "Dr.", "U.S.A." correctly)
+                   - Split each sentence into phrases (comma-separated, semicolon-separated, etc.)
+                   - Split each phrase into individual words
+                
+                Return ONLY a JSON object with this exact format:
+                {
+                  "correctedText": "The fully corrected and normalized text.",
+                  "sentences": [
+                    "First sentence.",
+                    "Second sentence."
+                  ],
+                  "phrases": [
+                    "First phrase",
+                    "second phrase",
+                    "third phrase"
+                  ],
+                  "words": [
+                    "The",
+                    "fully",
+                    "corrected",
+                    "text"
+                  ]
+                }
+                
+                Rules:
+                - Preserve all punctuation and capitalization in corrected text
+                - Sentences should be complete with ending punctuation
+                - Phrases should be meaningful chunks (comma/semicolon separated)
+                - Words should be individual tokens (alphanumeric, handle contractions)
+                - Return ONLY valid JSON, no other text
+                
+                TEXT TO PROCESS:
+                %s
+                """, pageNumber, text);
+
+            String jsonResponse = generate(prompt);
+            if (jsonResponse == null || jsonResponse.trim().isEmpty()) {
+                logger.debug("Gemini returned empty response for text correction and segmentation");
+                return null;
+            }
+
+            // Parse JSON response
+            JsonNode root = objectMapper.readTree(jsonResponse);
+            
+            CorrectedAndSegmentedText result = new CorrectedAndSegmentedText();
+            result.correctedText = root.path("correctedText").asText();
+            
+            // Parse sentences
+            JsonNode sentencesNode = root.path("sentences");
+            if (sentencesNode.isArray()) {
+                for (JsonNode sentenceNode : sentencesNode) {
+                    String sentence = sentenceNode.isTextual() ? sentenceNode.asText() : sentenceNode.toString();
+                    if (sentence != null && !sentence.trim().isEmpty()) {
+                        result.sentences.add(sentence.trim());
+                    }
+                }
+            }
+            
+            // Parse phrases
+            JsonNode phrasesNode = root.path("phrases");
+            if (phrasesNode.isArray()) {
+                for (JsonNode phraseNode : phrasesNode) {
+                    String phrase = phraseNode.isTextual() ? phraseNode.asText() : phraseNode.toString();
+                    if (phrase != null && !phrase.trim().isEmpty()) {
+                        result.phrases.add(phrase.trim());
+                    }
+                }
+            }
+            
+            // Parse words
+            JsonNode wordsNode = root.path("words");
+            if (wordsNode.isArray()) {
+                for (JsonNode wordNode : wordsNode) {
+                    String word = wordNode.isTextual() ? wordNode.asText() : wordNode.toString();
+                    if (word != null && !word.trim().isEmpty()) {
+                        result.words.add(word.trim());
+                    }
+                }
+            }
+
+            // Validate we got at least corrected text
+            if (result.correctedText == null || result.correctedText.trim().isEmpty()) {
+                logger.warn("Gemini did not return correctedText in response");
+                return null;
+            }
+
+            logger.debug("✅ Gemini corrected and segmented text: {} chars, {} sentences, {} phrases, {} words", 
+                        result.correctedText.length(), result.sentences.size(), 
+                        result.phrases.size(), result.words.size());
+            
+            return result;
+
+        } catch (Exception e) {
+            logger.warn("Error using Gemini for text correction and segmentation, falling back to separate processing: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Result class for corrected and segmented text
+     */
+    public static class CorrectedAndSegmentedText {
+        public String correctedText;
+        public List<String> sentences = new ArrayList<>();
+        public List<String> phrases = new ArrayList<>();
+        public List<String> words = new ArrayList<>();
+        
+        public int getWordCount() {
+            return words.size();
+        }
+        
+        public int getSentenceCount() {
+            return sentences.size();
+        }
+        
+        public int getPhraseCount() {
+            return phrases.size();
         }
     }
 }

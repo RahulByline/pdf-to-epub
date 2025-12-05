@@ -87,38 +87,57 @@ public class EpubGenerationService {
             // Generate container.xml
             createContainerFile(metaInfDir);
             
-            // Render PDF pages as images for fixed-layout EPUB (save to image/ folder)
+            // Render PDF pages as images for fixed-layout EPUB (preserves exact layout)
             List<String> pageImageNames = new ArrayList<>();
+            double pageWidthPoints = 612.0; // Default US Letter width in points
+            double pageHeightPoints = 792.0; // Default US Letter height in points
+            int renderedPageWidth = 0;
+            int renderedPageHeight = 0;
+            
             if (pdfFile != null && pdfFile.exists()) {
+                // Get actual PDF page dimensions - check ALL pages for maximum size
+                // Some PDFs have mixed page sizes (e.g., cover page different from content pages)
+                try (PDDocument document = Loader.loadPDF(pdfFile)) {
+                    int totalPages = document.getNumberOfPages();
+                    if (totalPages > 0) {
+                        // Find maximum dimensions across all pages
+                        double maxWidth = 0;
+                        double maxHeight = 0;
+                        
+                        for (int i = 0; i < totalPages; i++) {
+                            PDPage page = document.getPage(i);
+                            PDRectangle mediaBox = page.getMediaBox();
+                            maxWidth = Math.max(maxWidth, mediaBox.getWidth());
+                            maxHeight = Math.max(maxHeight, mediaBox.getHeight());
+                        }
+                        
+                        pageWidthPoints = maxWidth;
+                        pageHeightPoints = maxHeight;
+                        // Calculate rendered dimensions at 300 DPI
+                        renderedPageWidth = (int) (pageWidthPoints * 300 / 72);
+                        renderedPageHeight = (int) (pageHeightPoints * 300 / 72);
+                        logger.info("PDF page dimensions (max across all {} pages): {}x{} points ({}x{} pixels at 300 DPI)", 
+                            totalPages, pageWidthPoints, pageHeightPoints, renderedPageWidth, renderedPageHeight);
+                    }
+                }
+                
                 pageImageNames = renderPdfPagesAsImages(pdfFile, imageDir, structure);
             }
             
-            // Generate content.opf with fixed-layout metadata
-            createContentOpf(oebpsDir, structure, fileName, pageImageNames);
+            // Generate content.opf with fixed-layout metadata and exact viewport
+            createContentOpf(oebpsDir, structure, fileName, pageImageNames, 
+                           pageWidthPoints, pageHeightPoints, renderedPageWidth, renderedPageHeight);
             
             // Generate nav.xhtml (table of contents)
             createNavFile(oebpsDir, structure);
             
-            // Step 1: Generate intermediate HTML files (if enabled)
-            Path htmlIntermediatePath = null;
-            if (htmlIntermediateEnabled) {
-                htmlIntermediatePath = generateIntermediateHtmlFiles(structure, pageImageNames, fileName);
-                logger.info("Generated intermediate HTML files in: {}", htmlIntermediatePath);
-            }
+            // Generate fixed layout XHTML content files (one per page with images and visible text)
+            List<String> contentFileNames = generateFixedLayoutContentFiles(oebpsDir, structure, pageImageNames,
+                                                                           pageWidthPoints, pageHeightPoints, 
+                                                                           renderedPageWidth, renderedPageHeight);
             
-            // Step 2: Generate XHTML files from HTML (or directly from structure)
-            List<String> contentFileNames;
-            if (htmlIntermediateEnabled && htmlIntermediatePath != null) {
-                // Convert HTML to XHTML
-                contentFileNames = convertHtmlToXhtml(htmlIntermediatePath, oebpsDir, structure, pageImageNames);
-                logger.info("Converted HTML files to XHTML for EPUB");
-            } else {
-                // Direct XHTML generation (backward compatible)
-                contentFileNames = generateFixedLayoutContentFiles(oebpsDir, structure, pageImageNames);
-            }
-            
-            // Create CSS for fixed layout (save to css/ folder)
-            createFixedLayoutCSS(cssDir);
+            // Create CSS for fixed layout with visible, highlightable text and exact dimensions
+            createFixedLayoutCSS(cssDir, pageWidthPoints, pageHeightPoints, renderedPageWidth, renderedPageHeight);
             
             // Copy images if any (save to image/ folder)
             copyImages(imageDir, structure);
@@ -190,39 +209,93 @@ public class EpubGenerationService {
                     pageWidth, pageHeight, mediaBox.getWidth(), mediaBox.getHeight());
             }
             
+            // Get maximum page dimensions across all pages for consistent viewport
+            double maxPageWidth = 0;
+            double maxPageHeight = 0;
             for (int i = 0; i < totalPages; i++) {
+                PDPage page = document.getPage(i);
+                PDRectangle mediaBox = page.getMediaBox();
+                maxPageWidth = Math.max(maxPageWidth, mediaBox.getWidth());
+                maxPageHeight = Math.max(maxPageHeight, mediaBox.getHeight());
+            }
+            int maxRenderedWidth = (int) (maxPageWidth * 300 / 72);
+            int maxRenderedHeight = (int) (maxPageHeight * 300 / 72);
+            logger.debug("Maximum page dimensions: {}x{} points ({}x{} pixels)", 
+                maxPageWidth, maxPageHeight, maxRenderedWidth, maxRenderedHeight);
+            
+            for (int i = 0; i < totalPages; i++) {
+                // Get actual page dimensions for this specific page
+                PDPage currentPage = document.getPage(i);
+                PDRectangle currentMediaBox = currentPage.getMediaBox();
+                double currentPageWidth = currentMediaBox.getWidth();
+                double currentPageHeight = currentMediaBox.getHeight();
+                int currentRenderedWidth = (int) (currentPageWidth * 300 / 72);
+                int currentRenderedHeight = (int) (currentPageHeight * 300 / 72);
+                
                 // Render page at 300 DPI for high quality with consistent color settings
                 // Use ARGB to preserve transparency and handle backgrounds correctly
                 BufferedImage image = renderer.renderImageWithDPI(i, 300, ImageType.ARGB);
                 
-                // Create a white background image to composite on (prevents black backgrounds)
-                BufferedImage rgbImage = new BufferedImage(
-                    image.getWidth(), 
-                    image.getHeight(), 
-                    BufferedImage.TYPE_INT_RGB
-                );
+                // If this page is smaller than max, create a canvas at max size and center the page
+                BufferedImage finalImage;
+                if (currentRenderedWidth < maxRenderedWidth || currentRenderedHeight < maxRenderedHeight) {
+                    // Create canvas at maximum size with white background
+                    finalImage = new BufferedImage(maxRenderedWidth, maxRenderedHeight, BufferedImage.TYPE_INT_RGB);
+                    java.awt.Graphics2D g = finalImage.createGraphics();
+                    g.setColor(java.awt.Color.WHITE);
+                    g.fillRect(0, 0, maxRenderedWidth, maxRenderedHeight);
+                    
+                    // Center the smaller page image on the canvas
+                    int xOffset = (maxRenderedWidth - currentRenderedWidth) / 2;
+                    int yOffset = (maxRenderedHeight - currentRenderedHeight) / 2;
+                    
+                    // Set rendering hints for quality
+                    g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, 
+                                     java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                    g.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING, 
+                                     java.awt.RenderingHints.VALUE_RENDER_QUALITY);
+                    g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, 
+                                     java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setRenderingHint(java.awt.RenderingHints.KEY_ALPHA_INTERPOLATION,
+                                     java.awt.RenderingHints.VALUE_ALPHA_INTERPOLATION_QUALITY);
+                    
+                    // Composite the rendered image onto white background, centered
+                    g.setComposite(java.awt.AlphaComposite.SrcOver);
+                    g.drawImage(image, xOffset, yOffset, null);
+                    g.dispose();
+                    
+                    logger.debug("Page {} is smaller ({}x{}) than max ({}x{}), centered on canvas", 
+                        i + 1, currentRenderedWidth, currentRenderedHeight, maxRenderedWidth, maxRenderedHeight);
+                } else {
+                    // Page is at max size, just add white background
+                    finalImage = new BufferedImage(
+                        image.getWidth(), 
+                        image.getHeight(), 
+                        BufferedImage.TYPE_INT_RGB
+                    );
+                    
+                    // Fill with white background first
+                    java.awt.Graphics2D g = finalImage.createGraphics();
+                    g.setColor(java.awt.Color.WHITE);
+                    g.fillRect(0, 0, image.getWidth(), image.getHeight());
+                    
+                    // Set rendering hints for quality
+                    g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, 
+                                     java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+                    g.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING, 
+                                     java.awt.RenderingHints.VALUE_RENDER_QUALITY);
+                    g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, 
+                                     java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
+                    g.setRenderingHint(java.awt.RenderingHints.KEY_ALPHA_INTERPOLATION,
+                                     java.awt.RenderingHints.VALUE_ALPHA_INTERPOLATION_QUALITY);
+                    
+                    // Composite the rendered image onto white background
+                    g.setComposite(java.awt.AlphaComposite.SrcOver);
+                    g.drawImage(image, 0, 0, null);
+                    g.dispose();
+                }
                 
-                // Fill with white background first
-                java.awt.Graphics2D g = rgbImage.createGraphics();
-                g.setColor(java.awt.Color.WHITE);
-                g.fillRect(0, 0, image.getWidth(), image.getHeight());
-                
-                // Set rendering hints for quality
-                g.setRenderingHint(java.awt.RenderingHints.KEY_INTERPOLATION, 
-                                 java.awt.RenderingHints.VALUE_INTERPOLATION_BILINEAR);
-                g.setRenderingHint(java.awt.RenderingHints.KEY_RENDERING, 
-                                 java.awt.RenderingHints.VALUE_RENDER_QUALITY);
-                g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, 
-                                 java.awt.RenderingHints.VALUE_ANTIALIAS_ON);
-                g.setRenderingHint(java.awt.RenderingHints.KEY_ALPHA_INTERPOLATION,
-                                 java.awt.RenderingHints.VALUE_ALPHA_INTERPOLATION_QUALITY);
-                
-                // Composite the rendered image onto white background
-                // This ensures transparent areas become white instead of black
-                g.setComposite(java.awt.AlphaComposite.SrcOver);
-                g.drawImage(image, 0, 0, null);
-                g.dispose();
-                image = rgbImage;
+                image = finalImage;
                 
                 // Save as PNG with consistent settings (in image/ folder)
                 String imageName = "page_" + (i + 1) + ".png";
@@ -259,10 +332,15 @@ public class EpubGenerationService {
     }
 
     private void createContentOpf(Path oebpsDir, DocumentStructure structure, String fileName) throws IOException {
-        createContentOpf(oebpsDir, structure, fileName, new ArrayList<>());
+        createContentOpf(oebpsDir, structure, fileName, new ArrayList<>(), 612.0, 792.0, 0, 0);
     }
 
     private void createContentOpf(Path oebpsDir, DocumentStructure structure, String fileName, List<String> pageImageNames) throws IOException {
+        createContentOpf(oebpsDir, structure, fileName, pageImageNames, 612.0, 792.0, 0, 0);
+    }
+
+    private void createContentOpf(Path oebpsDir, DocumentStructure structure, String fileName, List<String> pageImageNames,
+                                  double pageWidthPoints, double pageHeightPoints, int renderedWidth, int renderedHeight) throws IOException {
         DocumentMetadata metadata = structure.getMetadata();
         if (metadata == null) {
             metadata = new DocumentMetadata();
@@ -306,8 +384,18 @@ public class EpubGenerationService {
         
         opf.append("    <meta property=\"dcterms:modified\">").append(java.time.ZonedDateTime.now().toString()).append("</meta>\n");
         
-        // Fixed-layout metadata (EPUB3 specification) - Full screen constant display
-        if (!pageImageNames.isEmpty()) {
+        // Fixed-layout metadata (EPUB3 specification) - Pixel-perfect layout
+        if (!pageImageNames.isEmpty() && renderedWidth > 0 && renderedHeight > 0) {
+            opf.append("    <meta property=\"rendition:layout\">pre-paginated</meta>\n");
+            opf.append("    <meta property=\"rendition:orientation\">auto</meta>\n");
+            opf.append("    <meta property=\"rendition:spread\">none</meta>\n");
+            // Use exact pixel dimensions for viewport (pixel-perfect)
+            opf.append("    <meta property=\"rendition:viewport\">width=").append(renderedWidth)
+               .append("px, height=").append(renderedHeight).append("px</meta>\n");
+            logger.info("Set viewport to exact dimensions: {}x{}px (from {}x{} points)", 
+                renderedWidth, renderedHeight, pageWidthPoints, pageHeightPoints);
+        } else if (!pageImageNames.isEmpty()) {
+            // Fallback if dimensions not available
             opf.append("    <meta property=\"rendition:layout\">pre-paginated</meta>\n");
             opf.append("    <meta property=\"rendition:orientation\">auto</meta>\n");
             opf.append("    <meta property=\"rendition:spread\">none</meta>\n");
@@ -320,9 +408,11 @@ public class EpubGenerationService {
         opf.append("  <manifest>\n");
         opf.append("    <item id=\"nav\" href=\"nav.xhtml\" media-type=\"application/xhtml+xml\" properties=\"nav\"/>\n");
         
-        // Add CSS for fixed layout (in css/ folder)
+        // Add CSS (reflowable or fixed layout)
         if (!pageImageNames.isEmpty()) {
             opf.append("    <item id=\"css\" href=\"css/fixed-layout.css\" media-type=\"text/css\"/>\n");
+        } else {
+            opf.append("    <item id=\"css\" href=\"css/reflowable.css\" media-type=\"text/css\"/>\n");
         }
         
         // Add page images (in image/ folder)
@@ -337,11 +427,25 @@ public class EpubGenerationService {
         List<String> contentFileNames = !pageImageNames.isEmpty() ? 
             getFixedLayoutContentFileNames(structure) : getContentFileNames(structure);
         
-        for (String contentFile : contentFileNames) {
-            opf.append("    <item id=\"page").append(itemId).append("\" href=\"").append(contentFile)
+        for (int i = 0; i < contentFileNames.size(); i++) {
+            String contentFile = contentFileNames.get(i);
+            String itemIdPrefix = !pageImageNames.isEmpty() ? "page" : "chapter";
+            opf.append("    <item id=\"").append(itemIdPrefix).append(itemId).append("\" href=\"").append(contentFile)
                .append("\" media-type=\"application/xhtml+xml\"");
             if (!pageImageNames.isEmpty()) {
+                // Check if this is a two-page spread
+                boolean isTwoPageSpread = false;
+                if (i < structure.getPages().size()) {
+                    PageStructure page = structure.getPages().get(i);
+                    isTwoPageSpread = page.getIsTwoPageSpread() != null && page.getIsTwoPageSpread();
+                }
+                
+                // For two-page spreads, use page-spread-center (single page that spans both)
+                // For single pages, also use page-spread-center (standard fixed layout)
                 opf.append(" properties=\"rendition:page-spread-center\""); // Fixed layout property
+                if (isTwoPageSpread) {
+                    logger.debug("Page {} is a two-page spread, using page-spread-center", i + 1);
+                }
             }
             opf.append("/>\n");
             itemId++;
@@ -361,8 +465,9 @@ public class EpubGenerationService {
         // Spine
         opf.append("  <spine toc=\"nav\">\n");
         itemId = 1;
+        String idrefPrefix = !pageImageNames.isEmpty() ? "page" : "chapter";
         for (String contentFile : contentFileNames) {
-            opf.append("    <itemref idref=\"page").append(itemId).append("\"/>\n");
+            opf.append("    <itemref idref=\"").append(idrefPrefix).append(itemId).append("\"/>\n");
             itemId++;
         }
         opf.append("  </spine>\n");
@@ -429,6 +534,12 @@ public class EpubGenerationService {
     }
 
     private List<String> generateFixedLayoutContentFiles(Path oebpsDir, DocumentStructure structure, List<String> pageImageNames) throws IOException {
+        return generateFixedLayoutContentFiles(oebpsDir, structure, pageImageNames, 612.0, 792.0, 0, 0);
+    }
+
+    private List<String> generateFixedLayoutContentFiles(Path oebpsDir, DocumentStructure structure, List<String> pageImageNames,
+                                                         double pageWidthPoints, double pageHeightPoints, 
+                                                         int renderedWidth, int renderedHeight) throws IOException {
         List<String> fileNames = new ArrayList<>();
         
         // Identify repetitive headers/footers across pages to filter them out
@@ -439,7 +550,8 @@ public class EpubGenerationService {
             PageStructure page = structure.getPages().get(i);
             String fileName = "page_" + (i + 1) + ".xhtml";
             String imageName = i < pageImageNames.size() ? pageImageNames.get(i) : null;
-            String htmlContent = generateFixedLayoutPageHTML(page, imageName, i + 1, repetitiveText);
+            String htmlContent = generateFixedLayoutPageHTML(page, imageName, i + 1, repetitiveText,
+                                                           pageWidthPoints, pageHeightPoints, renderedWidth, renderedHeight);
             Files.write(oebpsDir.resolve(fileName), htmlContent.getBytes(StandardCharsets.UTF_8));
             fileNames.add(fileName);
         }
@@ -533,13 +645,57 @@ public class EpubGenerationService {
         html.append("<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n");
         html.append("<head>\n");
         html.append("  <meta charset=\"UTF-8\"/>\n");
+        html.append("  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\"/>\n");
         html.append("  <title>Chapter</title>\n");
+        html.append("  <link rel=\"stylesheet\" type=\"text/css\" href=\"css/reflowable.css\"/>\n");
         html.append("</head>\n");
-        html.append("<body>\n");
+        html.append("<body class=\"reflowable-content\">\n");
         
         for (PageStructure page : pages) {
-            for (TextBlock block : page.getTextBlocks()) {
-                html.append(convertBlockToHTML(block, structure));
+            // Combine text blocks and images, sorted by reading order or position
+            List<Object> contentElements = new ArrayList<>();
+            
+            // Add text blocks
+            if (page.getTextBlocks() != null && !page.getTextBlocks().isEmpty()) {
+                contentElements.addAll(page.getTextBlocks());
+            }
+            
+            // Add image blocks
+            if (page.getImageBlocks() != null && !page.getImageBlocks().isEmpty()) {
+                contentElements.addAll(page.getImageBlocks());
+            }
+            
+            // Sort by Y position (top to bottom) to maintain reading order
+            contentElements.sort((a, b) -> {
+                Double yA = null, yB = null;
+                if (a instanceof TextBlock) {
+                    BoundingBox bbox = ((TextBlock) a).getBoundingBox();
+                    yA = bbox != null ? bbox.getY() : null;
+                } else if (a instanceof ImageBlock) {
+                    BoundingBox bbox = ((ImageBlock) a).getBoundingBox();
+                    yA = bbox != null ? bbox.getY() : null;
+                }
+                if (b instanceof TextBlock) {
+                    BoundingBox bbox = ((TextBlock) b).getBoundingBox();
+                    yB = bbox != null ? bbox.getY() : null;
+                } else if (b instanceof ImageBlock) {
+                    BoundingBox bbox = ((ImageBlock) b).getBoundingBox();
+                    yB = bbox != null ? bbox.getY() : null;
+                }
+                
+                if (yA == null && yB == null) return 0;
+                if (yA == null) return 1;
+                if (yB == null) return -1;
+                return Double.compare(yA, yB);
+            });
+            
+            // Generate HTML for each element
+            for (Object element : contentElements) {
+                if (element instanceof TextBlock) {
+                    html.append(convertBlockToHTML((TextBlock) element, structure));
+                } else if (element instanceof ImageBlock) {
+                    html.append(convertImageBlockToHTML((ImageBlock) element));
+                }
             }
         }
         
@@ -548,20 +704,71 @@ public class EpubGenerationService {
         
         return html.toString();
     }
-
-    private String generateFixedLayoutPageHTML(PageStructure page, String imageName, int pageNumber) {
-        return generateFixedLayoutPageHTML(page, imageName, pageNumber, new HashSet<>());
+    
+    /**
+     * Converts an ImageBlock to HTML img tag for reflowable EPUB
+     */
+    private String convertImageBlockToHTML(ImageBlock imageBlock) {
+        StringBuilder html = new StringBuilder();
+        
+        // Get image filename from path
+        String imagePath = imageBlock.getImagePath();
+        if (imagePath == null || imagePath.isEmpty()) {
+            return ""; // Skip if no image path
+        }
+        
+        String imageName = new File(imagePath).getName();
+        String imageSrc = "image/" + imageName;
+        
+        // Get alt text
+        String altText = imageBlock.getAltText();
+        if (altText == null || altText.isEmpty()) {
+            altText = imageBlock.getCaption() != null ? imageBlock.getCaption() : "";
+        }
+        if (altText.isEmpty()) {
+            altText = "Image"; // Default alt text for accessibility
+        }
+        
+        // Build img tag
+        html.append("<figure");
+        if (imageBlock.getId() != null && !imageBlock.getId().isEmpty()) {
+            html.append(" id=\"").append(escapeHtml(imageBlock.getId())).append("\"");
+        }
+        html.append(">\n");
+        html.append("  <img src=\"").append(escapeHtml(imageSrc))
+            .append("\" alt=\"").append(escapeHtml(altText))
+            .append("\" class=\"content-image\"/>\n");
+        
+        // Add caption if available
+        if (imageBlock.getCaption() != null && !imageBlock.getCaption().isEmpty()) {
+            html.append("  <figcaption>").append(escapeHtml(imageBlock.getCaption())).append("</figcaption>\n");
+        }
+        
+        html.append("</figure>\n");
+        
+        return html.toString();
     }
 
-    private String generateFixedLayoutPageHTML(PageStructure page, String imageName, int pageNumber, Set<String> repetitiveText) {
+    private String generateFixedLayoutPageHTML(PageStructure page, String imageName, int pageNumber) {
+        return generateFixedLayoutPageHTML(page, imageName, pageNumber, new HashSet<>(), 612.0, 792.0, 0, 0);
+    }
+
+    private String generateFixedLayoutPageHTML(PageStructure page, String imageName, int pageNumber, Set<String> repetitiveText,
+                                              double pageWidthPoints, double pageHeightPoints, int renderedWidth, int renderedHeight) {
         StringBuilder html = new StringBuilder();
         html.append("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
         html.append("<!DOCTYPE html>\n");
         html.append("<html xmlns=\"http://www.w3.org/1999/xhtml\" xmlns:epub=\"http://www.idpf.org/2007/ops\">\n");
         html.append("<head>\n");
         html.append("  <meta charset=\"UTF-8\"/>\n");
-        // EPUB3 fixed-layout viewport - full screen constant display
-        html.append("  <meta name=\"viewport\" content=\"width=device-width, height=device-height, initial-scale=1.0, maximum-scale=1.0, user-scalable=no\"/>\n");
+        // EPUB3 fixed-layout viewport - pixel-perfect exact dimensions
+        if (renderedWidth > 0 && renderedHeight > 0) {
+            html.append("  <meta name=\"viewport\" content=\"width=").append(renderedWidth)
+                .append("px, height=").append(renderedHeight)
+                .append("px, initial-scale=1.0, maximum-scale=1.0, user-scalable=no\"/>\n");
+        } else {
+            html.append("  <meta name=\"viewport\" content=\"width=device-width, height=device-height, initial-scale=1.0, maximum-scale=1.0, user-scalable=no\"/>\n");
+        }
         html.append("  <title>Page ").append(pageNumber).append("</title>\n");
         html.append("  <link rel=\"stylesheet\" type=\"text/css\" href=\"css/fixed-layout.css\"/>\n");
         html.append("</head>\n");
@@ -577,24 +784,53 @@ public class EpubGenerationService {
         // Text content for accessibility - visible to screen readers but visually hidden
         // Sort blocks by reading order for proper TTS flow
         html.append("    <div class=\"text-content\" role=\"article\" aria-label=\"Page ").append(pageNumber).append(" content\">\n");
+        
+        // Always create text-content div, even if no text blocks (for pages with only images)
         if (page.getTextBlocks() != null && !page.getTextBlocks().isEmpty()) {
             // Sort by reading order to ensure correct TTS flow
             // CRITICAL: This order must match SMIL generation order
+            // For two-page spreads, use ReadingOrder object which has proper left-to-right ordering
             List<TextBlock> sortedBlocks = new ArrayList<>(page.getTextBlocks());
-            sortedBlocks.sort((a, b) -> {
-                Integer orderA = a.getReadingOrder();
-                Integer orderB = b.getReadingOrder();
-                // If reading order is null, use position in original list as fallback
-                if (orderA == null) {
-                    int indexA = page.getTextBlocks().indexOf(a);
-                    orderA = indexA >= 0 ? indexA : Integer.MAX_VALUE;
-                }
-                if (orderB == null) {
-                    int indexB = page.getTextBlocks().indexOf(b);
-                    orderB = indexB >= 0 ? indexB : Integer.MAX_VALUE;
-                }
-                return orderA.compareTo(orderB);
-            });
+            
+            // If page has ReadingOrder object with block IDs, use that for proper two-page spread ordering
+            if (page.getReadingOrder() != null && page.getReadingOrder().getBlockIds() != null && 
+                !page.getReadingOrder().getBlockIds().isEmpty()) {
+                // Sort by position in ReadingOrder block IDs list
+                final List<String> readingOrderIds = page.getReadingOrder().getBlockIds();
+                sortedBlocks.sort((a, b) -> {
+                    int indexA = readingOrderIds.indexOf(a.getId());
+                    int indexB = readingOrderIds.indexOf(b.getId());
+                    if (indexA == -1 && indexB == -1) return 0;
+                    if (indexA == -1) return 1;
+                    if (indexB == -1) return -1;
+                    return Integer.compare(indexA, indexB);
+                });
+            } else {
+                // Fallback: Sort by reading order integer, then by Y position
+                sortedBlocks.sort((a, b) -> {
+                    Integer orderA = a.getReadingOrder();
+                    Integer orderB = b.getReadingOrder();
+                    // If reading order is null, use position in original list as fallback
+                    if (orderA == null) {
+                        int indexA = page.getTextBlocks().indexOf(a);
+                        orderA = indexA >= 0 ? indexA : Integer.MAX_VALUE;
+                    }
+                    if (orderB == null) {
+                        int indexB = page.getTextBlocks().indexOf(b);
+                        orderB = indexB >= 0 ? indexB : Integer.MAX_VALUE;
+                    }
+                    int orderCompare = orderA.compareTo(orderB);
+                    if (orderCompare != 0) return orderCompare;
+                    
+                    // If same reading order, sort by Y position (top to bottom)
+                    Double yA = a.getBoundingBox() != null ? a.getBoundingBox().getY() : null;
+                    Double yB = b.getBoundingBox() != null ? b.getBoundingBox().getY() : null;
+                    if (yA == null && yB == null) return 0;
+                    if (yA == null) return 1;
+                    if (yB == null) return -1;
+                    return yA.compareTo(yB);
+                });
+            }
             
             // Filter and add blocks in reading order
             for (TextBlock block : sortedBlocks) {
@@ -603,7 +839,7 @@ public class EpubGenerationService {
                     continue; // Skip this block as it's a repetitive header/footer
                 }
                 
-                String htmlBlock = convertBlockToHTML(block, null);
+                String htmlBlock = convertBlockToHTML(block, null, pageWidthPoints, pageHeightPoints, renderedWidth, renderedHeight);
                 // Only add non-empty, meaningful blocks
                 if (htmlBlock != null && !htmlBlock.trim().isEmpty()) {
                     html.append(htmlBlock);
@@ -621,6 +857,11 @@ public class EpubGenerationService {
     }
 
     private void createFixedLayoutCSS(Path oebpsDir) throws IOException {
+        createFixedLayoutCSS(oebpsDir, 612.0, 792.0, 0, 0);
+    }
+
+    private void createFixedLayoutCSS(Path oebpsDir, double pageWidthPoints, double pageHeightPoints,
+                                     int renderedWidth, int renderedHeight) throws IOException {
         String css = "/* Fixed Layout EPUB Styles - Full Screen Constant Display */\n" +
             "* {\n" +
             "  margin: 0;\n" +
@@ -629,10 +870,18 @@ public class EpubGenerationService {
             "}\n\n" +
             "html, body {\n" +
             "  margin: 0;\n" +
-            "  padding: 0;\n" +
-            "  width: 100vw;\n" +
-            "  height: 100vh;\n" +
-            "  overflow: hidden;\n" +
+            "  padding: 0;\n";
+        
+        // Use exact pixel dimensions if available for pixel-perfect layout
+        if (renderedWidth > 0 && renderedHeight > 0) {
+            css += "  width: " + renderedWidth + "px;\n";
+            css += "  height: " + renderedHeight + "px;\n";
+        } else {
+            css += "  width: 100vw;\n";
+            css += "  height: 100vh;\n";
+        }
+        
+        css += "  overflow: hidden; /* Required for fixed layout */\n" +
             "  position: fixed;\n" +
             "  top: 0;\n" +
             "  left: 0;\n" +
@@ -640,59 +889,76 @@ public class EpubGenerationService {
             ".fixed-layout-page {\n" +
             "  margin: 0;\n" +
             "  padding: 0;\n" +
-            "  overflow: hidden;\n" +
-            "  width: 100vw;\n" +
-            "  height: 100vh;\n" +
-            "  position: fixed;\n" +
+            "  overflow: hidden; /* Required for fixed layout */\n";
+        
+        if (renderedWidth > 0 && renderedHeight > 0) {
+            css += "  width: " + renderedWidth + "px;\n";
+            css += "  height: " + renderedHeight + "px;\n";
+        } else {
+            css += "  width: 100vw;\n";
+            css += "  height: 100vh;\n";
+        }
+        
+        css += "  position: fixed;\n" +
             "  top: 0;\n" +
             "  left: 0;\n" +
             "  display: block;\n" +
             "}\n\n" +
             ".page-container {\n" +
-            "  position: relative;\n" +
-            "  width: 100vw;\n" +
-            "  height: 100vh;\n" +
-            "  margin: 0;\n" +
+            "  position: relative;\n";
+        
+        if (renderedWidth > 0 && renderedHeight > 0) {
+            css += "  width: " + renderedWidth + "px;\n";
+            css += "  height: " + renderedHeight + "px;\n";
+        } else {
+            css += "  width: 100vw;\n";
+            css += "  height: 100vh;\n";
+        }
+        
+        css += "  margin: 0;\n" +
             "  padding: 0;\n" +
-            "  overflow: hidden;\n" +
-            "  display: flex;\n" +
-            "  align-items: center;\n" +
-            "  justify-content: center;\n" +
+            "  overflow: hidden; /* Keep hidden for fixed layout */\n" +
+            "  display: block;\n" +
             "  background-color: white;\n" +
             "}\n\n" +
             ".page-image {\n" +
-            "  width: 100vw;\n" +
-            "  height: 100vh;\n" +
-            "  object-fit: contain;\n" +
+            "  /* Pixel-perfect: image at exact dimensions, ensure no cutoff */\n";
+        
+        if (renderedWidth > 0 && renderedHeight > 0) {
+            css += "  width: " + renderedWidth + "px;\n";
+            css += "  height: " + renderedHeight + "px;\n";
+        } else {
+            css += "  width: 100%;\n";
+            css += "  height: 100%;\n";
+        }
+        
+        css += "  object-fit: contain; /* Ensure entire image is visible, no cutoff */\n" +
+            "  object-position: top left;\n" +
             "  display: block;\n" +
             "  margin: 0;\n" +
             "  padding: 0;\n" +
             "  position: absolute;\n" +
-            "  top: 50%;\n" +
-            "  left: 50%;\n" +
-            "  transform: translate(-50%, -50%);\n" +
-            "  z-index: 1;\n" +
-            "  /* Preserve full image without cropping - scale to fit viewport */\n" +
-            "  object-position: center center;\n" +
-            "  /* Ensure image maintains aspect ratio and fits within viewport */\n" +
-            "  max-width: 100vw;\n" +
-            "  max-height: 100vh;\n" +
-            "}\n\n" +
-            ".text-content {\n" +
-            "  /* Visually hidden but accessible to screen readers and TTS */\n" +
-            "  position: absolute;\n" +
             "  top: 0;\n" +
             "  left: 0;\n" +
-            "  width: 1px;\n" +
-            "  height: 1px;\n" +
-            "  clip: rect(0, 0, 0, 0);\n" +
-            "  clip-path: inset(50%);\n" +
-            "  overflow: hidden;\n" +
-            "  white-space: nowrap;\n" +
-            "  z-index: 2;\n" +
-            "  /* Ensure text is readable by TTS but not visible */\n" +
-            "  color: transparent;\n" +
-            "  background: transparent;\n" +
+            "  z-index: 1;\n" +
+            "  /* Pixel-perfect: image displayed at exact size, contained within viewport */\n" +
+            "}\n\n" +
+            ".text-content {\n" +
+            "  /* Visible text overlay on page image for highlighting - pixel-perfect positioning */\n" +
+            "  position: absolute;\n" +
+            "  top: 0;\n" +
+            "  left: 0;\n";
+        
+        if (renderedWidth > 0 && renderedHeight > 0) {
+            css += "  width: " + renderedWidth + "px;\n";
+            css += "  height: " + renderedHeight + "px;\n";
+        } else {
+            css += "  width: 100%;\n";
+            css += "  height: 100%;\n";
+        }
+        
+        css += "  z-index: 2;\n" +
+            "  pointer-events: none; /* Allow clicks to pass through, but text elements are clickable */\n" +
             "}\n\n" +
             ".text-content p,\n" +
             ".text-content h1,\n" +
@@ -703,10 +969,62 @@ public class EpubGenerationService {
             ".text-content h6,\n" +
             ".text-content ul,\n" +
             ".text-content ol,\n" +
-            ".text-content li {\n" +
-            "  margin: 0;\n" +
-            "  padding: 0;\n" +
+            ".text-content li,\n" +
+            ".text-content span {\n" +
+            "  position: absolute;\n" +
+            "  margin: 0 !important;\n" +
+            "  padding: 0 !important;\n" +
+            "  border: none !important;\n" +
             "  display: block;\n" +
+            "  color: transparent !important; /* Completely transparent - image text shows through */\n" +
+            "  background-color: transparent !important;\n" +
+            "  font-size: inherit;\n" +
+            "  line-height: 1.0;\n" +
+            "  pointer-events: auto; /* Make text selectable and highlightable for audio sync */\n" +
+            "  word-wrap: break-word;\n" +
+            "  overflow-wrap: break-word;\n" +
+            "  overflow: hidden;\n" +
+            "  /* Text overlays image text exactly - invisible until highlighted */\n" +
+            "}\n\n" +
+            "/* When text is highlighted (audio sync), make it visible with highlight overlay */\n" +
+            ".text-content p.-epub-media-overlay-active,\n" +
+            ".text-content h1.-epub-media-overlay-active,\n" +
+            ".text-content h2.-epub-media-overlay-active,\n" +
+            ".text-content h3.-epub-media-overlay-active,\n" +
+            ".text-content h4.-epub-media-overlay-active,\n" +
+            ".text-content h5.-epub-media-overlay-active,\n" +
+            ".text-content h6.-epub-media-overlay-active,\n" +
+            ".text-content li.-epub-media-overlay-active,\n" +
+            ".text-content span.-epub-media-overlay-active,\n" +
+            ".text-content p.epub-media-overlay-active,\n" +
+            ".text-content h1.epub-media-overlay-active,\n" +
+            ".text-content h2.epub-media-overlay-active,\n" +
+            ".text-content h3.epub-media-overlay-active,\n" +
+            ".text-content h4.epub-media-overlay-active,\n" +
+            ".text-content h5.epub-media-overlay-active,\n" +
+            ".text-content h6.epub-media-overlay-active,\n" +
+            ".text-content li.epub-media-overlay-active,\n" +
+            ".text-content span.epub-media-overlay-active {\n" +
+            "  color: transparent !important; /* Keep transparent so image text shows */\n" +
+            "  background-color: rgba(255, 255, 0, 0.5) !important; /* Yellow highlight overlay */\n" +
+            "  outline: 2px solid rgba(255, 215, 0, 0.8) !important; /* Gold border */\n" +
+            "  outline-offset: -1px !important;\n" +
+            "  border-radius: 1px !important;\n" +
+            "  box-shadow: inset 0 0 3px rgba(255, 215, 0, 0.6) !important;\n" +
+            "  /* Highlight overlays the image text - image text remains visible underneath */\n" +
+            "}\n\n" +
+            "/* Heading styles */\n" +
+            ".text-content h1 { font-size: 1.5em; font-weight: bold; }\n" +
+            ".text-content h2 { font-size: 1.3em; font-weight: bold; }\n" +
+            ".text-content h3 { font-size: 1.1em; font-weight: bold; }\n" +
+            ".text-content h4, .text-content h5, .text-content h6 { font-weight: bold; }\n\n" +
+            "/* List styles */\n" +
+            ".text-content ul, .text-content ol {\n" +
+            "  padding-left: 20px;\n" +
+            "}\n" +
+            ".text-content li {\n" +
+            "  margin: 1px 0;\n" +
+            "  padding: 0 2px;\n" +
             "}\n\n" +
             ".page-number {\n" +
             "  display: none;\n" +
@@ -741,7 +1059,149 @@ public class EpubGenerationService {
         Files.write(oebpsDir.resolve("fixed-layout.css"), css.getBytes(StandardCharsets.UTF_8));
     }
 
+    private void createReflowableCSS(Path cssDir) throws IOException {
+        String css = "/* Reflowable EPUB Styles - Text flows and adapts to screen size */\n" +
+            "* {\n" +
+            "  margin: 0;\n" +
+            "  padding: 0;\n" +
+            "  box-sizing: border-box;\n" +
+            "}\n\n" +
+            "html, body {\n" +
+            "  margin: 0;\n" +
+            "  padding: 0;\n" +
+            "  width: 100%;\n" +
+            "  min-height: 100vh;\n" +
+            "  font-family: Georgia, 'Times New Roman', serif;\n" +
+            "  font-size: 1em;\n" +
+            "  line-height: 1.6;\n" +
+            "  color: #333333;\n" +
+            "  background-color: #ffffff;\n" +
+            "}\n\n" +
+            ".reflowable-content {\n" +
+            "  max-width: 100%;\n" +
+            "  margin: 0 auto;\n" +
+            "  padding: 1em 1.5em;\n" +
+            "  text-align: left;\n" +
+            "}\n\n" +
+            "/* Typography - All text is visible and readable */\n" +
+            "h1, h2, h3, h4, h5, h6 {\n" +
+            "  font-weight: bold;\n" +
+            "  margin-top: 1.5em;\n" +
+            "  margin-bottom: 0.5em;\n" +
+            "  line-height: 1.3;\n" +
+            "  color: #000000;\n" +
+            "  display: block;\n" +
+            "  visibility: visible;\n" +
+            "}\n\n" +
+            "h1 { font-size: 2em; }\n" +
+            "h2 { font-size: 1.75em; }\n" +
+            "h3 { font-size: 1.5em; }\n" +
+            "h4 { font-size: 1.25em; }\n" +
+            "h5 { font-size: 1.1em; }\n" +
+            "h6 { font-size: 1em; }\n\n" +
+            "p {\n" +
+            "  margin: 1em 0;\n" +
+            "  text-align: justify;\n" +
+            "  text-indent: 0;\n" +
+            "  color: #333333;\n" +
+            "  display: block;\n" +
+            "  visibility: visible;\n" +
+            "}\n\n" +
+            "/* Lists */\n" +
+            "ul, ol {\n" +
+            "  margin: 1em 0;\n" +
+            "  padding-left: 2em;\n" +
+            "  display: block;\n" +
+            "  visibility: visible;\n" +
+            "}\n\n" +
+            "li {\n" +
+            "  margin: 0.5em 0;\n" +
+            "  display: list-item;\n" +
+            "  visibility: visible;\n" +
+            "  color: #333333;\n" +
+            "}\n\n" +
+            "/* Images */\n" +
+            "img, .content-image {\n" +
+            "  max-width: 100%;\n" +
+            "  height: auto;\n" +
+            "  display: block;\n" +
+            "  margin: 1em auto;\n" +
+            "  visibility: visible;\n" +
+            "}\n\n" +
+            "/* Figure elements for images with captions */\n" +
+            "figure {\n" +
+            "  margin: 1.5em 0;\n" +
+            "  text-align: center;\n" +
+            "  display: block;\n" +
+            "  visibility: visible;\n" +
+            "}\n\n" +
+            "figure img {\n" +
+            "  margin: 0 auto;\n" +
+            "}\n\n" +
+            "figcaption {\n" +
+            "  font-style: italic;\n" +
+            "  font-size: 0.9em;\n" +
+            "  color: #666666;\n" +
+            "  margin-top: 0.5em;\n" +
+            "  text-align: center;\n" +
+            "  display: block;\n" +
+            "  visibility: visible;\n" +
+            "}\n\n" +
+            "/* Tables */\n" +
+            "table {\n" +
+            "  width: 100%;\n" +
+            "  border-collapse: collapse;\n" +
+            "  margin: 1em 0;\n" +
+            "  overflow-x: auto;\n" +
+            "  display: block;\n" +
+            "}\n\n" +
+            "table td, table th {\n" +
+            "  padding: 0.5em;\n" +
+            "  border: 1px solid #cccccc;\n" +
+            "}\n\n" +
+            "/* Captions */\n" +
+            ".caption {\n" +
+            "  font-style: italic;\n" +
+            "  font-size: 0.9em;\n" +
+            "  text-align: center;\n" +
+            "  margin: 0.5em 0;\n" +
+            "  color: #333333;\n" +
+            "  display: block;\n" +
+            "  visibility: visible;\n" +
+            "}\n\n" +
+            "/* EPUB 3 Media Overlay - Highlight active text during read-aloud */\n" +
+            ".-epub-media-overlay-active,\n" +
+            ".epub-media-overlay-active,\n" +
+            "*.-epub-media-overlay-active,\n" +
+            "*[class*=\"-epub-media-overlay-active\"] {\n" +
+            "  background-color: rgba(255, 255, 0, 0.6) !important;\n" +
+            "  color: #000000 !important;\n" +
+            "  outline: 3px solid #FFD700 !important;\n" +
+            "  outline-offset: 1px !important;\n" +
+            "  border-radius: 2px !important;\n" +
+            "  box-shadow: 0 0 5px rgba(255, 215, 0, 0.5) !important;\n" +
+            "}\n\n" +
+            "/* Responsive design - adapts to different screen sizes */\n" +
+            "@media (max-width: 600px) {\n" +
+            "  .reflowable-content {\n" +
+            "    padding: 0.75em 1em;\n" +
+            "  }\n" +
+            "  h1 { font-size: 1.75em; }\n" +
+            "  h2 { font-size: 1.5em; }\n" +
+            "  h3 { font-size: 1.25em; }\n" +
+            "  p { text-align: left; }\n" +
+            "}\n";
+        
+        Files.write(cssDir.resolve("reflowable.css"), css.getBytes(StandardCharsets.UTF_8));
+    }
+
     private String convertBlockToHTML(TextBlock block, DocumentStructure structure) {
+        return convertBlockToHTML(block, structure, 612.0, 792.0, 0, 0);
+    }
+
+    private String convertBlockToHTML(TextBlock block, DocumentStructure structure, 
+                                     double pageWidthPoints, double pageHeightPoints,
+                                     int renderedWidth, int renderedHeight) {
         StringBuilder html = new StringBuilder();
         
         // Clean and normalize text before using it
@@ -776,20 +1236,89 @@ public class EpubGenerationService {
             }
         }
         
-        // Add coordinates as data attributes if available (for audio sync overlay)
+        // Add coordinates as data attributes and inline styles for positioning (fixed layout)
         String coordinateAttrs = "";
+        String positionStyle = "";
         if (block.getBoundingBox() != null) {
             BoundingBox bbox = block.getBoundingBox();
-            // Convert PDF coordinates to viewport-relative percentages or pixels
-            // PDF coordinates are in points (1/72 inch), we'll store them as-is
-            // The frontend can scale them based on the actual rendered image size
+            // Store data attributes for reference
             coordinateAttrs = " data-x=\"" + (bbox.getX() != null ? bbox.getX() : "") + "\"";
             coordinateAttrs += " data-y=\"" + (bbox.getY() != null ? bbox.getY() : "") + "\"";
             coordinateAttrs += " data-width=\"" + (bbox.getWidth() != null ? bbox.getWidth() : "") + "\"";
             coordinateAttrs += " data-height=\"" + (bbox.getHeight() != null ? bbox.getHeight() : "") + "\"";
-            // Also add as data-top and data-left for compatibility with XhtmlExtractionService
             coordinateAttrs += " data-top=\"" + (bbox.getY() != null ? bbox.getY() : "") + "\"";
             coordinateAttrs += " data-left=\"" + (bbox.getX() != null ? bbox.getX() : "") + "\"";
+            
+            // For pixel-perfect fixed layout, use exact coordinates from PDF
+            if (bbox.getX() != null && bbox.getY() != null && 
+                bbox.getWidth() != null && bbox.getHeight() != null &&
+                pageWidthPoints > 0 && pageHeightPoints > 0) {
+                
+                // PDF uses bottom-left origin, HTML uses top-left origin
+                // getYDirAdj() returns Y coordinate adjusted for text direction
+                // In PDF: Y=0 is at bottom, Y increases upward
+                // In TextExtractionService: we sort by descending Y (b.y, a.y), so higher Y = top
+                //   - minY = minimum Y value in group (bottom-most)
+                //   - maxY = maximum Y value in group (top-most)  
+                //   - bbox.setY(group.minY) = bottom Y coordinate
+                //   - height = maxY - minY = actual text block height
+                //
+                // So bbox.getY() should be the BOTTOM Y coordinate (from bottom of page)
+                // To convert to HTML top position: htmlTop = pageHeight - (bottomY + height)
+                double pdfY = bbox.getY(); // Y coordinate (should be from bottom)
+                double pdfHeight = bbox.getHeight(); // Height of text block
+                
+                // Try conversion assuming Y is from bottom
+                double htmlTopFromBottom = pageHeightPoints - pdfY - pdfHeight;
+                
+                // Also try if Y is from top (less likely but possible)
+                double htmlTopFromTop = pdfY;
+                
+                // Use the one that makes more sense (should be between 0 and pageHeight)
+                double htmlTop;
+                if (htmlTopFromBottom >= 0 && htmlTopFromBottom <= pageHeightPoints) {
+                    // Conversion from bottom makes sense
+                    htmlTop = htmlTopFromBottom;
+                } else if (htmlTopFromTop >= 0 && htmlTopFromTop <= pageHeightPoints) {
+                    // Y might be from top instead
+                    htmlTop = htmlTopFromTop;
+                    logger.debug("Using Y as top coordinate for block {} (bottom conversion gave {})", 
+                               block.getId(), htmlTopFromBottom);
+                } else {
+                    // Both failed, use bottom conversion and clamp
+                    htmlTop = Math.max(0, Math.min(pageHeightPoints, htmlTopFromBottom));
+                    logger.warn("Y coordinate conversion issue for block {}: pdfY={}, pdfHeight={}, pageHeight={}, using clamped value {}", 
+                               block.getId(), pdfY, pdfHeight, pageHeightPoints, htmlTop);
+                }
+                
+                // Use percentage for responsive scaling, but calculated from exact PDF dimensions
+                double leftPercent = (bbox.getX() / pageWidthPoints) * 100.0;
+                double topPercent = (htmlTop / pageHeightPoints) * 100.0;
+                double widthPercent = (bbox.getWidth() / pageWidthPoints) * 100.0;
+                double heightPercent = (bbox.getHeight() / pageHeightPoints) * 100.0;
+                
+                // Ensure values are within valid range
+                leftPercent = Math.max(0, Math.min(100, leftPercent));
+                topPercent = Math.max(0, Math.min(100, topPercent));
+                widthPercent = Math.max(0, Math.min(100 - leftPercent, widthPercent));
+                heightPercent = Math.max(0, Math.min(100 - topPercent, heightPercent));
+                
+                // Add font size if available to match PDF text size
+                String fontSizeStyle = "";
+                if (block.getFontSize() != null && block.getFontSize() > 0) {
+                    // Convert PDF points to CSS pixels (1 point = 1.33 pixels at 96 DPI, but we use points directly)
+                    // For better matching, use the font size in points converted to viewport-relative size
+                    double fontSizePoints = block.getFontSize();
+                    // Convert to percentage of page height for responsive scaling
+                    double fontSizePercent = (fontSizePoints / pageHeightPoints) * 100.0;
+                    fontSizeStyle = String.format(" font-size: %.2f%%;", fontSizePercent);
+                }
+                
+                // Build inline style for pixel-perfect positioning
+                // Text will be transparent and overlay exactly where it appears in the image
+                positionStyle = String.format(" style=\"position: absolute; left: %.4f%%; top: %.4f%%; width: %.4f%%; height: %.4f%%;%s\"",
+                    leftPercent, topPercent, widthPercent, heightPercent, fontSizeStyle);
+            }
         }
         
         switch (block.getType()) {
@@ -799,6 +1328,7 @@ public class EpubGenerationService {
                 level = Math.max(1, Math.min(6, level));
                 html.append("<h").append(level).append(" id=\"").append(escapeHtml(blockId)).append("\"");
                 html.append(coordinateAttrs);
+                html.append(positionStyle);
                 html.append(">");
                 html.append(escapeHtml(cleanedText));
                 html.append("</h").append(level).append(">\n");
@@ -807,6 +1337,7 @@ public class EpubGenerationService {
             case PARAGRAPH:
                 html.append("<p id=\"").append(escapeHtml(blockId)).append("\"");
                 html.append(coordinateAttrs);
+                html.append(positionStyle);
                 html.append(">");
                 html.append(escapeHtml(cleanedText));
                 html.append("</p>\n");
@@ -816,6 +1347,7 @@ public class EpubGenerationService {
             case LIST_UNORDERED:
                 html.append("<ul id=\"").append(escapeHtml(blockId)).append("\"");
                 html.append(coordinateAttrs);
+                html.append(positionStyle);
                 html.append(">");
                 // List items need their own IDs for SMIL synchronization
                 String liId = blockId + "_li";
@@ -826,6 +1358,7 @@ public class EpubGenerationService {
             case LIST_ORDERED:
                 html.append("<ol id=\"").append(escapeHtml(blockId)).append("\"");
                 html.append(coordinateAttrs);
+                html.append(positionStyle);
                 html.append(">");
                 // List items need their own IDs for SMIL synchronization
                 String oliId = blockId + "_li";
@@ -836,6 +1369,7 @@ public class EpubGenerationService {
             case CAPTION:
                 html.append("<p id=\"").append(escapeHtml(blockId)).append("\" class=\"caption\"");
                 html.append(coordinateAttrs);
+                html.append(positionStyle);
                 html.append(">");
                 html.append(escapeHtml(cleanedText));
                 html.append("</p>\n");
@@ -844,6 +1378,7 @@ public class EpubGenerationService {
             default:
                 html.append("<p id=\"").append(escapeHtml(blockId)).append("\"");
                 html.append(coordinateAttrs);
+                html.append(positionStyle);
                 html.append(">");
                 html.append(escapeHtml(cleanedText));
                 html.append("</p>\n");
@@ -1021,13 +1556,43 @@ public class EpubGenerationService {
     }
 
     private void copyImages(Path oebpsDir, DocumentStructure structure) throws IOException {
-        if (structure.getImages() == null) return;
+        Set<String> copiedImages = new HashSet<>(); // Track copied images to avoid duplicates
         
-        for (ImageReference image : structure.getImages()) {
-            String sourcePath = image.getOriginalPath();
-            if (sourcePath != null && new File(sourcePath).exists()) {
-                String imageName = new File(sourcePath).getName();
-                Files.copy(Paths.get(sourcePath), oebpsDir.resolve(imageName));
+        // Copy images from structure.getImages() (if any)
+        if (structure.getImages() != null) {
+            for (ImageReference image : structure.getImages()) {
+                String sourcePath = image.getOriginalPath();
+                if (sourcePath != null && new File(sourcePath).exists()) {
+                    String imageName = new File(sourcePath).getName();
+                    if (!copiedImages.contains(imageName)) {
+                        Files.copy(Paths.get(sourcePath), oebpsDir.resolve(imageName));
+                        copiedImages.add(imageName);
+                        logger.debug("Copied image from structure: {}", imageName);
+                    }
+                }
+            }
+        }
+        
+        // Copy images from page imageBlocks (for reflowable EPUB)
+        if (structure.getPages() != null) {
+            for (PageStructure page : structure.getPages()) {
+                if (page.getImageBlocks() != null) {
+                    for (ImageBlock imageBlock : page.getImageBlocks()) {
+                        String imagePath = imageBlock.getImagePath();
+                        if (imagePath != null && !imagePath.isEmpty()) {
+                            File sourceFile = new File(imagePath);
+                            if (sourceFile.exists()) {
+                                String imageName = sourceFile.getName();
+                                if (!copiedImages.contains(imageName)) {
+                                    Files.copy(sourceFile.toPath(), oebpsDir.resolve(imageName));
+                                    copiedImages.add(imageName);
+                                    logger.debug("Copied image from page {} imageBlock: {}", 
+                                        page.getPageNumber(), imageName);
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -1654,7 +2219,7 @@ public class EpubGenerationService {
                 logger.warn("HTML file not found: {}, generating XHTML directly", htmlPath);
                 PageStructure page = structure.getPages().get(i);
                 String imageName = i < pageImageNames.size() ? pageImageNames.get(i) : null;
-                xhtmlContent = generateFixedLayoutPageHTML(page, imageName, i + 1, repetitiveText);
+                xhtmlContent = generateFixedLayoutPageHTML(page, imageName, i + 1, repetitiveText, 612.0, 792.0, 0, 0);
             }
             
             // Write XHTML file

@@ -8,6 +8,7 @@ import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.FileSystemResource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.multipart.MultipartFile;
@@ -210,11 +211,20 @@ public class PdfDocumentService {
         
         try {
             Path audioPath = Paths.get(document.getAudioFilePath());
-            org.springframework.core.io.Resource resource = new org.springframework.core.io.FileSystemResource(audioPath.toFile());
+            File audioFile = audioPath.toFile();
             
-            if (!resource.exists() || !resource.isReadable()) {
-                throw new RuntimeException("Audio file not found or not readable");
+            // Check if file exists and is readable
+            if (!audioFile.exists() || !audioFile.canRead()) {
+                throw new RuntimeException("Audio file not found or not readable: " + audioPath);
             }
+            
+            // Check if file is empty
+            long fileSize = audioFile.length();
+            if (fileSize == 0) {
+                throw new RuntimeException("Audio file is empty: " + audioPath);
+            }
+            
+            org.springframework.core.io.Resource resource = new FileSystemResource(audioFile);
             
             // Determine content type based on file extension
             String contentType = "audio/mpeg"; // Default to MP3
@@ -237,39 +247,15 @@ public class PdfDocumentService {
                 }
             }
             
-            // Support HTTP Range requests for audio streaming (fixes 416 error)
-            long fileLength = resource.contentLength();
-            org.springframework.http.ResponseEntity.BodyBuilder responseBuilder;
-            
-            // Check if Range header is present
-            org.springframework.http.HttpRange range = null;
-            if (headers != null && headers.getRange() != null && !headers.getRange().isEmpty()) {
-                range = headers.getRange().get(0);
-            }
-            
-            if (range != null) {
-                long rangeStart = range.getRangeStart(fileLength);
-                long rangeEnd = range.getRangeEnd(fileLength);
-                long rangeLength = rangeEnd - rangeStart + 1;
-                
-                // Return 206 Partial Content
-                responseBuilder = org.springframework.http.ResponseEntity.status(org.springframework.http.HttpStatus.PARTIAL_CONTENT)
-                    .header(org.springframework.http.HttpHeaders.CONTENT_RANGE, 
-                        "bytes " + rangeStart + "-" + rangeEnd + "/" + fileLength)
-                    .header(org.springframework.http.HttpHeaders.CONTENT_LENGTH, String.valueOf(rangeLength))
-                    .header(org.springframework.http.HttpHeaders.ACCEPT_RANGES, "bytes");
-            } else {
-                // Return full file
-                responseBuilder = org.springframework.http.ResponseEntity.ok()
-                    .header(org.springframework.http.HttpHeaders.CONTENT_LENGTH, String.valueOf(fileLength))
-                    .header(org.springframework.http.HttpHeaders.ACCEPT_RANGES, "bytes");
-            }
-            
-            return responseBuilder
+            // Build response with proper headers for Range request support
+            org.springframework.http.ResponseEntity.BodyBuilder builder = org.springframework.http.ResponseEntity.ok()
                 .header(org.springframework.http.HttpHeaders.CONTENT_DISPOSITION, 
                     "inline; filename=\"" + (document.getAudioFileName() != null ? document.getAudioFileName() : "audio") + "\"")
                 .header(org.springframework.http.HttpHeaders.CONTENT_TYPE, contentType)
-                .body(resource);
+                .header(org.springframework.http.HttpHeaders.ACCEPT_RANGES, "bytes")
+                .contentLength(fileSize);
+            
+            return builder.body(resource);
         } catch (Exception e) {
             throw new RuntimeException("Error downloading audio file: " + e.getMessage());
         }
