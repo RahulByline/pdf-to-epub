@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" xmlns:rendition="http://www.idpf.org/2013/rendition" unique-identifier="book-id" version="3.0">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:title>Untitled</dc:title>
+    <dc:language>en</dc:language>
+    <dc:identifier id="book-id">urn:uuid:7b3481f9-3eb6-46d2-94f1-dfc528b22b1f</dc:identifier>
+    <dc:publisher>Adobe PDF Library 16.0.7</dc:publisher>
+    <meta property="dcterms:modified">2025-12-01T16:40:55.857262800+05:30[Asia/Calcutta]</meta>
+    <meta property="rendition:layout">pre-paginated</meta>
+    <meta property="rendition:orientation">auto</meta>
+    <meta property="rendition:spread">none</meta>
+    <meta property="rendition:viewport">width=device-width, height=device-height</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+    <item id="css" href="fixed-layout.css" media-type="text/css"/>
+    <item id="page-img-1" href="page_1.png" media-type="image/png"/>
+    <item id="page-img-2" href="page_2.png" media-type="image/png"/>
+    <item id="page-img-3" href="page_3.png" media-type="image/png"/>
+    <item id="page-img-4" href="page_4.png" media-type="image/png"/>
+    <item id="page-img-5" href="page_5.png" media-type="image/png"/>
+    <item id="page-img-6" href="page_6.png" media-type="image/png"/>
+    <item id="page-img-7" href="page_7.png" media-type="image/png"/>
+    <item id="page-img-8" href="page_8.png" media-type="image/png"/>
+    <item id="page-img-9" href="page_9.png" media-type="image/png"/>
+    <item id="page-img-10" href="page_10.png" media-type="image/png"/>
+    <item id="page-img-11" href="page_11.png" media-type="image/png"/>
+    <item id="page-img-12" href="page_12.png" media-type="image/png"/>
+    <item id="page-img-13" href="page_13.png" media-type="image/png"/>
+    <item id="page-img-14" href="page_14.png" media-type="image/png"/>
+    <item id="page-img-15" href="page_15.png" media-type="image/png"/>
+    <item id="page-img-16" href="page_16.png" media-type="image/png"/>
+    <item id="page1" href="page_1.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page2" href="page_2.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page3" href="page_3.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page4" href="page_4.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page5" href="page_5.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page6" href="page_6.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page7" href="page_7.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page8" href="page_8.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page9" href="page_9.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page10" href="page_10.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page11" href="page_11.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page12" href="page_12.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page13" href="page_13.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page14" href="page_14.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page15" href="page_15.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+    <item id="page16" href="page_16.xhtml" media-type="application/xhtml+xml" properties="rendition:page-spread-center"/>
+  </manifest>
+  <spine toc="nav">
+    <itemref idref="page1"/>
+    <itemref idref="page2"/>
+    <itemref idref="page3"/>
+    <itemref idref="page4"/>
+    <itemref idref="page5"/>
+    <itemref idref="page6"/>
+    <itemref idref="page7"/>
+    <itemref idref="page8"/>
+    <itemref idref="page9"/>
+    <itemref idref="page10"/>
+    <itemref idref="page11"/>
+    <itemref idref="page12"/>
+    <itemref idref="page13"/>
+    <itemref idref="page14"/>
+    <itemref idref="page15"/>
+    <itemref idref="page16"/>
+  </spine>
+</package>

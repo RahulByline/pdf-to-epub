@@ -1,0 +1,381 @@
+/* Professional Dashboard with Process Steps */
+
+.dashboard-container {
+  width: 100%;
+  max-width: 100%;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+.dashboard-header {
+  margin-bottom: 32px;
+  padding-bottom: 20px;
+  border-bottom: 2px solid #e0e0e0;
+}
+
+.dashboard-header h1 {
+  font-size: 36px;
+  font-weight: 700;
+  color: #212121;
+  margin: 0 0 8px 0;
+  letter-spacing: -0.5px;
+}
+
+.dashboard-subtitle {
+  font-size: 16px;
+  color: #757575;
+  margin: 0;
+  font-weight: 400;
+}
+
+/* Metrics Grid */
+.metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 24px;
+  margin-bottom: 48px;
+  width: 100%;
+}
+
+.metric-card {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  transition: all 0.3s ease;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.metric-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  border-color: #90caf9;
+}
+
+.metric-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 28px;
+  flex-shrink: 0;
+}
+
+.metric-icon.pdf {
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+  color: #1976d2;
+}
+
+.metric-icon.conversion {
+  background: linear-gradient(135deg, #fff3e0 0%, #ffe0b2 100%);
+  color: #f57c00;
+}
+
+.metric-icon.completed {
+  background: linear-gradient(135deg, #e8f5e9 0%, #c8e6c9 100%);
+  color: #2e7d32;
+}
+
+.metric-icon.progress {
+  background: linear-gradient(135deg, #fff9c4 0%, #fff59d 100%);
+  color: #f57f17;
+}
+
+.metric-icon.failed {
+  background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
+  color: #c62828;
+}
+
+.metric-content {
+  flex: 1;
+}
+
+.metric-content h3 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #757575;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin: 0 0 8px 0;
+}
+
+.metric-value {
+  font-size: 36px;
+  font-weight: 700;
+  color: #212121;
+  margin: 0 0 8px 0;
+  line-height: 1;
+}
+
+.metric-link {
+  color: #1976d2;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 500;
+  transition: color 0.2s ease;
+  display: inline-block;
+}
+
+.metric-link:hover {
+  color: #1565c0;
+  text-decoration: underline;
+}
+
+.metric-percentage,
+.metric-status {
+  font-size: 13px;
+  color: #757575;
+  display: block;
+  margin-top: 4px;
+}
+
+/* Process Steps Section */
+.process-section {
+  background: white;
+  border: 1px solid #e0e0e0;
+  border-radius: 12px;
+  padding: 40px;
+  margin-bottom: 32px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.process-section h2 {
+  font-size: 28px;
+  font-weight: 700;
+  color: #212121;
+  margin: 0 0 8px 0;
+}
+
+.process-subtitle {
+  font-size: 16px;
+  color: #757575;
+  margin: 0 0 40px 0;
+}
+
+.process-steps {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 24px;
+  position: relative;
+}
+
+.process-step {
+  flex: 1;
+  min-width: 200px;
+  max-width: 220px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  position: relative;
+  padding: 20px;
+  background: #fafafa;
+  border-radius: 12px;
+  transition: all 0.3s ease;
+}
+
+.process-step:hover {
+  background: #f5f5f5;
+  transform: translateY(-4px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.step-number {
+  position: absolute;
+  top: -12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 32px;
+  height: 32px;
+  background: linear-gradient(135deg, #90caf9 0%, #64b5f6 100%);
+  color: white;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: 700;
+  box-shadow: 0 4px 12px rgba(33, 150, 243, 0.3);
+}
+
+.step-icon {
+  width: 80px;
+  height: 80px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 36px;
+  color: #1976d2;
+  margin: 24px 0 20px 0;
+  box-shadow: 0 4px 12px rgba(33, 150, 243, 0.15);
+}
+
+.step-content {
+  flex: 1;
+}
+
+.step-content h3 {
+  font-size: 18px;
+  font-weight: 600;
+  color: #212121;
+  margin: 0 0 12px 0;
+}
+
+.step-content p {
+  font-size: 14px;
+  color: #757575;
+  line-height: 1.6;
+  margin: 0 0 16px 0;
+}
+
+.step-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #1976d2;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: 8px;
+  transition: all 0.2s ease;
+}
+
+.step-action:hover {
+  background-color: #e3f2fd;
+  color: #1565c0;
+}
+
+.step-connector {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  color: #90caf9;
+  font-size: 24px;
+  margin-top: 60px;
+  flex-shrink: 0;
+}
+
+/* Quick Actions */
+.quick-actions-section {
+  margin-top: 40px;
+  padding-top: 32px;
+  border-top: 2px solid #e0e0e0;
+}
+
+.quick-actions-section h2 {
+  font-size: 24px;
+  font-weight: 700;
+  color: #212121;
+  margin: 0 0 24px 0;
+}
+
+.action-buttons {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  width: 100%;
+}
+
+.action-buttons .btn {
+  padding: 14px 28px;
+  font-weight: 600;
+  border-radius: 12px;
+  transition: all 0.3s ease;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.action-buttons .btn .btn-icon {
+  font-size: 20px;
+}
+
+.action-buttons .btn:active {
+  transform: translateY(0);
+}
+
+/* Responsive Design */
+@media (max-width: 1200px) {
+  .process-steps {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .process-step {
+    max-width: 100%;
+    flex-direction: row;
+    text-align: left;
+  }
+
+  .step-icon {
+    margin: 0 24px 0 0;
+    flex-shrink: 0;
+  }
+
+  .step-connector {
+    transform: rotate(90deg);
+    margin: 8px 0;
+    width: 100%;
+    height: 40px;
+  }
+}
+
+@media (max-width: 768px) {
+  .metrics-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-header h1 {
+    font-size: 28px;
+  }
+
+  .process-section {
+    padding: 24px;
+  }
+
+  .process-steps {
+    gap: 16px;
+  }
+
+  .process-step {
+    min-width: 100%;
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .step-icon {
+    margin: 24px 0 20px 0;
+  }
+
+  .step-connector {
+    transform: rotate(90deg);
+    margin: 8px 0;
+  }
+
+  .metric-card {
+    padding: 20px;
+  }
+
+  .metric-icon {
+    width: 56px;
+    height: 56px;
+    font-size: 24px;
+  }
+
+  .metric-value {
+    font-size: 28px;
+  }
+}

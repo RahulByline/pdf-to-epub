@@ -1,0 +1,97 @@
+/* Fixed Layout EPUB Styles - Full Screen Constant Display */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  position: fixed;
+  top: 0;
+  left: 0;
+}
+
+.fixed-layout-page {
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  width: 100vw;
+  height: 100vh;
+  position: fixed;
+  top: 0;
+  left: 0;
+  display: block;
+}
+
+.page-container {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: white;
+}
+
+.page-image {
+  width: 100vw;
+  height: 100vh;
+  object-fit: contain;
+  display: block;
+  margin: 0;
+  padding: 0;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+  /* Preserve full image without cropping - scale to fit viewport */
+  object-position: center center;
+  /* Ensure image maintains aspect ratio and fits within viewport */
+  max-width: 100vw;
+  max-height: 100vh;
+}
+
+.text-content {
+  /* Visually hidden but accessible to screen readers and TTS */
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+  z-index: 2;
+  /* Ensure text is readable by TTS but not visible */
+  color: transparent;
+  background: transparent;
+}
+
+.text-content p,
+.text-content h1,
+.text-content h2,
+.text-content h3,
+.text-content h4,
+.text-content h5,
+.text-content h6,
+.text-content ul,
+.text-content ol,
+.text-content li {
+  margin: 0;
+  padding: 0;
+  display: block;
+}
+
+.page-number {
+  display: none;
+}
