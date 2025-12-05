@@ -186,9 +186,11 @@ public class PdfController {
     }
 
     @GetMapping("/{id}/audio")
-    public ResponseEntity<?> getAudioFile(@PathVariable Long id) {
+    public ResponseEntity<?> getAudioFile(@PathVariable Long id, 
+            @RequestHeader(value = "Range", required = false) String rangeHeader,
+            org.springframework.http.HttpHeaders headers) {
         try {
-            return pdfDocumentService.downloadAudio(id);
+            return pdfDocumentService.downloadAudio(id, headers);
         } catch (RuntimeException e) {
             // Return JSON error response, not audio content type
             return ResponseEntity.status(HttpStatus.NOT_FOUND)

@@ -44,6 +44,12 @@ public class AudioSync {
     @Column(name = "notes", columnDefinition = "TEXT")
     private String notes; // Optional notes for this sync point
 
+    @Column(name = "custom_text", columnDefinition = "TEXT")
+    private String customText; // Custom text for user-selected segments
+
+    @Column(name = "is_custom_segment")
+    private Boolean isCustomSegment = false; // Whether this is a custom user-selected segment
+
     @CreationTimestamp
     @Column(name = "created_at", updatable = false)
     private LocalDateTime createdAt;

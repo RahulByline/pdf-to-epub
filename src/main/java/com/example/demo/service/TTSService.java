@@ -150,20 +150,95 @@ public class TTSService {
      * Generates audio for a single text block and returns timing metadata
      * KITABOO-style: Uses intelligent duration estimation based on text analysis
      */
-    private AudioSegment generateBlockAudio(String text, String blockId, String languageCode) {
+    public AudioSegment generateBlockAudio(String text, String blockId, String languageCode) {
         try {
             if ("google".equalsIgnoreCase(ttsProvider) && !googleCloudApiKey.isEmpty()) {
                 return generateGoogleTTSAudio(text, blockId, languageCode);
             } else if ("freetts".equalsIgnoreCase(ttsProvider)) {
                 return generateFreeTTSAudio(text, blockId);
             } else {
-                // Default: Use intelligent duration estimation (KITABOO-style)
-                // This calculates timing based on text length, punctuation, and reading speed
-                return estimateAudioDurationIntelligent(text, blockId, languageCode);
+                // Default: Generate silent audio file with estimated duration
+                // This creates an actual playable audio file
+                return generateSilentAudioFile(text, blockId, languageCode);
             }
         } catch (Exception e) {
             logger.warn("Error generating audio for block {}: {}", blockId, e.getMessage());
-            return estimateAudioDuration(text, blockId);
+            return generateSilentAudioFile(text, blockId, languageCode);
+        }
+    }
+    
+    /**
+     * Generates a silent WAV audio file with estimated duration
+     * This creates an actual playable audio file for synchronization
+     */
+    private AudioSegment generateSilentAudioFile(String text, String blockId, String languageCode) {
+        try {
+            // First estimate the duration
+            AudioSegment segment = estimateAudioDurationIntelligent(text, blockId, languageCode);
+            
+            if (segment.duration <= 0) {
+                segment.duration = 1.0; // Minimum 1 second
+            }
+            
+            // Create output directory
+            File outputDir = new File(ttsOutputDir);
+            if (!outputDir.exists()) {
+                outputDir.mkdirs();
+            }
+            
+            // Generate unique filename
+            String fileName = "tts_block_" + blockId + "_" + System.currentTimeMillis() + ".wav";
+            File audioFile = new File(outputDir, fileName);
+            
+            // Generate silent WAV file with estimated duration
+            generateSilentWavFile(audioFile, segment.duration);
+            
+            segment.audioFile = audioFile;
+            logger.info("Generated silent audio file for block {}: {} (duration: {:.2f}s)", 
+                       blockId, audioFile.getAbsolutePath(), segment.duration);
+            
+            return segment;
+        } catch (Exception e) {
+            logger.error("Error generating silent audio file for block {}: {}", blockId, e.getMessage(), e);
+            // Return segment with null audio file as fallback
+            AudioSegment segment = estimateAudioDurationIntelligent(text, blockId, languageCode);
+            segment.audioFile = null;
+            return segment;
+        }
+    }
+    
+    /**
+     * Generates a silent WAV file with specified duration
+     */
+    private void generateSilentWavFile(File outputFile, double durationSeconds) throws IOException {
+        int sampleRate = 44100; // CD quality
+        int numChannels = 1; // Mono
+        int bitsPerSample = 16;
+        int numSamples = (int) (sampleRate * durationSeconds);
+        int dataSize = numSamples * numChannels * (bitsPerSample / 8);
+        
+        try (java.io.FileOutputStream fos = new java.io.FileOutputStream(outputFile);
+             java.io.DataOutputStream dos = new java.io.DataOutputStream(fos)) {
+            
+            // WAV header
+            dos.writeBytes("RIFF");
+            dos.writeInt(36 + dataSize); // Chunk size
+            dos.writeBytes("WAVE");
+            dos.writeBytes("fmt ");
+            dos.writeInt(16); // Subchunk1Size
+            dos.writeShort(1); // AudioFormat (PCM)
+            dos.writeShort(numChannels);
+            dos.writeInt(sampleRate);
+            dos.writeInt(sampleRate * numChannels * bitsPerSample / 8); // ByteRate
+            dos.writeShort(numChannels * bitsPerSample / 8); // BlockAlign
+            dos.writeShort(bitsPerSample);
+            dos.writeBytes("data");
+            dos.writeInt(dataSize);
+            
+            // Write silent samples (zeros)
+            for (int i = 0; i < numSamples; i++) {
+                dos.writeShort(0); // Silent sample
+            }
         }
     }
     
@@ -417,12 +492,12 @@ public class TTSService {
     /**
      * Audio segment with timing metadata
      */
-    private static class AudioSegment {
-        File audioFile;
-        double duration;
-        double startTime;
-        double endTime;
-        String blockId;
+    public static class AudioSegment {
+        public File audioFile;
+        public double duration;
+        public double startTime;
+        public double endTime;
+        public String blockId;
     }
 }
 

@@ -38,6 +38,9 @@ public class AudioSyncController {
     @Autowired
     private com.example.demo.service.EpubUpdateService epubUpdateService;
 
+    @Autowired(required = false)
+    private com.example.demo.service.TTSService ttsService;
+
     @GetMapping("/pdf/{pdfId}")
     public ResponseEntity<List<AudioSync>> getAudioSyncsByPdf(@PathVariable Long pdfId) {
         try {
@@ -520,6 +523,69 @@ public class AudioSyncController {
 
         } catch (Exception e) {
             logger.error("Error updating text block for job {}: {}", jobId, e.getMessage(), e);
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Unknown error occurred"));
+        }
+    }
+
+    /**
+     * Generate TTS audio for a text block
+     */
+    @PostMapping("/job/{jobId}/generate-tts")
+    public ResponseEntity<?> generateTTSForBlock(
+            @PathVariable Long jobId,
+            @RequestBody Map<String, Object> request) {
+        try {
+            String text = (String) request.get("text");
+            String blockId = (String) request.get("blockId");
+            @SuppressWarnings("unused")
+            String voice = (String) request.getOrDefault("voice", "kid-friendly");
+            @SuppressWarnings("unused")
+            Integer pageNumber = (Integer) request.get("pageNumber");
+            
+            if (text == null || text.trim().isEmpty()) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Map.of("error", "Text is required"));
+            }
+            
+            if (ttsService == null) {
+                return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
+                    .body(Map.of("error", "TTS service is not available"));
+            }
+            
+            // Generate TTS audio for the text block
+            com.example.demo.service.TTSService.AudioSegment segment = 
+                ttsService.generateBlockAudio(text, blockId, "en-US");
+            
+            if (segment != null && segment.audioFile != null && segment.audioFile.exists()) {
+                // Determine content type based on file extension
+                String contentType = "audio/wav";
+                String fileName = segment.audioFile.getName();
+                if (fileName.endsWith(".mp3")) {
+                    contentType = "audio/mpeg";
+                } else if (fileName.endsWith(".wav")) {
+                    contentType = "audio/wav";
+                }
+                
+                // Return audio file
+                Resource resource = new FileSystemResource(segment.audioFile);
+                
+                return ResponseEntity.ok()
+                    .contentType(MediaType.parseMediaType(contentType))
+                    .header(HttpHeaders.CONTENT_DISPOSITION, 
+                        "inline; filename=\"" + fileName + "\"")
+                    .header(HttpHeaders.ACCEPT_RANGES, "bytes")
+                    .header(HttpHeaders.CONTENT_LENGTH, String.valueOf(segment.audioFile.length()))
+                    .body(resource);
+            } else {
+                logger.error("TTS generation failed: segment={}, audioFile={}", 
+                           segment != null, segment != null && segment.audioFile != null);
+                return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Map.of("error", "Failed to generate TTS audio file"));
+            }
+            
+        } catch (Exception e) {
+            logger.error("Error generating TTS audio: {}", e.getMessage(), e);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(Map.of("error", e.getMessage() != null ? e.getMessage() : "Unknown error occurred"));
         }

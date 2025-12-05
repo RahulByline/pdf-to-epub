@@ -15,3 +15,4 @@ public interface AiConfigurationRepository extends JpaRepository<AiConfiguration
 }
 
 
+
