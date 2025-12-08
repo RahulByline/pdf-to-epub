@@ -190,10 +190,15 @@ router.get('/:jobId/download', async (req, res) => {
       const fileBuffer = await fs.readFile(job.epubFilePath);
 
       console.log('Sending EPUB file:', fileName, 'Size:', fileBuffer.length);
-      res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+      
+      // Set headers for binary file download
+      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
       res.setHeader('Content-Type', 'application/epub+zip');
-      res.setHeader('Content-Length', fileBuffer.length);
-      return res.send(fileBuffer);
+      res.setHeader('Content-Length', fileBuffer.length.toString());
+      res.setHeader('Cache-Control', 'no-cache');
+      
+      // Use end() instead of send() for binary data to avoid any JSON wrapping
+      return res.end(fileBuffer, 'binary');
     } catch (error) {
       console.error('Error reading EPUB file:', error);
       return errorResponse(res, 'Error downloading EPUB: ' + error.message, 500);
@@ -265,6 +270,94 @@ router.get('/:jobId/epub-section/:sectionId/xhtml', async (req, res) => {
     res.setHeader('Content-Type', 'application/xhtml+xml');
     return res.send(xhtml);
   } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// GET /api/conversions/:jobId/text-blocks - Get PDF text blocks for audio sync
+router.get('/:jobId/text-blocks', async (req, res) => {
+  try {
+    const job = await ConversionService.getConversionJob(parseInt(req.params.jobId));
+    
+    if (!job.pdfDocumentId) {
+      return badRequestResponse(res, 'PDF document not found for this job');
+    }
+
+    const { PdfDocumentModel } = await import('../models/PdfDocument.js');
+    const pdf = await PdfDocumentModel.findById(job.pdfDocumentId || job.pdf_document_id);
+    
+    if (!pdf) {
+      return notFoundResponse(res, 'PDF document not found');
+    }
+
+    // Get file path - handle both camelCase and snake_case
+    const pdfFilePath = pdf.file_path || pdf.filePath;
+    if (!pdfFilePath) {
+      return notFoundResponse(res, 'PDF file path not found in database');
+    }
+
+    // Re-extract text blocks from PDF (or get from intermediate_data if stored)
+    const { PdfExtractionService } = await import('../services/pdfExtractionService.js');
+    const { getUploadDir } = await import('../config/fileStorage.js');
+    
+    // Resolve PDF file path (same logic as conversionService)
+    let resolvedPdfPath = pdfFilePath;
+    try {
+      await fs.access(resolvedPdfPath);
+    } catch (accessError) {
+      // Try resolving relative to uploads directory
+      const uploadDir = getUploadDir();
+      const fileName = path.basename(pdfFilePath);
+      const resolvedPath = path.join(uploadDir, fileName);
+      try {
+        await fs.access(resolvedPath);
+        resolvedPdfPath = resolvedPath;
+        console.log(`[Text Blocks] Resolved PDF path: ${resolvedPdfPath}`);
+      } catch (resolvedError) {
+        console.error(`[Text Blocks] PDF file not found at ${pdfFilePath} or ${resolvedPath}`);
+        return errorResponse(res, `PDF file not found at ${pdfFilePath} or ${resolvedPath}`, 404);
+      }
+    }
+    
+    const textData = await PdfExtractionService.extractText(resolvedPdfPath);
+    
+    // Format text blocks for frontend
+    const textBlocks = [];
+    textData.pages.forEach((page, pageIndex) => {
+      (page.textBlocks || []).forEach((block, blockIndex) => {
+        textBlocks.push({
+          id: `page_${page.pageNumber}_block_${blockIndex}`,
+          pageNumber: page.pageNumber,
+          text: block.text || '',
+          x: block.x || 0,
+          y: block.y || 0,
+          width: block.width || 0,
+          height: block.height || 0,
+          fontSize: block.fontSize || 12,
+          fontName: block.fontName || 'Arial'
+        });
+      });
+    });
+    
+    return successResponse(res, {
+      pages: textData.pages.map(p => ({
+        pageNumber: p.pageNumber,
+        text: p.text,
+        textBlocks: (p.textBlocks || []).map((block, idx) => ({
+          id: `page_${p.pageNumber}_block_${idx}`,
+          pageNumber: p.pageNumber,
+          text: block.text || '',
+          x: block.x || 0,
+          y: block.y || 0,
+          width: block.width || 0,
+          height: block.height || 0,
+          fontSize: block.fontSize || 12,
+          fontName: block.fontName || 'Arial'
+        }))
+      }))
+    });
+  } catch (error) {
+    console.error('Error getting text blocks:', error);
     return errorResponse(res, error.message, 500);
   }
 });

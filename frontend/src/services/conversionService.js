@@ -49,6 +49,9 @@ export const conversionService = {
     api.get(`/conversions/${jobId}/epub-text`).then(res => res.data.data),
   
   getSectionXhtml: (jobId, sectionId) =>
-    api.get(`/conversions/${jobId}/epub-section/${sectionId}/xhtml`).then(res => res.data)
+    api.get(`/conversions/${jobId}/epub-section/${sectionId}/xhtml`).then(res => res.data),
+  
+  getTextBlocks: (jobId) =>
+    api.get(`/conversions/${jobId}/text-blocks`).then(res => res.data.data)
 };
 

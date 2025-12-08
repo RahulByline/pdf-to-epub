@@ -10,25 +10,35 @@
     "stop-port": "powershell -ExecutionPolicy Bypass -File ./stop-port.ps1",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "keywords": ["pdf", "epub", "converter"],
+  "keywords": [
+    "pdf",
+    "epub",
+    "converter"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "express": "^4.18.2",
-    "mysql2": "^3.6.5",
-    "dotenv": "^16.3.1",
-    "cors": "^2.8.5",
-    "multer": "^1.4.5-lts.1",
+    "@google/generative-ai": "^0.24.1",
     "bcryptjs": "^2.4.3",
-    "jsonwebtoken": "^9.0.2",
-    "uuid": "^9.0.1",
-    "jszip": "^3.10.1",
-    "pdf-parse": "^1.1.1",
+    "canvas": "^3.2.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
     "formidable": "^3.5.1",
-    "mime-types": "^2.1.35"
+    "gtts": "^0.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.1",
+    "mime-types": "^2.1.35",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.6.5",
+    "pdf-lib": "^1.17.1",
+    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^5.4.449",
+    "puppeteer": "^24.32.0",
+    "sharp": "^0.34.5",
+    "uuid": "^9.0.1"
   },
   "devDependencies": {
     "nodemon": "^3.0.2"
   }
 }
-

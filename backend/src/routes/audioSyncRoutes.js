@@ -140,29 +140,43 @@ router.get('/job/:jobId/extract-text', async (req, res) => {
 // POST /api/audio-sync/generate - Generate audio for text chunks
 router.post('/generate', async (req, res) => {
   try {
-    const { pdfId, jobId, voice = 'standard', useEpub = true } = req.body;
+    const { pdfId, jobId, voice = 'standard', textBlocks } = req.body;
     
     if (!pdfId || !jobId) {
       return badRequestResponse(res, 'PDF ID and Job ID are required');
     }
 
-    // Extract text from EPUB if available, otherwise from PDF
+    // Use provided text blocks if available, otherwise extract from EPUB/PDF
     let textChunks;
-    if (useEpub) {
+    if (textBlocks && Array.isArray(textBlocks) && textBlocks.length > 0) {
+      // Use the text blocks provided by the frontend (user-selected/edited blocks)
+      textChunks = textBlocks.map((block, idx) => ({
+        id: block.id || `block_${idx}`,
+        pageNumber: block.pageNumber || 1,
+        text: block.text || '',
+        sectionId: block.sectionId,
+        sectionTitle: block.sectionTitle
+      }));
+      console.log(`[Audio Generate] Using ${textChunks.length} provided text blocks`);
+    } else {
+      // Fallback: Extract text from EPUB if available, otherwise from PDF
       try {
         textChunks = await AudioSyncService.extractTextFromEpub(jobId);
       } catch (error) {
         console.warn('Failed to extract from EPUB, falling back to PDF:', error.message);
         textChunks = await AudioSyncService.extractTextFromPdf(pdfId);
       }
-    } else {
-      textChunks = await AudioSyncService.extractTextFromPdf(pdfId);
+    }
+    
+    if (!textChunks || textChunks.length === 0) {
+      return badRequestResponse(res, 'No text chunks available to generate audio from');
     }
     
     const audioSegments = await AudioSyncService.generateCompleteAudio(textChunks, voice, pdfId, jobId);
     
     return successResponse(res, audioSegments, 201);
   } catch (error) {
+    console.error('Error generating audio:', error);
     return errorResponse(res, error.message, 500);
   }
 });

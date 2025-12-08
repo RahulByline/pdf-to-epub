@@ -1,0 +1,7 @@
+{
+  "dependencies": {
+    "pdf2pic": "^3.2.0",
+    "pdfjs-dist": "^5.4.449",
+    "pdfjs-dist-legacy": "^1.0.1"
+  }
+}

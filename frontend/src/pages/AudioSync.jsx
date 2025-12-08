@@ -3,7 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { audioSyncService } from '../services/audioSyncService';
 import { conversionService } from '../services/conversionService';
 import { pdfService } from '../services/pdfService';
-import { HiOutlinePlay, HiOutlinePause, HiOutlineVolumeUp, HiOutlineArrowLeft, HiOutlineCode, HiOutlineDocumentText, HiOutlineDownload } from 'react-icons/hi';
+import { HiOutlinePlay, HiOutlinePause, HiOutlineVolumeUp, HiOutlineArrowLeft, HiOutlineCode, HiOutlineDocumentText, HiOutlineDownload, HiOutlinePencil, HiOutlineCheck, HiOutlineX } from 'react-icons/hi';
 import './AudioSync.css';
 
 const AudioSync = () => {
@@ -15,9 +15,12 @@ const AudioSync = () => {
   const [pdf, setPdf] = useState(null);
   const [epubSections, setEpubSections] = useState([]);
   const [epubTextContent, setEpubTextContent] = useState([]);
-  const [selectedSection, setSelectedSection] = useState(null);
+  const [selectedPage, setSelectedPage] = useState(1);
   const [viewMode, setViewMode] = useState('text'); // 'text' or 'xhtml'
   const [textChunks, setTextChunks] = useState([]);
+  const [selectedBlocks, setSelectedBlocks] = useState([]); // Array of selected block IDs
+  const [editingBlockId, setEditingBlockId] = useState(null); // ID of block being edited
+  const [editedText, setEditedText] = useState(''); // Temporary text while editing
   const [audioSegments, setAudioSegments] = useState([]);
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState('standard');
@@ -73,7 +76,7 @@ const AudioSync = () => {
         setPdf(pdfData);
       }
 
-      // Load EPUB sections and text content
+      // Load EPUB sections and text content (optional - not required for text blocks)
       try {
         const [sections, textContent] = await Promise.all([
           conversionService.getEpubSections(parseInt(jobId)),
@@ -81,21 +84,41 @@ const AudioSync = () => {
         ]);
         setEpubSections(sections);
         setEpubTextContent(textContent);
-        if (sections.length > 0) {
-          setSelectedSection(sections[0]);
-        }
       } catch (err) {
-        console.error('Error loading EPUB content:', err);
-        setError('Failed to load EPUB content. EPUB file may not be available yet.');
+        // EPUB content is optional - we're using PDF text blocks instead
+        console.warn('EPUB content not available (this is OK if using PDF text blocks):', err.message);
       }
 
-      // Load text chunks for audio syncing (from EPUB)
+      // Load text blocks from PDF (actual extracted text with coordinates)
       try {
-        const chunks = await audioSyncService.extractTextFromEpub(parseInt(jobId));
-        // Store chunks for audio generation
+        const textBlocksData = await conversionService.getTextBlocks(parseInt(jobId));
+        // Convert text blocks to chunks format for display
+        const chunks = [];
+        textBlocksData.pages.forEach(page => {
+          page.textBlocks.forEach((block, idx) => {
+            chunks.push({
+              id: block.id || `page_${page.pageNumber}_block_${idx}`,
+              pageNumber: page.pageNumber,
+              text: block.text,
+              x: block.x,
+              y: block.y,
+              width: block.width,
+              height: block.height,
+              fontSize: block.fontSize,
+              fontName: block.fontName
+            });
+          });
+        });
         setTextChunks(chunks);
       } catch (err) {
-        console.warn('Could not extract text from EPUB, will use PDF text:', err);
+        console.warn('Could not extract text blocks from PDF:', err);
+        // Fallback to EPUB text extraction
+        try {
+          const chunks = await audioSyncService.extractTextFromEpub(parseInt(jobId));
+          setTextChunks(chunks);
+        } catch (epubErr) {
+          console.warn('Could not extract text from EPUB either:', epubErr);
+        }
       }
 
       if (audioData && audioData.length > 0) {
@@ -123,8 +146,18 @@ const AudioSync = () => {
   };
 
   const handleGenerateAudio = async () => {
-    if (!pdf || !selectedSection) {
-      setError('Please select an EPUB section first');
+    if (!pdf) {
+      setError('PDF not available');
+      return;
+    }
+
+    // If blocks are selected, generate audio only for selected blocks
+    const blocksToGenerate = selectedBlocks.length > 0 
+      ? textChunks.filter(chunk => selectedBlocks.includes(chunk.id))
+      : textChunks.filter(chunk => chunk.pageNumber === selectedPage);
+
+    if (blocksToGenerate.length === 0) {
+      setError('Please select at least one text block to generate audio for');
       return;
     }
 
@@ -132,20 +165,71 @@ const AudioSync = () => {
       setGenerating(true);
       setError('');
       
-      // Generate audio for all EPUB sections
+      // Generate audio for selected blocks - pass the actual text blocks
       const segments = await audioSyncService.generateAudio(
         pdf.id,
         parseInt(jobId),
-        selectedVoice
+        selectedVoice,
+        blocksToGenerate // Pass the actual text blocks
       );
       
       setAudioSegments(segments);
+      setSelectedBlocks([]); // Clear selection after generation
+      
+      // Reload audio syncs to get the updated audio file
+      const audioData = await audioSyncService.getAudioSyncsByJob(parseInt(jobId));
+      if (audioData && audioData.length > 0) {
+        setAudioSegments(audioData);
+        // Force audio player to reload
+        if (audioRef.current) {
+          audioRef.current.load();
+        }
+      }
     } catch (err) {
       console.error('Error generating audio:', err);
       setError(err.message || 'Failed to generate audio');
     } finally {
       setGenerating(false);
     }
+  };
+
+  const handleBlockSelect = (blockId, event) => {
+    // Don't select if clicking on edit button or if editing
+    if (editingBlockId === blockId || event.target.closest('.edit-button')) {
+      return;
+    }
+    
+    if (event.ctrlKey || event.metaKey) {
+      // Multi-select with Ctrl/Cmd
+      setSelectedBlocks(prev => 
+        prev.includes(blockId) 
+          ? prev.filter(id => id !== blockId)
+          : [...prev, blockId]
+      );
+    } else {
+      // Single select
+      setSelectedBlocks([blockId]);
+    }
+  };
+
+  const handleStartEdit = (block) => {
+    setEditingBlockId(block.id);
+    setEditedText(block.text || '');
+  };
+
+  const handleSaveEdit = (blockId) => {
+    setTextChunks(prev => prev.map(chunk => 
+      chunk.id === blockId 
+        ? { ...chunk, text: editedText }
+        : chunk
+    ));
+    setEditingBlockId(null);
+    setEditedText('');
+  };
+
+  const handleCancelEdit = () => {
+    setEditingBlockId(null);
+    setEditedText('');
   };
 
   const handlePlayPause = () => {
@@ -174,14 +258,8 @@ const AudioSync = () => {
     setCurrentTime(newTime);
   };
 
-  const handleSectionClick = (section) => {
-    setSelectedSection(section);
-    setSelectedChunk(null);
-  };
-
-  const handleChunkClick = (chunk) => {
-    setSelectedChunk(chunk);
-    const segment = audioSegments.find(s => s.blockId === `chunk_${chunk.id}`);
+  const handleBlockClick = (block) => {
+    const segment = audioSegments.find(s => s.blockId === block.id);
     if (segment && audioRef.current) {
       audioRef.current.currentTime = segment.startTime;
       setCurrentTime(segment.startTime);
@@ -206,8 +284,6 @@ const AudioSync = () => {
   if (loading) {
     return <div className="loading">Loading audio sync interface...</div>;
   }
-
-  const currentSectionText = epubTextContent.find(t => t.sectionId === selectedSection?.id);
 
   return (
     <div className="audio-sync-container">
@@ -258,7 +334,7 @@ const AudioSync = () => {
           </select>
           <button
             onClick={handleGenerateAudio}
-            disabled={generating || !pdf || !selectedSection}
+            disabled={generating || !pdf || selectedBlocks.length === 0}
             className="btn btn-primary"
           >
             {generating ? 'Generating...' : 'Generate Audio'}
@@ -313,16 +389,16 @@ const AudioSync = () => {
           </div>
         </div>
 
-        {/* Right Side - EPUB Content */}
+        {/* Right Side - PDF Text Blocks */}
         <div className="content-viewer-panel">
           <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '12px' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1 }}>
-              <label style={{ fontSize: '14px', fontWeight: '500', color: '#212121' }}>Section:</label>
+              <label style={{ fontSize: '14px', fontWeight: '500', color: '#212121' }}>Page:</label>
               <select
-                value={selectedSection?.id || ''}
+                value={selectedPage}
                 onChange={(e) => {
-                  const section = epubSections.find(s => s.id === parseInt(e.target.value));
-                  if (section) handleSectionClick(section);
+                  setSelectedPage(parseInt(e.target.value));
+                  setSelectedBlocks([]);
                 }}
                 style={{
                   padding: '8px 12px',
@@ -332,85 +408,74 @@ const AudioSync = () => {
                   backgroundColor: '#ffffff',
                   color: '#212121',
                   cursor: 'pointer',
-                  minWidth: '200px',
+                  minWidth: '100px',
                   outline: 'none',
                   transition: 'border-color 0.2s ease'
                 }}
                 onFocus={(e) => e.target.style.borderColor = '#90caf9'}
                 onBlur={(e) => e.target.style.borderColor = '#e0e0e0'}
               >
-                {epubSections.length === 0 ? (
-                  <option value="">No sections available</option>
-                ) : (
-                  epubSections.map(section => (
-                    <option key={section.id} value={section.id}>
-                      {section.title}
-                    </option>
-                  ))
-                )}
+                {Array.from({ length: Math.max(...(textChunks.map(c => c.pageNumber) || [1])) }, (_, i) => i + 1).map(pageNum => (
+                  <option key={pageNum} value={pageNum}>
+                    Page {pageNum}
+                  </option>
+                ))}
               </select>
+              {selectedBlocks.length > 0 && (
+                <span style={{ fontSize: '13px', color: '#1976d2', fontWeight: '500' }}>
+                  {selectedBlocks.length} block{selectedBlocks.length !== 1 ? 's' : ''} selected
+                </span>
+              )}
             </div>
-            <div style={{ display: 'flex', gap: '8px' }}>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
               <button
-                onClick={() => setViewMode('text')}
+                onClick={() => {
+                  const pageBlocks = textChunks.filter(c => c.pageNumber === selectedPage).map(c => c.id);
+                  setSelectedBlocks(pageBlocks);
+                }}
                 style={{
                   padding: '6px 12px',
-                  border: 'none',
+                  border: '1px solid #e0e0e0',
                   borderRadius: '6px',
-                  backgroundColor: viewMode === 'text' ? '#1976d2' : '#f5f5f5',
-                  color: viewMode === 'text' ? '#ffffff' : '#666',
+                  backgroundColor: '#ffffff',
+                  color: '#666',
                   cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontSize: '13px',
-                  fontWeight: viewMode === 'text' ? '600' : '400',
+                  fontSize: '12px',
                   transition: 'all 0.2s ease'
                 }}
               >
-                <HiOutlineDocumentText size={16} />
-                Text
+                Select All
               </button>
               <button
-                onClick={() => setViewMode('xhtml')}
+                onClick={() => setSelectedBlocks([])}
                 style={{
                   padding: '6px 12px',
-                  border: 'none',
+                  border: '1px solid #e0e0e0',
                   borderRadius: '6px',
-                  backgroundColor: viewMode === 'xhtml' ? '#1976d2' : '#f5f5f5',
-                  color: viewMode === 'xhtml' ? '#ffffff' : '#666',
+                  backgroundColor: '#ffffff',
+                  color: '#666',
                   cursor: 'pointer',
-                  display: 'flex',
-                  alignItems: 'center',
-                  gap: '6px',
-                  fontSize: '13px',
-                  fontWeight: viewMode === 'xhtml' ? '600' : '400',
+                  fontSize: '12px',
                   transition: 'all 0.2s ease'
                 }}
               >
-                <HiOutlineCode size={16} />
-                XHTML
+                Clear
               </button>
             </div>
           </div>
           <div className="content-viewer">
-            {selectedSection ? (
-              viewMode === 'xhtml' ? (
-                <pre style={{
-                  margin: 0,
-                  padding: '24px',
-                  backgroundColor: '#f5f5f5',
-                  fontFamily: 'monospace',
-                  fontSize: '13px',
-                  lineHeight: '1.6',
-                  overflow: 'auto',
-                  height: '100%',
-                  whiteSpace: 'pre-wrap',
-                  wordWrap: 'break-word'
-                }}>
-                  {currentSectionText?.xhtml || selectedSection.xhtml}
-                </pre>
-              ) : (
+            {(() => {
+              const pageBlocks = (textChunks || []).filter(chunk => chunk.pageNumber === selectedPage);
+              
+              if (pageBlocks.length === 0) {
+                return (
+                  <div style={{ padding: '40px', textAlign: 'center', color: '#999' }}>
+                    No text blocks found for page {selectedPage}
+                  </div>
+                );
+              }
+              
+              return (
                 <div style={{
                   padding: '24px',
                   fontSize: '15px',
@@ -419,119 +484,193 @@ const AudioSync = () => {
                   overflow: 'auto',
                   height: '100%'
                 }}>
-                  {(() => {
-                    // Filter text chunks for the selected section
-                    const sectionChunks = (textChunks || []).filter(chunk => chunk.sectionId === selectedSection.id);
-                    
-                    if (sectionChunks.length === 0 && currentSectionText) {
-                      // Fallback: show text from epubTextContent
-                      return (
-                        <div>
-                          <h2 style={{ marginTop: 0, marginBottom: '20px', color: '#1976d2' }}>
-                            {currentSectionText.title}
-                          </h2>
-                          <div style={{ whiteSpace: 'pre-wrap' }}>
-                            {currentSectionText.text.split('\n').filter(p => p.trim()).map((paragraph, idx) => (
-                              <div
-                                key={idx}
-                                style={{
-                                  marginBottom: '16px',
-                                  padding: '12px',
-                                  backgroundColor: '#fafafa',
-                                  borderRadius: '6px',
-                                  cursor: 'pointer',
-                                  transition: 'background-color 0.2s'
-                                }}
-                                onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#f0f0f0'}
-                                onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#fafafa'}
-                                onClick={() => {
-                                  const chunk = { id: idx + 1, text: paragraph, sectionId: selectedSection.id };
-                                  handleChunkClick(chunk);
-                                }}
-                              >
-                                {paragraph}
-                              </div>
-                            ))}
-                          </div>
-                        </div>
-                      );
-                    }
-                    
-                    if (sectionChunks.length > 0) {
-                      return (
-                        <div>
-                          <h2 style={{ marginTop: 0, marginBottom: '20px', color: '#1976d2' }}>
-                            {sectionChunks[0]?.sectionTitle || selectedSection.title}
-                          </h2>
-                          <div>
-                            {sectionChunks.map((chunk, idx) => {
-                              const segment = audioSegments.find(s => s.blockId === `chunk_${chunk.id}`);
-                              const isSelected = selectedChunk?.id === chunk.id;
-                              const isActive = segment && currentTime >= segment.startTime && currentTime <= segment.endTime;
+                  <div style={{ marginBottom: '20px', padding: '12px', backgroundColor: '#e3f2fd', borderRadius: '8px', fontSize: '14px' }}>
+                    <strong>Instructions:</strong> Click on text blocks to select them (hold Ctrl/Cmd for multi-select), then click "Generate Audio" to create audio for selected blocks.
+                  </div>
+                  
+                  <h2 style={{ marginTop: 0, marginBottom: '20px', color: '#1976d2', fontSize: '20px' }}>
+                    Page {selectedPage} - {pageBlocks.length} text block{pageBlocks.length !== 1 ? 's' : ''}
+                  </h2>
+                  
+                  <div>
+                    {pageBlocks.map((block, idx) => {
+                      const isSelected = selectedBlocks.includes(block.id);
+                      const isEditing = editingBlockId === block.id;
+                      const segment = audioSegments.find(s => s.blockId === block.id);
+                      const isActive = segment && currentTime >= segment.startTime && currentTime <= segment.endTime;
 
-                              return (
-                                <div
-                                  key={chunk.id}
-                                  onClick={() => handleChunkClick(chunk)}
+                      return (
+                        <div
+                          key={block.id}
+                          onClick={(e) => !isEditing && handleBlockSelect(block.id, e)}
+                          style={{
+                            marginBottom: '12px',
+                            padding: '14px',
+                            border: `2px solid ${isEditing ? '#ff9800' : isSelected ? '#1976d2' : isActive ? '#4caf50' : '#e0e0e0'}`,
+                            borderRadius: '8px',
+                            cursor: isEditing ? 'text' : 'pointer',
+                            backgroundColor: isEditing ? '#fff3e0' : isSelected ? '#e3f2fd' : isActive ? '#e8f5e9' : '#fafafa',
+                            transition: 'all 0.2s ease',
+                            position: 'relative'
+                          }}
+                          onMouseEnter={(e) => {
+                            if (!isSelected && !isActive && !isEditing) {
+                              e.currentTarget.style.backgroundColor = '#f0f0f0';
+                              e.currentTarget.style.borderColor = '#bdbdbd';
+                            }
+                          }}
+                          onMouseLeave={(e) => {
+                            if (!isSelected && !isActive && !isEditing) {
+                              e.currentTarget.style.backgroundColor = '#fafafa';
+                              e.currentTarget.style.borderColor = '#e0e0e0';
+                            }
+                          }}
+                        >
+                          {isSelected && !isEditing && (
+                            <div style={{
+                              position: 'absolute',
+                              top: '8px',
+                              right: '8px',
+                              backgroundColor: '#1976d2',
+                              color: 'white',
+                              borderRadius: '50%',
+                              width: '24px',
+                              height: '24px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              fontSize: '12px',
+                              fontWeight: 'bold'
+                            }}>
+                              ✓
+                            </div>
+                          )}
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '8px' }}>
+                            <span style={{ fontSize: '12px', color: '#666', fontWeight: '600' }}>
+                              Block {idx + 1}
+                            </span>
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                              {segment && (
+                                <span style={{ fontSize: '12px', color: '#666' }}>
+                                  {formatTime(segment.startTime)} - {formatTime(segment.endTime)}
+                                </span>
+                              )}
+                              {!isEditing ? (
+                                <button
+                                  className="edit-button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleStartEdit(block);
+                                  }}
                                   style={{
-                                    marginBottom: '16px',
-                                    padding: '16px',
-                                    border: `2px solid ${isSelected ? '#1976d2' : isActive ? '#4caf50' : '#e0e0e0'}`,
-                                    borderRadius: '8px',
+                                    padding: '4px 8px',
+                                    border: '1px solid #e0e0e0',
+                                    borderRadius: '4px',
+                                    backgroundColor: '#ffffff',
+                                    color: '#666',
                                     cursor: 'pointer',
-                                    backgroundColor: isSelected ? '#e3f2fd' : isActive ? '#e8f5e9' : '#fafafa',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px',
+                                    fontSize: '11px',
                                     transition: 'all 0.2s ease'
                                   }}
                                   onMouseEnter={(e) => {
-                                    if (!isSelected && !isActive) {
-                                      e.currentTarget.style.backgroundColor = '#f0f0f0';
-                                    }
+                                    e.currentTarget.style.backgroundColor = '#f5f5f5';
+                                    e.currentTarget.style.borderColor = '#bdbdbd';
                                   }}
                                   onMouseLeave={(e) => {
-                                    if (!isSelected && !isActive) {
-                                      e.currentTarget.style.backgroundColor = '#fafafa';
-                                    }
+                                    e.currentTarget.style.backgroundColor = '#ffffff';
+                                    e.currentTarget.style.borderColor = '#e0e0e0';
                                   }}
                                 >
-                                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start', marginBottom: '8px' }}>
-                                    <span style={{ fontSize: '12px', color: '#666', fontWeight: '600' }}>
-                                      Chunk {idx + 1}
-                                    </span>
-                                    {segment && (
-                                      <span style={{ fontSize: '12px', color: '#666' }}>
-                                        {formatTime(segment.startTime)} - {formatTime(segment.endTime)}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.6' }}>
-                                    {chunk.text}
-                                  </p>
-                                  {!segment && (
-                                    <div style={{ marginTop: '8px', fontSize: '12px', color: '#999', fontStyle: 'italic' }}>
-                                      Click to sync audio for this chunk
-                                    </div>
-                                  )}
+                                  <HiOutlinePencil size={14} />
+                                  Edit
+                                </button>
+                              ) : (
+                                <div style={{ display: 'flex', gap: '4px' }}>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSaveEdit(block.id);
+                                    }}
+                                    style={{
+                                      padding: '4px 8px',
+                                      border: '1px solid #4caf50',
+                                      borderRadius: '4px',
+                                      backgroundColor: '#4caf50',
+                                      color: 'white',
+                                      cursor: 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      fontSize: '11px'
+                                    }}
+                                  >
+                                    <HiOutlineCheck size={14} />
+                                    Save
+                                  </button>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleCancelEdit();
+                                    }}
+                                    style={{
+                                      padding: '4px 8px',
+                                      border: '1px solid #f44336',
+                                      borderRadius: '4px',
+                                      backgroundColor: '#f44336',
+                                      color: 'white',
+                                      cursor: 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      fontSize: '11px'
+                                    }}
+                                  >
+                                    <HiOutlineX size={14} />
+                                    Cancel
+                                  </button>
                                 </div>
-                              );
-                            })}
+                              )}
+                            </div>
                           </div>
+                          {isEditing ? (
+                            <textarea
+                              value={editedText}
+                              onChange={(e) => setEditedText(e.target.value)}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                width: '100%',
+                                minHeight: '80px',
+                                padding: '8px',
+                                fontSize: '14px',
+                                lineHeight: '1.6',
+                                border: '1px solid #ff9800',
+                                borderRadius: '4px',
+                                fontFamily: 'inherit',
+                                resize: 'vertical',
+                                marginTop: '8px'
+                              }}
+                              autoFocus
+                            />
+                          ) : (
+                            <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.6', paddingRight: isSelected ? '32px' : '0' }}>
+                              {block.text || '(Empty block)'}
+                            </p>
+                          )}
+                          {!segment && !isEditing && (
+                            <div style={{ marginTop: '8px', fontSize: '12px', color: '#999', fontStyle: 'italic' }}>
+                              {isSelected ? 'Selected - will generate audio' : 'Click to select for audio generation'}
+                            </div>
+                          )}
                         </div>
                       );
-                    }
-                    
-                    return (
-                      <div style={{ color: '#999', textAlign: 'center', padding: '40px' }}>
-                        No text content available for this section
-                      </div>
-                    );
-                  })()}
+                    })}
+                  </div>
                 </div>
-              )
-            ) : (
-              <div style={{ padding: '40px', textAlign: 'center', color: '#666' }}>
-                Select an EPUB section to view its content
-              </div>
-            )}
+              );
+            })()}
           </div>
         </div>
       </div>

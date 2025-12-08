@@ -26,8 +26,8 @@ export const audioSyncService = {
   extractTextFromEpub: (jobId) =>
     api.get(`/audio-sync/job/${jobId}/extract-text`).then(res => res.data.data),
   
-  generateAudio: (pdfId, jobId, voice) =>
-    api.post('/audio-sync/generate', { pdfId, jobId, voice }).then(res => res.data.data),
+  generateAudio: (pdfId, jobId, voice, textBlocks) =>
+    api.post('/audio-sync/generate', { pdfId, jobId, voice, textBlocks }).then(res => res.data.data),
   
   getAvailableVoices: () =>
     api.get('/audio-sync/voices').then(res => res.data.data),
