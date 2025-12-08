@@ -6,6 +6,7 @@ import JSZip from 'jszip';
 import { getEpubOutputDir, getHtmlIntermediateDir } from '../config/fileStorage.js';
 import { PdfExtractionService } from './pdfExtractionService.js';
 import { GeminiService } from './geminiService.js';
+import { JobConcurrencyService } from './jobConcurrencyService.js';
 
 // Note: Full EPUB conversion would require:
 // - EPUB generation library (epub-gen or similar)
@@ -42,6 +43,9 @@ export class ConversionService {
   }
 
   static async processConversion(jobId) {
+    // Acquire concurrency slot
+    await JobConcurrencyService.acquire(jobId);
+    
     try {
       // Get conversion job and PDF document
       const job = await ConversionJobModel.findById(jobId);
@@ -99,8 +103,28 @@ export class ConversionService {
       });
 
       console.log(`[Job ${jobId}] Extracting text from PDF: ${pdfFilePath}`);
-      const textData = await PdfExtractionService.extractText(pdfFilePath);
-      console.log(`[Job ${jobId}] Extracted text from ${textData.totalPages} pages`);
+
+      // Prefer Gemini-based extraction when enabled; fallback to local extraction.
+      let textData = null;
+      const useGeminiExtraction = (process.env.GEMINI_TEXT_EXTRACTION || '').toLowerCase() === 'true';
+      if (useGeminiExtraction) {
+        try {
+          textData = await GeminiService.extractTextFromPdf(pdfFilePath);
+          if (textData) {
+            console.log(`[Job ${jobId}] Extracted text via Gemini (${textData.totalPages} pages)`);
+          } else {
+            console.warn(`[Job ${jobId}] Gemini extraction returned no data, falling back to local parser`);
+          }
+        } catch (aiError) {
+          console.warn(`[Job ${jobId}] Gemini extraction failed, falling back to local parser: ${aiError.message}`);
+          textData = null;
+        }
+      }
+
+      if (!textData) {
+        textData = await PdfExtractionService.extractText(pdfFilePath);
+        console.log(`[Job ${jobId}] Extracted text via local parser (${textData.totalPages} pages)`);
+      }
 
       // STEP 2-3: Structure content using Gemini (if available)
       await ConversionJobModel.update(jobId, {
@@ -113,7 +137,11 @@ export class ConversionService {
         structuredContent = await GeminiService.structureContent(textData.pages);
         console.log(`[Job ${jobId}] Content structured using Gemini`);
       } catch (error) {
-        console.warn(`[Job ${jobId}] Gemini structuring failed, using default structure:`, error.message);
+        if (error.message?.includes('QUOTA_EXHAUSTED')) {
+          console.warn(`[Job ${jobId}] Gemini quota exhausted (daily limit reached). Continuing without AI structuring.`);
+        } else {
+          console.warn(`[Job ${jobId}] Gemini structuring failed, using default structure:`, error.message);
+        }
         structuredContent = { pages: textData.pages, structured: null };
       }
 
@@ -185,6 +213,9 @@ export class ConversionService {
         errorMessage: error.message
       });
       throw error;
+    } finally {
+      // Always release concurrency slot
+      JobConcurrencyService.release(jobId);
     }
   }
 
