@@ -36,6 +36,7 @@
     "pdfjs-dist": "^5.4.449",
     "puppeteer": "^24.32.0",
     "sharp": "^0.34.5",
+    "tesseract.js": "^5.1.1",
     "uuid": "^9.0.1"
   },
   "devDependencies": {

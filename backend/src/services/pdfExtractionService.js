@@ -84,15 +84,8 @@ export class PdfExtractionService {
                   throw getPageError; // If only one page and it fails, throw original error
                 }
               } catch (fallbackError) {
-                console.warn(`[Page 1] Fallback also failed, creating blank page:`, fallbackError.message);
-                pages.push({
-                  pageNumber: pageNum,
-                  text: '',
-                  textBlocks: [],
-                  charCount: 0,
-                  width: 612,
-                  height: 792
-                });
+                console.warn(`[Page 1] Fallback also failed, skipping invalid page:`, fallbackError.message);
+                // Skip invalid pages - don't create blank page
                 continue; // Skip to next page
               }
             } else {
@@ -339,14 +332,26 @@ export class PdfExtractionService {
         throw new Error('PDF has no pages');
       }
       
+      console.log(`[PDF] Total pages in PDF: ${totalPages}`);
+      
       // Get page dimensions using pdfjs-dist (just for dimensions, not rendering)
       const pdfjsLib = await getPdfjsLib();
       const uint8Array = new Uint8Array(pdfData);
-      const pdfDoc = await pdfjsLib.getDocument({ 
+      let pdfDoc = await pdfjsLib.getDocument({ 
         data: uint8Array,
         verbosity: 0,
         // Suppress font warnings - not needed for our use case
-        standardFontDataUrl: undefined
+        standardFontDataUrl: undefined,
+        // Additional options to help with problematic PDFs
+        stopAtErrors: false, // Continue processing even if there are errors
+        maxImageSize: 1024 * 1024 * 10, // 10MB max image size
+        isEvalSupported: false, // Disable eval for security
+        useSystemFonts: false, // Don't use system fonts
+        disableFontFace: false, // Allow font face loading
+        // Try to handle corrupted or non-standard PDFs
+        disableAutoFetch: false, // Allow auto-fetching of resources
+        disableStream: false, // Allow streaming
+        disableRange: false // Allow range requests
       }).promise;
       
       let maxWidth = 0;
@@ -357,12 +362,35 @@ export class PdfExtractionService {
       for (let i = 0; i < totalPages; i++) {
         try {
           // pdfjs getPage uses 0-based index
-          const pdfPage = await pdfDoc.getPage(i);
+          let pdfPage;
+          try {
+            pdfPage = await pdfDoc.getPage(i);
+          } catch (pageError) {
+            // If page 0 fails, try page 1 (index 1) as fallback
+            if (i === 0 && pageError.message.includes('Invalid page request') && totalPages > 1) {
+              console.warn(`[Page 1] Could not get dimensions: Invalid page request. Trying page 1 (index 1) as fallback...`);
+              try {
+                pdfPage = await pdfDoc.getPage(1);
+              } catch (fallbackError) {
+                console.warn(`[Page 1] Fallback also failed:`, fallbackError.message);
+                // Use default dimensions if we can't get them
+                if (maxWidth === 0) maxWidth = 612; // US Letter width in points
+                if (maxHeight === 0) maxHeight = 792; // US Letter height in points
+                continue;
+              }
+            } else {
+              console.warn(`[Page ${i + 1}] Could not get dimensions:`, pageError.message);
+              // Use default dimensions if we can't get them
+              if (maxWidth === 0) maxWidth = 612; // US Letter width in points
+              if (maxHeight === 0) maxHeight = 792; // US Letter height in points
+              continue;
+            }
+          }
           const viewport = pdfPage.getViewport({ scale: 1.0 });
           maxWidth = Math.max(maxWidth, viewport.width);
           maxHeight = Math.max(maxHeight, viewport.height);
         } catch (pageError) {
-          console.warn(`[Page ${i + 1}] Could not get dimensions:`, pageError.message);
+          console.warn(`[Page ${i + 1}] Unexpected error getting dimensions:`, pageError.message);
           // Use default dimensions if we can't get them
           if (maxWidth === 0) maxWidth = 612; // US Letter width in points
           if (maxHeight === 0) maxHeight = 792; // US Letter height in points
@@ -397,27 +425,86 @@ export class PdfExtractionService {
         // Render each page using PDF.js embedded in HTML
         for (let pageNum = 1; pageNum <= totalPages; pageNum++) {
           try {
-            const page = await browser.newPage();
-            
-            // Get actual page dimensions for this page
+            // Get actual page dimensions for this page FIRST (before creating browser page)
             // Handle page 1 (index 0) which might fail
-            let pdfPage;
-            let viewport;
-            try {
-              pdfPage = await pdfDoc.getPage(pageNum - 1);
-              viewport = pdfPage.getViewport({ scale: 1.0 });
-            } catch (pageError) {
-              if (pageNum === 1 && pageError.message.includes('Invalid page request')) {
-                console.warn(`[Page 1] Using default dimensions for problematic page`);
-                viewport = { width: 612, height: 792 }; // Default US Letter
-              } else {
-                throw pageError;
+            let pdfPage = null;
+            let viewport = null;
+            let actualPageIndex = pageNum - 1; // 0-based index for pdfjs
+            let retryCount = 0;
+            const maxRetries = 3;
+            
+            // Try to get page with retry logic (especially for page 1)
+            while (retryCount < maxRetries && !pdfPage) {
+              try {
+                pdfPage = await pdfDoc.getPage(actualPageIndex);
+                viewport = pdfPage.getViewport({ scale: 1.0 });
+                break; // Success, exit retry loop
+              } catch (pageError) {
+                retryCount++;
+                
+                // Special handling for page 1 (index 0)
+                if (pageNum === 1 && pageError.message.includes('Invalid page request')) {
+                  if (retryCount === 1) {
+                    // Strategy 1: Wait a bit and retry (sometimes PDF needs time to initialize)
+                    console.warn(`[Page 1] Could not get page: Invalid page request. Retrying (attempt ${retryCount}/${maxRetries})...`);
+                    await new Promise(resolve => setTimeout(resolve, 200)); // Wait 200ms
+                    continue;
+                  } else if (retryCount === 2) {
+                    // Strategy 2: Try to reload the document and retry
+                    console.warn(`[Page 1] Retry failed. Reloading PDF document and retrying...`);
+                    try {
+                      // Re-read PDF and create new document instance
+                      const freshPdfData = await fs.readFile(pdfFilePath);
+                      const freshUint8Array = new Uint8Array(freshPdfData);
+                      const freshPdfDoc = await pdfjsLib.getDocument({ 
+                        data: freshUint8Array,
+                        verbosity: 0,
+                        standardFontDataUrl: undefined,
+                        stopAtErrors: false,
+                        maxImageSize: 1024 * 1024 * 10,
+                        isEvalSupported: false,
+                        useSystemFonts: false,
+                        disableFontFace: false,
+                        disableAutoFetch: false,
+                        disableStream: false,
+                        disableRange: false
+                      }).promise;
+                      pdfPage = await freshPdfDoc.getPage(actualPageIndex);
+                      viewport = pdfPage.getViewport({ scale: 1.0 });
+                      // Update pdfDoc reference for future use
+                      await pdfDoc.destroy().catch(() => {});
+                      pdfDoc = freshPdfDoc;
+                      console.log(`[Page 1] Successfully loaded after document reload!`);
+                      break; // Success
+                    } catch (reloadError) {
+                      console.warn(`[Page 1] Document reload also failed:`, reloadError.message);
+                      // Continue to final fallback
+                    }
+                  } else {
+                    // Strategy 3: Skip this page entirely - don't create blank page
+                    console.warn(`[Page ${pageNum}] All retries failed. Skipping invalid page (will not be included in EPUB).`);
+                    continue; // Skip to next page - don't render or create blank page
+                  }
+                } else {
+                  // For other pages, just throw the error (will be caught by outer try-catch)
+                  throw pageError;
+                }
               }
             }
+            
+            // If we still don't have a page object after all retries, skip this page
+            if (!pdfPage || !viewport) {
+              console.warn(`[Page ${pageNum}] Could not load page after all retries. Skipping invalid page.`);
+              continue; // Skip to next page - don't render
+            }
+            
             const pageWidthPoints = viewport.width;
             const pageHeightPoints = viewport.height;
             const pageRenderedWidth = Math.ceil(pageWidthPoints * scale);
             const pageRenderedHeight = Math.ceil(pageHeightPoints * scale);
+            
+            // Only create browser page if we're actually rendering
+            const page = await browser.newPage();
             
             // Create HTML with embedded PDF.js to render the specific page
             const html = `<!DOCTYPE html>
@@ -451,7 +538,8 @@ export class PdfExtractionService {
     (async function() {
       const pdfData = atob('${pdfBase64}');
       const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
-      const page = await pdf.getPage(${pageNum - 1}); // 0-based index
+      const pageIndex = ${actualPageIndex}; // Use the actual page index
+      const page = await pdf.getPage(pageIndex);
       
       const viewport = page.getViewport({ scale: ${scale} });
       const canvas = document.getElementById('pdf-canvas');
@@ -492,7 +580,9 @@ export class PdfExtractionService {
             await new Promise(resolve => setTimeout(resolve, 1000));
             
             // Take screenshot
-            const imageFileName = `page_${pageNum}.png`;
+            // EPUB page number starts from 1 for the first valid PDF page
+            const epubPageNumber = pageImages.length + 1; // Sequential numbering starting from 1
+            const imageFileName = `page_${epubPageNumber}.png`;
             const imagePath = path.join(outputDir, imageFileName);
             
             const screenshot = await page.screenshot({
@@ -505,27 +595,38 @@ export class PdfExtractionService {
                 height: pageRenderedHeight
               }
             });
-            
+
             await fs.writeFile(imagePath, screenshot);
-            
+
             // If page is smaller than max, create a canvas at max size and center it (like Java)
+            // Ensure all extend values are non-negative
             let finalImagePath = imagePath;
             if (pageRenderedWidth < maxRenderedWidth || pageRenderedHeight < maxRenderedHeight) {
-              const finalImage = await sharp(imagePath)
-                .extend({
-                  top: Math.floor((maxRenderedHeight - pageRenderedHeight) / 2),
-                  bottom: Math.ceil((maxRenderedHeight - pageRenderedHeight) / 2),
-                  left: Math.floor((maxRenderedWidth - pageRenderedWidth) / 2),
-                  right: Math.ceil((maxRenderedWidth - pageRenderedWidth) / 2),
-                  background: { r: 255, g: 255, b: 255 }
-                })
-                .toBuffer();
+              const topExtend = Math.max(0, Math.floor((maxRenderedHeight - pageRenderedHeight) / 2));
+              const bottomExtend = Math.max(0, Math.ceil((maxRenderedHeight - pageRenderedHeight) / 2));
+              const leftExtend = Math.max(0, Math.floor((maxRenderedWidth - pageRenderedWidth) / 2));
+              const rightExtend = Math.max(0, Math.ceil((maxRenderedWidth - pageRenderedWidth) / 2));
               
-              await fs.writeFile(imagePath, finalImage);
+              // Only extend if we have positive values
+              if (topExtend > 0 || bottomExtend > 0 || leftExtend > 0 || rightExtend > 0) {
+                const finalImage = await sharp(imagePath)
+                  .extend({
+                    top: topExtend,
+                    bottom: bottomExtend,
+                    left: leftExtend,
+                    right: rightExtend,
+                    background: { r: 255, g: 255, b: 255 }
+                  })
+                  .toBuffer();
+                
+                await fs.writeFile(imagePath, finalImage);
+              }
             }
             
+            // Store both PDF page number (original) and EPUB page number (sequential from 1)
             pageImages.push({
-              pageNumber: pageNum,
+              pdfPageNumber: pageNum, // Original PDF page number
+              pageNumber: epubPageNumber, // EPUB page number (starts from 1 for first valid page)
               path: imagePath,
               fileName: imageFileName,
               width: maxRenderedWidth,
@@ -534,33 +635,14 @@ export class PdfExtractionService {
               pageHeight: pageHeightPoints
             });
             
-            console.log(`[Page ${pageNum}] Rendered successfully: ${maxRenderedWidth}x${maxRenderedHeight}px (${pageWidthPoints}x${pageHeightPoints}pt)`);
+            console.log(`[PDF Page ${pageNum} → EPUB Page ${epubPageNumber}] Rendered successfully: ${maxRenderedWidth}x${maxRenderedHeight}px (${pageWidthPoints}x${pageHeightPoints}pt)`);
             
             await page.close();
           } catch (pageError) {
             console.error(`[Page ${pageNum}] Failed to render:`, pageError.message);
-            // Create blank placeholder
-            const imageFileName = `page_${pageNum}.png`;
-            const imagePath = path.join(outputDir, imageFileName);
-            
-            await sharp({
-              create: {
-                width: maxRenderedWidth || 1200,
-                height: maxRenderedHeight || 1600,
-                channels: 3,
-                background: { r: 255, g: 255, b: 255 }
-              }
-            }).png().toFile(imagePath);
-            
-            pageImages.push({
-              pageNumber: pageNum,
-              path: imagePath,
-              fileName: imageFileName,
-              width: maxRenderedWidth || 1200,
-              height: maxRenderedHeight || 1600,
-              pageWidth: maxWidth || 612,
-              pageHeight: maxHeight || 792
-            });
+            // Skip invalid pages - don't create blank placeholder
+            console.warn(`[Page ${pageNum}] Skipping invalid page (will not be included in EPUB)`);
+            // Continue to next page without adding to pageImages
           }
         }
       } finally {
@@ -571,6 +653,11 @@ export class PdfExtractionService {
         } catch (destroyError) {
           // Ignore destroy errors
         }
+      }
+      
+      console.log(`[PDF] Rendered ${pageImages.length} page images (expected ${totalPages} pages)`);
+      if (pageImages.length !== totalPages) {
+        console.warn(`[PDF] WARNING: Page count mismatch! Rendered ${pageImages.length} images but PDF has ${totalPages} pages`);
       }
       
       return {
