@@ -193,13 +193,37 @@ IMPORTANT: Do NOT include page numbers (like "Page 1", "Page 2") as part of the 
             pageNumber,
             text: pageText,
             textBlocks: [],
-            charCount: pageText.length
+            charCount: pageText.length,
+            width: 612,
+            height: 792
           });
         }
       }
 
       if (pages.length === 0) {
         return null;
+      }
+
+      // Optional: generate textBlocks with bounding boxes to mirror pdfjs format
+      // This uses AI positioning heuristics; if you have exact page sizes, set them later.
+      try {
+        for (let i = 0; i < pages.length; i++) {
+          const p = pages[i];
+          const pageWidth = p.width || 612;
+          const pageHeight = p.height || 792;
+          const blocks = await this.createTextBlocksFromText(
+            p.text || '',
+            p.pageNumber,
+            pageWidth,
+            pageHeight
+          );
+          p.textBlocks = blocks || [];
+          p.charCount = p.text?.length || 0;
+          p.width = pageWidth;
+          p.height = pageHeight;
+        }
+      } catch (blockErr) {
+        console.warn('Could not create text blocks with bounding boxes from Gemini PDF extraction:', blockErr.message);
       }
 
       return {
@@ -479,6 +503,173 @@ Do not add any explanations or formatting markers.`;
       if (error?.message?.includes('Overall timeout')) {
         console.error(`[Page ${pageNumber}] Overall operation timed out after 60s, skipping`);
         CircuitBreakerService.recordFailure('Gemini', false);
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Extract text AND bounding-boxed textBlocks from an image (page render).
+   * Returns { text, textBlocks } with boundingBox in PDF-style coordinates:
+   * { x, y, width, height, pageNumber }, where y is from bottom.
+   * If width/height are provided (page points), they are used to normalize.
+   */
+  static async extractTextBlocksFromImage(imagePath, pageNumber, pageWidthPoints = 612, pageHeightPoints = 792) {
+    // First, attempt to get true geometry from vision with a JSON bbox response
+    const visionBlocks = await this.extractTextBlocksWithGeometryFromImage(
+      imagePath,
+      pageNumber,
+      pageWidthPoints,
+      pageHeightPoints
+    );
+    if (visionBlocks && visionBlocks.text && visionBlocks.textBlocks?.length) {
+      return visionBlocks;
+    }
+
+    // Fallback: plain text + heuristic blocks
+    const text = await this.extractTextFromImage(imagePath, pageNumber);
+    if (!text) {
+      return { text: null, textBlocks: [] };
+    }
+    const blocks = await this.createTextBlocksFromText(
+      text,
+      pageNumber,
+      pageWidthPoints,
+      pageHeightPoints
+    );
+    return { text, textBlocks: blocks || [] };
+  }
+
+  /**
+   * Vision call that asks Gemini to return bounding boxes with geometry.
+   * Expected JSON array:
+   * [
+   *  {"text":"Hello","x":0.12,"y":0.15,"width":0.3,"height":0.05,"fontSize":14,"isBold":false,"isItalic":false}
+   * ]
+   * x,y,width,height are normalized 0..1 from top-left. Converted to PDF points with y-from-bottom.
+   */
+  static async extractTextBlocksWithGeometryFromImage(imagePath, pageNumber, pageWidthPoints = 612, pageHeightPoints = 792) {
+    const client = this.getClient();
+    if (!client) return null;
+
+    if (!CircuitBreakerService.canMakeRequest('Gemini')) {
+      console.warn(`[Page ${pageNumber}] Circuit breaker OPEN, skipping geometry extraction`);
+      return null;
+    }
+
+    // Rate limit check
+    if (!RateLimiterService.acquire('Gemini')) {
+      console.warn(`[Page ${pageNumber}] Rate limited, skipping geometry extraction`);
+      return null;
+    }
+
+    try {
+      const imageBuffer = await fs.readFile(imagePath);
+      const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+      const model = client.getGenerativeModel({ model: modelName });
+
+      const prompt = `You are OCR. Return text blocks with bounding boxes as pure JSON array.
+Use normalized coordinates 0..1 from TOP-LEFT of the image.
+Fields: text (string), x, y, width, height (numbers), fontSize (number, optional), isBold (bool), isItalic (bool).
+No markdown, no code fences, ONLY JSON array. Example:
+[
+ {"text":"Hello","x":0.1,"y":0.2,"width":0.3,"height":0.05,"fontSize":14,"isBold":false,"isItalic":false}
+]`;
+
+      // 25s API timeout
+      const apiTimeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('API call timeout after 25s')), 25000)
+      );
+      const apiCallPromise = model.generateContent([
+        { text: prompt },
+        {
+          inlineData: {
+            data: imageBuffer.toString('base64'),
+            mimeType: 'image/png'
+          }
+        }
+      ]);
+
+      const result = await Promise.race([apiCallPromise, apiTimeoutPromise]);
+      const response = await result.response;
+      const raw = response.text() || '';
+
+      let jsonStr = raw.trim();
+      const match = jsonStr.match(/```json\n([\s\S]*?)```/i) || jsonStr.match(/```\n([\s\S]*?)```/i);
+      if (match) {
+        jsonStr = match[1].trim();
+      }
+
+      let blocks = [];
+      try {
+        blocks = JSON.parse(jsonStr);
+      } catch (e) {
+        console.warn(`[Page ${pageNumber}] Could not parse Gemini geometry JSON: ${e.message}`);
+        return null;
+      }
+
+      if (!Array.isArray(blocks)) {
+        console.warn(`[Page ${pageNumber}] Gemini geometry response is not an array`);
+        return null;
+      }
+
+      // Normalize to pdfjs-style boundingBox (y from bottom)
+      const converted = blocks
+        .filter(b => b.text && typeof b.x === 'number' && typeof b.y === 'number' && typeof b.width === 'number' && typeof b.height === 'number')
+        .map((b, idx) => {
+          const xNorm = Math.max(0, Math.min(1, b.x));
+          const yNorm = Math.max(0, Math.min(1, b.y));
+          const wNorm = Math.max(0, Math.min(1, b.width));
+          const hNorm = Math.max(0, Math.min(1, b.height));
+
+          const xPt = xNorm * pageWidthPoints;
+          const yTopPt = yNorm * pageHeightPoints;
+          const widthPt = wNorm * pageWidthPoints;
+          const heightPt = hNorm * pageHeightPoints;
+          const yBottomPt = pageHeightPoints - (yTopPt + heightPt); // convert top-down to bottom-up
+
+          return {
+            id: `vision_block_${pageNumber}_${idx}`,
+            text: b.text || '',
+            type: 'paragraph',
+            level: null,
+            boundingBox: {
+              x: xPt,
+              y: yBottomPt,
+              width: widthPt,
+              height: heightPt,
+              pageNumber
+            },
+            fontSize: b.fontSize || undefined,
+            fontName: 'Arial',
+            isBold: !!b.isBold,
+            isItalic: !!b.isItalic,
+            textColor: '#000000',
+            textAlign: 'left',
+            readingOrder: idx
+          };
+        });
+
+      if (!converted.length) {
+        console.warn(`[Page ${pageNumber}] Gemini geometry returned zero valid blocks`);
+        return null;
+      }
+
+      CircuitBreakerService.recordSuccess('Gemini');
+      const combinedText = converted.map(b => b.text).join(' ');
+      return { text: combinedText, textBlocks: converted };
+    } catch (error) {
+      const is429 = error?.status === 429 || error?.statusCode === 429;
+      const isTimeout = error?.message?.includes('timeout');
+      if (is429) {
+        CircuitBreakerService.recordFailure('Gemini', true);
+        console.warn(`[Page ${pageNumber}] 429 during geometry extraction`);
+      } else if (isTimeout) {
+        CircuitBreakerService.recordFailure('Gemini', false);
+        console.warn(`[Page ${pageNumber}] Geometry extraction timed out`);
+      } else {
+        CircuitBreakerService.recordFailure('Gemini', false);
+        console.warn(`[Page ${pageNumber}] Geometry extraction error: ${error.message}`);
       }
       return null;
     }

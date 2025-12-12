@@ -101,6 +101,13 @@ export class PdfExtractionService {
           // Group text items into blocks based on proximity (like epub_app)
           const textBlocks = this.groupTextItemsIntoBlocks(textItems, viewport, pageNum);
           
+          // Store viewport in blocks for alignment detection
+          textBlocks.forEach(block => {
+            if (block.boundingBox) {
+              block.viewport = viewport;
+            }
+          });
+          
           // Combine all text for this page
           const pageText = textBlocks.map(block => block.text).join(' ');
           allText += pageText + '\n\n';
@@ -187,9 +194,12 @@ export class PdfExtractionService {
       ? lineHeights.reduce((a, b) => a + b, 0) / lineHeights.length 
       : 12.0;
     
-    const verticalThreshold = avgLineHeight * 2.0;
-    const horizontalThreshold = Math.max(50, avgLineHeight * 3);
-    const maxLineGap = avgLineHeight * 0.8;
+    // Refined thresholds for better block granularity (improves TTS experience)
+    // Make thresholds more strict to create more logical blocks
+    const verticalThreshold = avgLineHeight * 1.5; // Reduced from 2.0 - tighter vertical grouping
+    const horizontalThreshold = Math.max(30, avgLineHeight * 2.5); // Reduced from 3.0 - tighter horizontal grouping
+    const maxLineGap = avgLineHeight * 0.6; // Reduced from 0.8 - stricter line detection
+    const paragraphBreakThreshold = avgLineHeight * 3.0; // New: larger gap indicates paragraph break
     
     for (const item of sortedItems) {
       if (!item.str || item.str.trim().length === 0) continue;
@@ -221,13 +231,26 @@ export class PdfExtractionService {
         const verticalDistance = Math.abs(y - lastY);
         const horizontalDistance = x - (lastX + lastWidth);
         
+        // Check for paragraph break (large vertical gap)
+        const isParagraphBreak = verticalDistance > paragraphBreakThreshold;
+        
+        // Check if on same line
         const sameLine = verticalDistance < maxLineGap && horizontalDistance < horizontalThreshold;
-        const sameBlock = sameLine || (verticalDistance < verticalThreshold && 
-                                      Math.abs(x - currentBlock.minX) < viewport.width * 0.9);
+        
+        // Check if same block (same line OR within vertical threshold with similar horizontal alignment)
+        // But force break on paragraph gaps
+        const sameBlock = !isParagraphBreak && (
+          sameLine || 
+          (verticalDistance < verticalThreshold && 
+           Math.abs(x - currentBlock.minX) < viewport.width * 0.85) // Reduced from 0.9 for stricter alignment
+        );
         
         if (sameBlock) {
           currentBlock.items.push(item);
           if (sameLine && horizontalDistance > width * 0.5) {
+            currentBlock.text += ' ';
+          } else if (!sameLine && verticalDistance > maxLineGap) {
+            // Add line break for multi-line blocks
             currentBlock.text += ' ';
           }
           currentBlock.text += item.str;
@@ -237,7 +260,13 @@ export class PdfExtractionService {
           currentBlock.maxY = Math.max(currentBlock.maxY, y + height);
         } else {
           // Finish current block and start new one
-          blocks.push(this.createTextBlock(currentBlock, viewport));
+          const finishedBlock = this.createTextBlock(currentBlock, viewport);
+          finishedBlock.viewport = viewport;
+          
+          // 🎯 CRITICAL FIX: Set reading order before pushing
+          finishedBlock.readingOrder = blocks.length;
+          
+          blocks.push(finishedBlock);
           currentBlock = {
             id: `block_${pageNumber}_${blocks.length}`,
             text: item.str,
@@ -253,7 +282,13 @@ export class PdfExtractionService {
     }
     
     if (currentBlock) {
-      blocks.push(this.createTextBlock(currentBlock, viewport));
+      const finishedBlock = this.createTextBlock(currentBlock, viewport);
+      finishedBlock.viewport = viewport;
+      
+      // 🎯 CRITICAL FIX: Set reading order for the final block
+      finishedBlock.readingOrder = blocks.length;
+      
+      blocks.push(finishedBlock);
     }
     
     return blocks;
@@ -289,6 +324,33 @@ export class PdfExtractionService {
     const isBold = fontName.toLowerCase().includes('bold');
     const isItalic = fontName.toLowerCase().includes('italic');
     
+    // Extract color information
+    let textColor = '#000000'; // Default black
+    if (firstItem.color) {
+      // PDF.js returns color as [r, g, b] array (0-1 range)
+      if (Array.isArray(firstItem.color) && firstItem.color.length >= 3) {
+        const r = Math.round(firstItem.color[0] * 255);
+        const g = Math.round(firstItem.color[1] * 255);
+        const b = Math.round(firstItem.color[2] * 255);
+        textColor = `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`;
+      } else if (typeof firstItem.color === 'string') {
+        textColor = firstItem.color;
+      }
+    }
+    
+    // Extract text alignment (heuristic based on position)
+    let textAlign = 'left';
+    const blockCenterX = (blockData.minX + blockData.maxX) / 2;
+    const viewportWidth = blockData.viewport?.width || 612;
+    const leftMargin = viewportWidth * 0.1;
+    const rightMargin = viewportWidth * 0.9;
+    
+    if (blockData.minX > rightMargin) {
+      textAlign = 'right';
+    } else if (blockCenterX > viewportWidth * 0.4 && blockCenterX < viewportWidth * 0.6) {
+      textAlign = 'center';
+    }
+    
     return {
       id: blockData.id,
       text: text,
@@ -305,6 +367,8 @@ export class PdfExtractionService {
       fontSize: fontSize,
       isBold: isBold,
       isItalic: isItalic,
+      textColor: textColor,
+      textAlign: textAlign,
       readingOrder: null // Will be set later
     };
   }
@@ -492,10 +556,122 @@ export class PdfExtractionService {
               }
             }
             
-            // If we still don't have a page object after all retries, skip this page
+            // If we still don't have a page object after all retries, try rendering anyway via Puppeteer
+            // Some PDFs have page 1 that can't be accessed via pdfjs but can still be rendered
             if (!pdfPage || !viewport) {
-              console.warn(`[Page ${pageNum}] Could not load page after all retries. Skipping invalid page.`);
-              continue; // Skip to next page - don't render
+              console.warn(`[Page ${pageNum}] Could not load page via pdfjs after all retries. Attempting direct Puppeteer render...`);
+              // Use default dimensions and try to render anyway
+              const fallbackPageWidthPoints = maxWidth || 612;
+              const fallbackPageHeightPoints = maxHeight || 792;
+              const fallbackPageRenderedWidth = Math.ceil(fallbackPageWidthPoints * scale);
+              const fallbackPageRenderedHeight = Math.ceil(fallbackPageHeightPoints * scale);
+              
+              // We'll render this page using Puppeteer with page number, even without pdfjs page object
+              const browserPage = await browser.newPage();
+              try {
+                // Create HTML that renders the specific page using PDF.js
+                const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <style>
+    body { margin: 0; padding: 0; background: white; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+  <canvas id="pdf-canvas"></canvas>
+  <script>
+    (async function() {
+      const pdfData = atob('${pdfBase64}');
+      const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+      const targetPageNum = ${pageNum};
+      const page = await pdf.getPage(targetPageNum - 1); // pdfjs uses 0-based index
+      const viewport = page.getViewport({ scale: ${scale} });
+      const canvas = document.getElementById('pdf-canvas');
+      const context = canvas.getContext('2d');
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      await page.render({ canvasContext: context, viewport: viewport }).promise;
+    })().catch(err => {
+      console.error('PDF render error:', err);
+      // If rendering fails, create a blank white canvas
+      const canvas = document.getElementById('pdf-canvas');
+      const context = canvas.getContext('2d');
+      canvas.width = ${fallbackPageRenderedWidth};
+      canvas.height = ${fallbackPageRenderedHeight};
+      context.fillStyle = 'white';
+      context.fillRect(0, 0, canvas.width, canvas.height);
+    });
+  </script>
+</body>
+</html>`;
+                
+                await browserPage.setContent(htmlContent);
+                await browserPage.waitForTimeout(2000); // Wait for PDF.js to render
+                
+                const screenshot = await browserPage.screenshot({
+                  type: 'png',
+                  fullPage: true,
+                  clip: {
+                    x: 0,
+                    y: 0,
+                    width: fallbackPageRenderedWidth,
+                    height: fallbackPageRenderedHeight
+                  }
+                });
+                
+                await browserPage.close();
+                
+                const imageFileName = `page_${pageNum}_render.png`;
+                const imagePath = path.join(outputDir, imageFileName);
+                await fs.writeFile(imagePath, screenshot);
+                
+                pageImages.push({
+                  pageNumber: pageNum,
+                  path: imagePath,
+                  fileName: imageFileName,
+                  width: fallbackPageRenderedWidth,
+                  height: fallbackPageRenderedHeight,
+                  pageWidthPoints: fallbackPageWidthPoints,
+                  pageHeightPoints: fallbackPageHeightPoints
+                });
+                
+                console.log(`[PDF Page ${pageNum} → EPUB Page ${pageImages.length}] Rendered via Puppeteer fallback: ${fallbackPageRenderedWidth}x${fallbackPageRenderedHeight}px (${fallbackPageWidthPoints}x${fallbackPageHeightPoints}pt)`);
+                continue; // Successfully rendered, move to next page
+              } catch (puppeteerError) {
+                await browserPage.close().catch(() => {});
+                console.warn(`[Page ${pageNum}] Puppeteer fallback also failed:`, puppeteerError.message);
+                // Last resort: create a blank white image placeholder
+                const sharp = (await import('sharp')).default;
+                const blankImage = await sharp({
+                  create: {
+                    width: fallbackPageRenderedWidth,
+                    height: fallbackPageRenderedHeight,
+                    channels: 3,
+                    background: { r: 255, g: 255, b: 255 }
+                  }
+                }).png().toBuffer();
+                
+                const imageFileName = `page_${pageNum}_render.png`;
+                const imagePath = path.join(outputDir, imageFileName);
+                await fs.writeFile(imagePath, blankImage);
+                
+                pageImages.push({
+                  pageNumber: pageNum,
+                  path: imagePath,
+                  fileName: imageFileName,
+                  width: fallbackPageRenderedWidth,
+                  height: fallbackPageRenderedHeight,
+                  pageWidthPoints: fallbackPageWidthPoints,
+                  pageHeightPoints: fallbackPageHeightPoints
+                });
+                
+                console.log(`[PDF Page ${pageNum} → EPUB Page ${pageImages.length}] Created blank placeholder: ${fallbackPageRenderedWidth}x${fallbackPageRenderedHeight}px`);
+                continue; // Created placeholder, move to next page
+              }
             }
             
             const pageWidthPoints = viewport.width;
@@ -536,22 +712,22 @@ export class PdfExtractionService {
   </div>
   <script>
     (async function() {
-      const pdfData = atob('${pdfBase64}');
-      const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
-      const pageIndex = ${actualPageIndex}; // Use the actual page index
-      const page = await pdf.getPage(pageIndex);
-      
-      const viewport = page.getViewport({ scale: ${scale} });
-      const canvas = document.getElementById('pdf-canvas');
-      const context = canvas.getContext('2d');
-      
-      canvas.width = viewport.width;
-      canvas.height = viewport.height;
-      
-      await page.render({
-        canvasContext: context,
-        viewport: viewport
-      }).promise;
+        const pdfData = atob('${pdfBase64}');
+        const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+        const pageIndex = ${actualPageIndex}; // Use the actual page index
+        const page = await pdf.getPage(pageIndex);
+        
+        const viewport = page.getViewport({ scale: ${scale} });
+        const canvas = document.getElementById('pdf-canvas');
+        const context = canvas.getContext('2d');
+        
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        
+        await page.render({
+          canvasContext: context,
+          viewport: viewport
+        }).promise;
     })();
   </script>
 </body>

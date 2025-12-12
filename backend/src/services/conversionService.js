@@ -2,11 +2,13 @@ import { ConversionJobModel } from '../models/ConversionJob.js';
 import { PdfDocumentModel } from '../models/PdfDocument.js';
 import fs from 'fs/promises';
 import path from 'path';
+import crypto from 'crypto';
 import JSZip from 'jszip';
 import { getEpubOutputDir, getHtmlIntermediateDir } from '../config/fileStorage.js';
 import { PdfExtractionService } from './pdfExtractionService.js';
 import { GeminiService } from './geminiService.js';
 import { JobConcurrencyService } from './jobConcurrencyService.js';
+// TtsService and mapTimingsToBlocks removed - using player's built-in TTS instead of generating audio files
 
 export class ConversionService {
   static async startConversion(pdfDocumentId) {
@@ -308,6 +310,25 @@ export class ConversionService {
       });
 
       const epubOutputDir = getEpubOutputDir();
+      const jobDir = path.join(epubOutputDir, `job_${jobId}`);
+      await fs.mkdir(jobDir, { recursive: true }).catch(() => {});
+      
+      // Create assets directories
+      const assetsDir = path.join(jobDir, 'assets');
+      const imagesDir = path.join(assetsDir, 'images');
+      const audioDir = path.join(assetsDir, 'audio');
+      await fs.mkdir(imagesDir, { recursive: true }).catch(() => {});
+      await fs.mkdir(audioDir, { recursive: true }).catch(() => {});
+      
+      // Save textData to JSON file for API access
+      const textDataPath = path.join(jobDir, `text_data_${jobId}.json`);
+      try {
+        await fs.writeFile(textDataPath, JSON.stringify(textData, null, 2), 'utf8');
+        console.log(`[Job ${jobId}] Saved text data to ${textDataPath}`);
+      } catch (saveError) {
+        console.warn(`[Job ${jobId}] Could not save text data:`, saveError.message);
+      }
+
       const epubFileName = `converted_${jobId}.epub`;
       const epubFilePath = path.join(epubOutputDir, epubFileName);
 
@@ -368,11 +389,178 @@ export class ConversionService {
     }
   }
 
+  /**
+   * Generate stable block ID based on content and position
+   */
+  static generateStableBlockId(text, x, y, pageNumber) {
+    const content = `${pageNumber}_${text}_${x.toFixed(2)}_${y.toFixed(2)}`;
+    const hash = crypto.createHash('sha256').update(content).digest('hex');
+    return `block_${hash.substring(0, 12)}`;
+  }
+
+  /**
+   * Migrate sync data to use stable block IDs
+   */
+  static migrateSyncsToStableIds(textBlocks, syncData) {
+    // Create mapping from old IDs to stable IDs
+    const idMapping = {};
+    textBlocks.forEach(block => {
+      const bbox = block.boundingBox || {};
+      const stableId = this.generateStableBlockId(
+        block.text || '',
+        bbox.x || 0,
+        bbox.y || 0,
+        block.pageNumber || 0
+      );
+      idMapping[block.id] = stableId;
+      block.id = stableId; // Update block ID
+    });
+
+    // Update sync data with new IDs
+    return syncData.map(sync => ({
+      ...sync,
+      id: idMapping[sync.id] || sync.id
+    }));
+  }
+
+  static async regenerateEpub(jobId) {
+    const job = await ConversionJobModel.findById(jobId);
+    if (!job) {
+      throw new Error('Conversion job not found');
+    }
+
+    if (job.status !== 'COMPLETED') {
+      throw new Error('Can only regenerate EPUB for completed conversions');
+    }
+
+    const pdf = await PdfDocumentModel.findById(job.pdf_document_id);
+    if (!pdf || !pdf.file_path) {
+      throw new Error('PDF document not found or file path missing');
+    }
+
+    // Load existing text data and page images
+    const epubOutputDir = getEpubOutputDir();
+    const jobDir = path.join(epubOutputDir, `job_${jobId}`);
+    const textDataPath = path.join(jobDir, `text_data_${jobId}.json`);
+    
+    let textData, pageImagesData;
+    try {
+      const textDataContent = await fs.readFile(textDataPath, 'utf8');
+      textData = JSON.parse(textDataContent);
+    } catch (error) {
+      throw new Error('Text data not found. Cannot regenerate EPUB without original text data.');
+    }
+
+    // Migrate block IDs to stable IDs and update sync files
+    for (const page of textData.pages || []) {
+      if (page.textBlocks) {
+        page.textBlocks.forEach(block => {
+          const bbox = block.boundingBox || {};
+          if (!block.id || !block.id.startsWith('block_')) {
+            block.id = this.generateStableBlockId(
+              block.text || '',
+              bbox.x || 0,
+              bbox.y || 0,
+              page.pageNumber || 0
+            );
+          }
+        });
+      }
+
+      // Migrate sync files for this page
+      const editorialSyncDir = path.join(jobDir, 'editorial_syncs');
+      const syncFilePath = path.join(editorialSyncDir, `manual_page_syncs_${page.pageNumber}.json`);
+      try {
+        const syncContent = await fs.readFile(syncFilePath, 'utf8');
+        const syncData = JSON.parse(syncContent);
+        const migratedSyncs = this.migrateSyncsToStableIds(page.textBlocks || [], syncData);
+        await fs.writeFile(syncFilePath, JSON.stringify(migratedSyncs, null, 2), 'utf8');
+      } catch (error) {
+        // No sync file for this page - that's OK
+      }
+    }
+
+    // Load page images from assets directory
+    const imagesDir = path.join(jobDir, 'assets', 'images');
+    const imageFiles = await fs.readdir(imagesDir).catch(() => []);
+    const pageImages = imageFiles
+      .filter(f => f.startsWith('page_') && f.endsWith('_render.png'))
+      .map(fileName => {
+        const pageNum = parseInt(fileName.match(/page_(\d+)_render\.png/)?.[1] || '0');
+        return {
+          pageNumber: pageNum,
+          path: path.join(imagesDir, fileName),
+          fileName: fileName,
+          width: 0,
+          height: 0
+        };
+      })
+      .sort((a, b) => a.pageNumber - b.pageNumber);
+
+    pageImagesData = {
+      images: pageImages,
+      renderedWidth: 0,
+      renderedHeight: 0,
+      maxWidth: textData.metadata?.width || 612,
+      maxHeight: textData.metadata?.height || 792
+    };
+
+    // Get structured content (if available)
+    let structuredContent = null;
+    try {
+      structuredContent = await GeminiService.structureContent(textData.pages);
+    } catch (error) {
+      console.warn(`[Job ${jobId}] Could not regenerate structured content, using original`);
+      structuredContent = { pages: textData.pages, structured: null };
+    }
+
+    // Regenerate EPUB with updated sync files
+    const epubFileName = `converted_${jobId}.epub`;
+    const epubFilePath = path.join(epubOutputDir, epubFileName);
+    
+    await ConversionJobModel.update(jobId, {
+      status: 'IN_PROGRESS',
+      currentStep: 'STEP_7_EPUB_GENERATION',
+      progressPercentage: 95
+    });
+
+    const epubBuffer = await this.generateFixedLayoutEpub(
+      jobId,
+      textData,
+      structuredContent,
+      pageImagesData,
+      pdf.original_file_name || `Document ${jobId}`,
+      pdf.file_path
+    );
+
+    await fs.writeFile(epubFilePath, epubBuffer);
+    console.log(`[Job ${jobId}] EPUB regenerated: ${epubFilePath} (${(epubBuffer.length / 1024 / 1024).toFixed(2)} MB)`);
+
+    await ConversionJobModel.update(jobId, {
+      status: 'COMPLETED',
+      currentStep: 'STEP_8_QA_REVIEW',
+      progressPercentage: 100,
+      epubFilePath,
+      completedAt: new Date()
+    });
+
+    return {
+      jobId,
+      epubFilePath,
+      message: 'EPUB regenerated successfully with updated sync files'
+    };
+  }
+
   static async generateFixedLayoutEpub(jobId, textData, structuredContent, pageImagesData, documentTitle, pdfFilePath = null) {
     const { AudioSyncModel } = await import('../models/AudioSync.js');
     const audioSyncs = await AudioSyncModel.findByJobId(jobId).catch(() => []);
-    const hasAudio = audioSyncs && audioSyncs.length > 0;
+    let hasAudio = audioSyncs && audioSyncs.length > 0;
     
+    const epubOutputDir = getEpubOutputDir();
+    const jobDir = path.join(epubOutputDir, `job_${jobId}`);
+    const imagesDir = path.join(jobDir, 'assets', 'images');
+    // Ensure images directory exists
+    await fs.mkdir(imagesDir, { recursive: true }).catch(() => {});
     const zip = new JSZip();
     
     const mimetypeContent = 'application/epub+zip';
@@ -427,54 +615,110 @@ export class ConversionService {
     const manifestItems = [];
     const spineItems = [];
     const tocItems = [];
+    const smilFileNames = [];
     // Track mapping from source block IDs to actual XHTML IDs per page (for SMIL/audio and TTS alignment)
     let pageIdMappings = {};
     
+    // STEP 1: Add images to EPUB FIRST and track which ones succeeded
+    // This ensures we know which pages have valid images before generating XHTML
+    const successfullyAddedImages = new Map(); // Map<pageNumber, epubPath>
+    for (const img of pageImages) {
+      try {
+        // Verify image file exists before trying to add it
+        await fs.access(img.path);
+        const imageData = await fs.readFile(img.path);
+        const imageFileName = img.fileName.replace(/^image\//, '');
+        const imagePath = `image/${imageFileName}`;
+        zip.file(`OEBPS/${imagePath}`, imageData);
+        
+        // Copy image to assets directory for API access
+        const assetsImageFileName = `page_${img.pageNumber}_render.png`;
+        const assetsImagePath = path.join(imagesDir, assetsImageFileName);
+        try {
+          await fs.copyFile(img.path, assetsImagePath);
+        } catch (copyError) {
+          console.warn(`[Job ${jobId}] Could not copy image to assets:`, copyError.message);
+        }
+        
+        const imageId = `page-img-${img.pageNumber}`;
+        const imageMimeType = img.fileName.toLowerCase().endsWith('.jpg') || img.fileName.toLowerCase().endsWith('.jpeg') 
+          ? 'image/jpeg' 
+          : 'image/png';
+        manifestItems.push(`<item id="${imageId}" href="${imagePath}" media-type="${imageMimeType}"/>`);
+        
+        img.epubPath = imagePath;
+        successfullyAddedImages.set(img.pageNumber, imagePath);
+        console.log(`[Job ${jobId}] Successfully added image for page ${img.pageNumber}: ${imagePath}`);
+      } catch (imgError) {
+        console.warn(`[Job ${jobId}] Could not add page image ${img.fileName} (page ${img.pageNumber}):`, imgError.message);
+        // Don't set epubPath - this page will be skipped
+      }
+    }
+    
+    // STEP 2: Generate XHTML pages ONLY for pages with successfully added images
     for (let i = 0; i < pageImages.length; i++) {
       const pageImage = pageImages[i];
       const epubPageNum = pageImage.pageNumber;
       const pdfPageNum = pageImage.pdfPageNumber || pageImage.pageNumber;
       
+      // CRITICAL: Only generate page if image was successfully added
+      if (!successfullyAddedImages.has(epubPageNum)) {
+        console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Image not found or failed to add, skipping page generation`);
+        continue; // Skip this page if image is missing
+      }
+      
       let page = null;
+      
+      // PRIMARY: Match by exact page number (most reliable)
       page = textData.pages.find(p => p.pageNumber === epubPageNum);
       
       if (!page) {
         page = textData.pages.find(p => p.pageNumber === pdfPageNum);
       }
       
-      if (!page && textData.pages[epubPageNum - 1]) {
+      // SECONDARY: Match by array index ONLY if page numbers match exactly
+      // This prevents text bleeding from wrong pages
+      if (!page && i < textData.pages.length) {
+        const pageByIndex = textData.pages[i];
+        // STRICT: Only use if page numbers match exactly (no tolerance)
+        if (pageByIndex && pageByIndex.pageNumber === epubPageNum) {
+          console.log(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): Using text from array index ${i} (exact match: textData.pageNumber=${pageByIndex.pageNumber})`);
+          page = pageByIndex;
+        } else if (pageByIndex) {
+          console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Array index ${i} has pageNumber=${pageByIndex.pageNumber} (mismatch, skipping to prevent text bleeding)`);
+        }
+      }
+      
+      // TERTIARY: Try index-based fallback ONLY if pageNumber matches exactly
+      if (!page && epubPageNum > 0 && textData.pages[epubPageNum - 1]) {
         const pageByIndex = textData.pages[epubPageNum - 1];
-        if (Math.abs((pageByIndex.pageNumber || 0) - epubPageNum) <= 2) {
-          console.log(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): Using text from index ${epubPageNum - 1} (textData.pageNumber=${pageByIndex.pageNumber})`);
+        // STRICT: Only use if page numbers match exactly
+        if (pageByIndex.pageNumber === epubPageNum) {
+          console.log(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): Using text from index ${epubPageNum - 1} (exact match: textData.pageNumber=${pageByIndex.pageNumber})`);
           page = pageByIndex;
-        }
-      }
-      
-      if (!page && textData.pages[pdfPageNum - 1]) {
-        const pageByIndex = textData.pages[pdfPageNum - 1];
-        if (Math.abs((pageByIndex.pageNumber || 0) - pdfPageNum) <= 2) {
-          console.log(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): Using text from PDF index ${pdfPageNum - 1} (textData.pageNumber=${pageByIndex.pageNumber})`);
-          page = pageByIndex;
-        }
-      }
-      
-      if (!page) {
-        const anyPageWithText = textData.pages.find(p => p.text && p.text.trim().length > 0);
-        if (anyPageWithText) {
-          console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): No matching text data, using text from page ${anyPageWithText.pageNumber} for read-aloud`);
-          page = {
-            pageNumber: epubPageNum,
-            text: anyPageWithText.text,
-            textBlocks: anyPageWithText.textBlocks || [],
-            charCount: anyPageWithText.charCount || 0,
-            width: pageWidthPoints,
-            height: pageHeightPoints
-          };
         } else {
-          console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): No text data found, creating page with placeholder text for read-aloud`);
+          console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Index ${epubPageNum - 1} has pageNumber=${pageByIndex.pageNumber} (mismatch, skipping to prevent text bleeding)`);
+        }
+      }
+      
+      // LAST RESORT: Create empty page if no exact match found
+      if (!page) {
+        console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): No exact matching text data found, creating EMPTY page (no text will be displayed)`);
+        page = {
+          pageNumber: epubPageNum,
+          text: '', // Empty text - no fallback text
+          textBlocks: [], // Empty textBlocks
+          charCount: 0,
+          width: pageWidthPoints,
+          height: pageHeightPoints
+        };
+      } else {
+        // VALIDATION: If matched page has different pageNumber, reject it to prevent text bleeding
+        if (page.pageNumber !== epubPageNum && page.pageNumber !== pdfPageNum) {
+          console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Matched page has pageNumber=${page.pageNumber} (mismatch detected, using empty page to prevent text bleeding)`);
           page = {
             pageNumber: epubPageNum,
-            text: `Page ${epubPageNum}`,
+            text: '',
             textBlocks: [],
             charCount: 0,
             width: pageWidthPoints,
@@ -486,7 +730,15 @@ export class ConversionService {
       const hasText = page.text && page.text.trim().length > 0;
       const hasTextBlocks = page.textBlocks && page.textBlocks.length > 0;
       const textPreview = page.text ? page.text.substring(0, 100).replace(/\n/g, ' ') : '';
-      console.log(`[Job ${jobId}] Generating EPUB page ${epubPageNum} (PDF page ${pdfPageNum}, textData.pageNumber=${page.pageNumber}): text length=${page.text?.length || 0}, textBlocks=${page.textBlocks?.length || 0}, preview="${textPreview}..."`);
+      const pageMatchStatus = page.pageNumber === epubPageNum ? 'EXACT_MATCH' : 
+                              page.pageNumber === pdfPageNum ? 'PDF_PAGE_MATCH' : 
+                              hasTextBlocks || hasText ? 'MISMATCH_WARNING' : 'EMPTY_PAGE';
+      console.log(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF ${pdfPageNum}): Match=${pageMatchStatus}, textData.pageNumber=${page.pageNumber}, textBlocks=${page.textBlocks?.length || 0}, textLength=${page.text?.length || 0}, preview="${textPreview.substring(0, 50)}..."`);
+      
+      // CRITICAL WARNING if page numbers don't match but text exists
+      if (page.pageNumber !== epubPageNum && page.pageNumber !== pdfPageNum && (hasTextBlocks || hasText)) {
+        console.error(`[Job ${jobId}] ⚠️ PAGE MISMATCH DETECTED: EPUB Page ${epubPageNum} matched with textData.pageNumber=${page.pageNumber} - This may cause text bleeding!`);
+      }
       
       const actualPageNum = epubPageNum;
       page.pageNumber = actualPageNum;
@@ -519,7 +771,8 @@ export class ConversionService {
       );
       
       // Generate XHTML and get ID mapping for SMIL sync
-      const { html: rawPageXhtml, idMapping } = this.generateFixedLayoutPageXHTML(
+      // Use HTML-based pages with page image background for pixel-perfect layout
+      const { html: rawPageXhtml, idMapping } = this.generateHtmlBasedPageXHTML(
         page,
         pageImage,
         actualPageNum,
@@ -527,7 +780,6 @@ export class ConversionService {
         actualPageHeightPoints,
         actualRenderedWidth,
         actualRenderedHeight,
-        pageCss,
         hasAudio
       );
       // Guard against accidental concatenation (trim anything after closing </html>)
@@ -543,36 +795,100 @@ export class ConversionService {
       
       zip.file(`OEBPS/${fileName}`, pageXhtml);
       
+      // --- Syncs and audio (editorial override > TTS) ---
+      let syncs = [];
+      let audioFileName = null;
+      let pageAudioFileExists = false; // Track if THIS page's audio file exists
+      const orderedBlocks = (page.textBlocks || []).slice().sort((a, b) => (a.readingOrder || 0) - (b.readingOrder || 0));
+      
+      // Check both locations for editorial syncs: job-specific and global
+      const jobSyncDir = path.join(epubOutputDir, `job_${jobId}`, 'editorial_syncs');
+      const jobSyncFilePath = path.join(jobSyncDir, `manual_page_syncs_${actualPageNum}.json`);
+      const globalSyncFilePath = path.join(getHtmlIntermediateDir(), 'editorial_syncs', `manual_page_syncs_${actualPageNum}.json`);
+
+      try {
+        let syncData = null;
+        // Try job-specific location first, then global
+        try {
+          syncData = await fs.readFile(jobSyncFilePath, 'utf8');
+        } catch {
+          syncData = await fs.readFile(globalSyncFilePath, 'utf8');
+        }
+        syncs = JSON.parse(syncData);
+        audioFileName = `audio/page_${actualPageNum}_human.mp3`;
+        console.log(`[Job ${jobId}] Loaded editorial syncs for page ${actualPageNum}.`);
+        
+        // Copy human audio file to EPUB if it exists
+        const humanAudioPath = path.join(audioDir, `page_${actualPageNum}_human.mp3`);
+        try {
+          const audioData = await fs.readFile(humanAudioPath);
+          zip.file(`OEBPS/${audioFileName}`, audioData);
+          
+          // Manifest entry for audio
+          manifestItems.push(`<item id="audio-page-${actualPageNum}" href="${audioFileName}" media-type="audio/mpeg"/>`);
+          hasAudio = true;
+          pageAudioFileExists = true;
+          console.log(`[Job ${jobId}] Added human audio file for page ${actualPageNum} to EPUB.`);
+        } catch (audioError) {
+          console.warn(`[Job ${jobId}] Human audio file not found at ${humanAudioPath}. Skipping SMIL generation to prevent auto-play without audio.`);
+          // Clear syncs and audioFileName if audio doesn't exist - don't create SMIL without audio
+          syncs = [];
+          audioFileName = null;
+          pageAudioFileExists = false;
+        }
+      } catch (e) {
+        // No editorial syncs found - TTS will be available via reader's built-in TTS
+        // We don't generate SMIL files for TTS to prevent auto-play in readers like Thorium
+        // The text content is accessible for TTS without needing media overlays
+        console.log(`[Job ${jobId}] No editorial syncs found. TTS will be available via reader's built-in TTS (no SMIL/auto-play).`);
+        console.log(`[Job ${jobId}] To add pre-recorded audio with sync: Upload human audio files via Media Overlay Sync Editor.`);
+        syncs = []; // Clear syncs so no SMIL is generated
+      }
+
+      // Generate SMIL ONLY for human-recorded audio (editorial syncs) AND only if audio file exists
+      // Do NOT generate SMIL for TTS - it causes auto-play in readers like Thorium
+      // Do NOT generate SMIL if audio file is missing - it causes auto-play without sound
+      // TTS works fine without SMIL files using the reader's built-in TTS
+      let hasSmil = false;
+      const smilItemId = `smil-page${actualPageNum}`;
+      // Only generate SMIL if we have syncs AND it's human audio (not TTS) AND audio file exists
+      // We can tell it's human audio if audioFileName contains "_human"
+      // We check pageAudioFileExists to ensure THIS page's audio file was actually added to the EPUB
+      if (syncs.length > 0 && audioFileName && audioFileName.includes('_human') && pageAudioFileExists) {
+        hasSmil = true;
+        const smilFileName = `page_${actualPageNum}.smil`;
+        const smilContent = this.generateSMILContent(
+          actualPageNum,
+          syncs,
+          audioFileName,
+          textData,
+          pageIdMappings[actualPageNum],
+          fileName // Pass XHTML filename for textref
+        );
+        zip.file(`OEBPS/${smilFileName}`, smilContent);
+        smilFileNames.push(smilFileName);
+        // SMIL manifest item - ID is what XHTML will reference
+        manifestItems.push(`<item id="${smilItemId}" href="${smilFileName}" media-type="application/smil+xml"/>`);
+      }
+
       const itemId = `page${actualPageNum}`;
-      const hasSmil = audioSyncs && audioSyncs.some(s => (s.pageNumber || s.page_number) === actualPageNum);
-      const smilFileName = `page_${actualPageNum}.smil`;
-      // Add properties for fixed-layout pages with audio
-      const pageProperties = hasAudio ? ` properties="rendition:page-spread-center"` : '';
-      manifestItems.push(`<item id="${itemId}" href="${fileName}" media-type="application/xhtml+xml"${pageProperties}/>`);
-      // Add media-overlay to spine items when SMIL exists
-      const spineMediaOverlay = hasSmil ? ` media-overlay="smil-${itemId}"` : '';
+      const pageProps = [];
+      // Fixed-layout EPUB requires rendition:layout-fixed
+      pageProps.push('rendition:layout-fixed');
+      if (hasAudio) pageProps.push('rendition:page-spread-center');
+      if (hasSmil) pageProps.push('media-overlay');
+      const propsAttr = pageProps.length ? ` properties="${pageProps.join(' ')}"` : '';
+      // CRITICAL: media-overlay must point to SMIL item ID, not filename
+      const mediaOverlayAttr = hasSmil ? ` media-overlay="${smilItemId}"` : '';
+      manifestItems.push(`<item id="${itemId}" href="${fileName}" media-type="application/xhtml+xml"${propsAttr}${mediaOverlayAttr}/>`);
+      // Spine itemref should also have media-overlay
+      const spineMediaOverlay = hasSmil ? ` media-overlay="${smilItemId}"` : '';
       spineItems.push(`<itemref idref="${itemId}"${spineMediaOverlay}/>`);
       tocItems.push(`<li><a href="${fileName}">Page ${actualPageNum}</a></li>`);
     }
     
-    for (const img of pageImages) {
-      try {
-        const imageData = await fs.readFile(img.path);
-        const imageFileName = img.fileName.replace(/^image\//, '');
-        const imagePath = `image/${imageFileName}`;
-        zip.file(`OEBPS/${imagePath}`, imageData);
-        
-        const imageId = `page-img-${img.pageNumber}`;
-        const imageMimeType = img.fileName.toLowerCase().endsWith('.jpg') || img.fileName.toLowerCase().endsWith('.jpeg') 
-          ? 'image/jpeg' 
-          : 'image/png';
-        manifestItems.push(`<item id="${imageId}" href="${imagePath}" media-type="${imageMimeType}"/>`);
-        
-        img.epubPath = imagePath;
-      } catch (imgError) {
-        console.warn(`[Job ${jobId}] Could not add page image ${img.fileName}:`, imgError.message);
-      }
-    }
+    // Images are now added BEFORE page generation (see STEP 1 above)
+    // No need to add them again here
     
     const navXhtml = `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE html>
@@ -590,7 +906,7 @@ export class ConversionService {
     zip.file('OEBPS/nav.xhtml', navXhtml);
     
     let audioFileName = null;
-    const smilFileNames = [];
+    // smilFileNames already declared above (line 619)
     if (audioSyncs && audioSyncs.length > 0) {
       const firstSync = audioSyncs[0];
       const audioFilePath = firstSync.audioFilePath || firstSync.audio_file_path;
@@ -624,7 +940,8 @@ export class ConversionService {
             const smilFileName = `page_${pageNum}.smil`;
             // Get ID mapping for this page
             const pageIdMapping = pageIdMappings?.[parseInt(pageNum)] || {};
-            const smilContent = this.generateSMILContent(parseInt(pageNum), pageSyncs, audioFileName, textData, pageIdMapping);
+            const pageXhtmlFileName = `page_${pageNum}.xhtml`;
+            const smilContent = this.generateSMILContent(parseInt(pageNum), pageSyncs, audioFileName, textData, pageIdMapping, pageXhtmlFileName);
             zip.file(`OEBPS/${smilFileName}`, smilContent);
             smilFileNames.push(smilFileName);
             // Use page${pageNum} format to match spine itemref idref
@@ -843,6 +1160,15 @@ export class ConversionService {
       white-space: nowrap;
     }
     
+    /* Visible text overlay - shows actual text on image at PDF coordinates */
+    .visible-text-overlay {
+      color: #000 !important;
+      opacity: 1 !important;
+      background: transparent !important;
+      text-shadow: 0 0 2px rgba(255, 255, 255, 0.8), 0 0 2px rgba(255, 255, 255, 0.8); /* White outline for readability */
+      -webkit-text-stroke: 0.3px rgba(255, 255, 255, 0.5); /* Subtle white stroke */
+    }
+    
     /* LAYER 4: TTS LAYER (z-index: 4) - Hidden text for screen readers */
     .tts-layer {
       position: absolute;
@@ -876,35 +1202,51 @@ export class ConversionService {
       return belongsToPage;
     });
     
-    if (textBlocks.length === 0 && page.text && page.text.trim().length > 0) {
+    // CRITICAL: Only create fallback text blocks if page.text is non-empty
+    // This prevents generating text for blank/empty pages
+    const hasPageText = page.text && page.text.trim().length > 0;
+    
+    if (textBlocks.length === 0 && hasPageText) {
       let cleanText = page.text;
       cleanText = cleanText.replace(/^(Page\s+)?\d+\s*$/gm, '');
       cleanText = cleanText.replace(/^Page\s+\d+[:\-]?\s*/gmi, '');
       cleanText = cleanText.trim();
       
-      textBlocks = GeminiService.createSimpleTextBlocks(
-        cleanText || page.text,
-        pageNumber,
-        pageWidthPoints,
-        pageHeightPoints
-      );
+      // Only create blocks if cleaned text is not empty
+      if (cleanText.length > 0) {
+        textBlocks = GeminiService.createSimpleTextBlocks(
+          cleanText || page.text,
+          pageNumber,
+          pageWidthPoints,
+          pageHeightPoints
+        );
+      }
     }
     
-    if (textBlocks.length === 0 && page.text && page.text.trim().length > 0) {
-      textBlocks = [{
-        id: `emergency_block_${pageNumber}`,
-        text: page.text.trim(),
-        type: 'paragraph',
-        level: null,
-        isSimple: true,
-        boundingBox: null,
-        fontSize: 22,
-        fontName: 'Arial',
-        isBold: false,
-        isItalic: false,
-        readingOrder: 0,
-        pageNumber: pageNumber
-      }];
+    // Emergency fallback ONLY if page.text exists and is non-empty
+    if (textBlocks.length === 0 && hasPageText) {
+      const trimmedText = page.text.trim();
+      if (trimmedText.length > 0 && !trimmedText.match(/^Page\s+\d+[:\-]?\s*$/i)) {
+        textBlocks = [{
+          id: `emergency_block_${pageNumber}`,
+          text: trimmedText,
+          type: 'paragraph',
+          level: null,
+          isSimple: true,
+          boundingBox: null,
+          fontSize: 22,
+          fontName: 'Arial',
+          isBold: false,
+          isItalic: false,
+          readingOrder: 0,
+          pageNumber: pageNumber
+        }];
+      }
+    }
+    
+    // Final validation: If no textBlocks and no page.text, ensure we don't generate text
+    if (textBlocks.length === 0 && !hasPageText) {
+      console.log(`[Job ${pageNumber}] Page ${pageNumber}: No text blocks and no page.text - generating empty page (no text content)`);
     }
     
     // Collect all text for TTS flow layer
@@ -1024,9 +1366,10 @@ export class ConversionService {
     </div>`;
     }
     
-    // Start text-content div
+    // Start text-content div - ensure it's accessible for TTS
+    // Use epub:type="bodymatter" to mark as main content for TTS
     html += `
-    <div class="text-content">`;
+    <div class="text-content" epub:type="bodymatter" role="main" aria-label="Page ${pageNumber} content">`;
     
     // Generate paragraphs from textBlocks for ideal structure
     // Use individual blocks as separate paragraphs (like the ideal structure)
@@ -1040,7 +1383,7 @@ export class ConversionService {
           const blockId = block.id || block.blockId || `ocr_block_${pageNumber}_${i}`;
           const escapedText = this.escapeHtml(block.text.trim());
           html += `
-     <p id="${blockId}">${escapedText}</p>`;
+     <p id="${blockId}" lang="en" xml:lang="en">${escapedText}</p>`;
           
           // Map block ID for SMIL sync
           // If block has bounding box, mapping already points to highlight overlay
@@ -1071,7 +1414,7 @@ export class ConversionService {
           if (cleanPara.length > 10) {
             const blockId = `ocr_block_${pageNumber}_${paraIndex}`;
             html += `
-     <p id="${blockId}">${cleanPara}</p>`;
+     <p id="${blockId}" lang="en" xml:lang="en">${cleanPara}</p>`;
             paraIndex++;
           }
           currentPara = sentence;
@@ -1085,8 +1428,8 @@ export class ConversionService {
         if (cleanPara.length > 10) {
           const blockId = `ocr_block_${pageNumber}_${paraIndex}`;
           html += `
-     <p id="${blockId}">${cleanPara}</p>`;
-          paraIndex++;
+     <p id="${blockId}" lang="en" xml:lang="en">${cleanPara}</p>`;
+            paraIndex++;
         }
       }
       
@@ -1094,7 +1437,7 @@ export class ConversionService {
       if (paraIndex === 0) {
         const blockId = `ocr_block_${pageNumber}_0`;
         html += `
-     <p id="${blockId}">${escapedText}</p>`;
+     <p id="${blockId}" lang="en" xml:lang="en">${escapedText}</p>`;
         paraIndex = 1;
       }
     }
@@ -1107,7 +1450,7 @@ export class ConversionService {
       const escapedFallback = this.escapeHtml(fallbackText);
       const blockId = `ocr_block_${pageNumber}_0`;
       html += `
-     <p id="${blockId}">${escapedFallback}</p>`;
+     <p id="${blockId}" lang="en" xml:lang="en">${escapedFallback}</p>`;
       paraIndex = 1;
     }
     
@@ -1241,6 +1584,340 @@ export class ConversionService {
 </html>`;
     
     // Return both the generated XHTML string and the ID mapping for SMIL/TTS alignment
+    return { html, idMapping };
+  }
+
+  /**
+   * Generate HTML-based page that recreates PDF layout exactly using HTML/CSS
+   * Instead of rendering as image, creates exact HTML replica with positioned text and images
+   */
+  static generateHtmlBasedPageXHTML(page, pageImage, pageNumber, pageWidthPoints, pageHeightPoints, renderedWidth, renderedHeight, hasAudio = false) {
+    const idMapping = {};
+
+    const safeRenderedWidth = renderedWidth && renderedWidth > 0
+      ? renderedWidth
+      : Math.ceil((pageWidthPoints || 612) * (300 / 72));
+    const safeRenderedHeight = renderedHeight && renderedHeight > 0
+      ? renderedHeight
+      : Math.ceil((pageHeightPoints || 792) * (300 / 72));
+
+    const imagePath = pageImage
+      ? (pageImage.epubPath || `image/${pageImage.fileName.replace(/^image\//, '')}`)
+      : '';
+
+    // Default to invisible overlays (text present for TTS/search, hidden visually)
+    const overlayVisible = (process.env.TEXT_OVERLAY_VISIBLE || 'false').toLowerCase() === 'true';
+    const overlayClass = overlayVisible ? '' : 'overlay-hidden';
+
+    let html = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en" xml:lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=${safeRenderedWidth}px, height=${safeRenderedHeight}px, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Page ${pageNumber}</title>`;
+
+    // CSS for exact PDF layout recreation (fixed layout, pixel perfect)
+    const htmlCss = `/*<![CDATA[*/
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: ${safeRenderedWidth}px;
+      height: ${safeRenderedHeight}px;
+      overflow: hidden;
+      background-color: white;
+      font-family: Arial, sans-serif;
+    }
+    
+    .page-container {
+      position: relative;
+      width: ${safeRenderedWidth}px;
+      height: ${safeRenderedHeight}px;
+      background-color: white;
+      overflow: hidden;
+    }
+    
+    .page-bg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      z-index: 1;
+      pointer-events: none;
+    }
+
+    .text-layer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    /* Text blocks with exact positioning */
+    .text-block {
+      position: absolute;
+      margin: 0;
+      padding: 0;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+      user-select: text;
+      -webkit-user-select: text;
+      pointer-events: auto;
+      overflow: visible;
+    }
+
+    /* Optional: hide overlays while keeping them for TTS/search */
+    .overlay-hidden .text-block {
+      color: transparent !important;
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+    
+    /* TTS flow text (hidden but accessible) */
+    .tts-flow-text {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+    }
+    
+    /* Text content div for TTS accessibility */
+    .text-content {
+      margin-top: 20px;
+    }
+    
+    .text-content p,
+    .text-content h1,
+    .text-content h2,
+    .text-content h3,
+    .text-content h4,
+    .text-content h5,
+    .text-content h6 {
+      margin: 10px 0;
+      color: #000;
+      visibility: visible;
+      opacity: 1;
+      display: block;
+    }
+    
+    /* Media overlay highlighting */
+    .text-block.-epub-media-overlay-active,
+    .text-block.epub-media-overlay-active {
+      background-color: rgba(255, 255, 0, 0.4) !important;
+      outline: 2px solid rgba(255, 200, 0, 0.8) !important;
+    }
+    
+    .text-block.-epub-media-overlay-playing,
+    .text-block.epub-media-overlay-playing {
+      background-color: rgba(255, 255, 0, 0.6) !important;
+      outline: 3px solid rgba(255, 150, 0, 1) !important;
+    }
+/*]]>*/`;
+
+    html += `
+  <style type="text/css">${htmlCss}</style>
+</head>
+<body class="html-based-page ${overlayClass}" id="page${pageNumber}">
+  <div class="page-container">`;
+    // Layer 1: full-page background image
+    if (imagePath) {
+      html += `
+    <img src="${this.escapeHtml(imagePath)}" alt="Page ${pageNumber}" class="page-bg" aria-hidden="true" />`;
+    }
+
+    // Layer 2: text overlays
+    html += `
+    <div class="text-layer">`;
+
+    // Get text blocks for this page
+    let textBlocks = (page.textBlocks || []).filter(block => {
+      const blockPageNum = block.pageNumber || block.boundingBox?.pageNumber;
+      return !blockPageNum || blockPageNum === pageNumber;
+    });
+
+    // If no text blocks, create from page text
+    if (textBlocks.length === 0 && page.text && page.text.trim().length > 0) {
+      textBlocks = GeminiService.createSimpleTextBlocks(
+        page.text,
+        pageNumber,
+        pageWidthPoints,
+        pageHeightPoints
+      );
+    }
+
+    // Collect all text for TTS
+    const allTextForTTS = [];
+
+    // Scaling factors: PDF points -> rendered image pixels
+    const scaleX = pageWidthPoints > 0 ? (safeRenderedWidth / pageWidthPoints) : 1;
+    const scaleY = pageHeightPoints > 0 ? (safeRenderedHeight / pageHeightPoints) : 1;
+    const avgScale = (scaleX + scaleY) / 2;
+
+    // Generate positioned text blocks
+    for (let i = 0; i < textBlocks.length; i++) {
+      const block = textBlocks[i];
+      if (!block.text || block.text.trim().length === 0) continue;
+
+      const blockId = block.id || `block_${pageNumber}_${i}`;
+      const escapedText = this.escapeHtml(block.text.trim());
+      allTextForTTS.push(block.text.trim());
+
+      let style = '';
+      let tag = 'p';
+      let attributes = '';
+      let epubType = 'paragraph';
+
+      // Determine HTML tag
+      if (block.type === 'heading' && block.level) {
+        const hLevel = Math.max(1, Math.min(6, block.level));
+        tag = `h${hLevel}`;
+        epubType = 'title';
+        attributes = ` epub:type="${epubType}" aria-level="${hLevel}"`;
+      } else if (block.type === 'list-item') {
+        epubType = 'list-item';
+        attributes = ` epub:type="${epubType}"`;
+      } else {
+        epubType = 'paragraph';
+        attributes = ` epub:type="${epubType}"`;
+      }
+
+      // Position and styling
+      if (block.boundingBox) {
+        const bbox = block.boundingBox;
+        
+        // Validate bounding box coordinates
+        if (bbox.x === undefined || bbox.y === undefined || bbox.width === undefined || bbox.height === undefined) {
+          console.warn(`[Page ${pageNumber} Block ${blockId}] Invalid boundingBox, missing coordinates`);
+        }
+        
+        // Convert PDF coordinates (points, bottom-up) to rendered pixels (top-down)
+        // PDF coordinates: (0,0) is bottom-left, Y increases upward
+        // Screen coordinates: (0,0) is top-left, Y increases downward
+        const leftPx = (bbox.x || 0) * scaleX;
+        const widthPx = Math.max(1, (bbox.width || 0) * scaleX); // Ensure minimum width
+        const heightPx = Math.max(1, (bbox.height || 0) * scaleY); // Ensure minimum height
+        // Convert Y from PDF bottom-up to screen top-down
+        const topPx = Math.max(0, (pageHeightPoints - ((bbox.y || 0) + (bbox.height || 0))) * scaleY);
+
+        // Font styling
+        const fontSizePt = block.fontSize || (bbox.height ? bbox.height * 0.9 : 12);
+        const fontSizePx = fontSizePt * avgScale;
+        
+        let fontFamily = 'Arial, sans-serif';
+        if (block.fontName) {
+          // Map common PDF font names to web-safe fonts
+          const fontName = block.fontName.toLowerCase();
+          if (fontName.includes('times') || fontName.includes('roman')) {
+            fontFamily = 'Times, "Times New Roman", serif';
+          } else if (fontName.includes('courier') || fontName.includes('mono')) {
+            fontFamily = 'Courier, "Courier New", monospace';
+          } else if (fontName.includes('helvetica') || fontName.includes('arial')) {
+            fontFamily = 'Arial, Helvetica, sans-serif';
+          }
+        }
+
+        let fontWeight = 'normal';
+        if (block.isBold) {
+          fontWeight = 'bold';
+        }
+
+        let fontStyle = 'normal';
+        if (block.isItalic) {
+          fontStyle = 'italic';
+        }
+
+        // Text color (from PDF extraction)
+        const textColor = block.textColor || '#000000';
+        
+        // Text alignment
+        const textAlign = block.textAlign || 'left';
+
+        // Build style string with absolute positioning (CRITICAL for highlighting/TTS sync)
+        // All coordinates must be in pixels and properly converted from PDF points
+        style = `position: absolute; 
+                 left: ${leftPx.toFixed(2)}px; 
+                 top: ${topPx.toFixed(2)}px; 
+                 width: ${widthPx.toFixed(2)}px; 
+                 height: ${heightPx.toFixed(2)}px; 
+                 font-size: ${fontSizePx.toFixed(2)}px; 
+                 font-family: ${fontFamily}; 
+                 font-weight: ${fontWeight}; 
+                 font-style: ${fontStyle}; 
+                 color: ${textColor}; 
+                 text-align: ${textAlign}; 
+                 line-height: ${(fontSizePx * 1.05).toFixed(2)}px;`;
+        
+        // Validate that positioning values are valid numbers
+        if (isNaN(leftPx) || isNaN(topPx) || isNaN(widthPx) || isNaN(heightPx)) {
+          console.error(`[Page ${pageNumber} Block ${blockId}] Invalid positioning values - left:${leftPx}, top:${topPx}, width:${widthPx}, height:${heightPx}`);
+        }
+
+        // Map for SMIL
+        idMapping[blockId] = blockId;
+      } else {
+        // No bounding box - use flow layout
+        // WARNING: Blocks without boundingBox cannot be highlighted accurately
+        console.warn(`[Page ${pageNumber} Block ${blockId}] No boundingBox - using relative positioning (highlighting may not work)`);
+        style = `position: relative; 
+                 margin: 10px 0; 
+                 font-size: 16px; 
+                 color: #000000;`;
+      }
+
+      // Generate HTML element
+      html += `
+    <${tag} id="${blockId}" class="text-block" role="text"${attributes} style="${style}">${escapedText}</${tag}>`;
+    }
+
+    // Close text layer
+    html += `
+    </div>`;
+
+    // Generate text-content div with paragraphs for TTS (like reference file)
+    // This is essential for player's built-in TTS to work properly
+    html += `
+    <div class="text-content" epub:type="bodymatter" role="main" aria-label="Page ${pageNumber} content">`;
+    
+    // Generate paragraphs from textBlocks - each block becomes a paragraph with matching ID
+    if (textBlocks.length > 0) {
+      for (let i = 0; i < textBlocks.length; i++) {
+        const block = textBlocks[i];
+        if (block.text && block.text.trim().length > 0) {
+          const blockId = block.id || `block_${pageNumber}_${i}`;
+          const escapedText = this.escapeHtml(block.text.trim());
+          html += `
+     <p id="${blockId}" lang="en" xml:lang="en">${escapedText}</p>`;
+        }
+      }
+    } else if (allTextForTTS.length > 0) {
+      // Fallback: use collected text
+      const ttsText = allTextForTTS.join(' ').replace(/\s+/g, ' ').trim();
+      const escapedText = this.escapeHtml(ttsText);
+      html += `
+     <p id="block_${pageNumber}_0" lang="en" xml:lang="en">${escapedText}</p>`;
+    }
+    
+    html += `
+    </div>`;
+
+    html += `
+  </div>
+</body>
+</html>`;
+
     return { html, idMapping };
   }
   
@@ -1559,10 +2236,10 @@ body > p {
     <dc:identifier id="book-id">${uuid}</dc:identifier>
     <dc:publisher>PDF to EPUB Converter</dc:publisher>
     <meta property="dcterms:modified">${new Date().toISOString()}</meta>
-    <meta property="rendition:layout">${hasAudio ? 'pre-paginated' : 'reflowable'}</meta>
-    <meta property="rendition:orientation">${hasAudio ? 'auto' : 'portrait'}</meta>
+    <meta property="rendition:layout">pre-paginated</meta>
+    <meta property="rendition:orientation">auto</meta>
     <meta property="rendition:spread">none</meta>
-    ${hasAudio ? `<meta property="rendition:viewport">width=device-width, height=device-height</meta>` : ''}
+    <meta property="rendition:viewport">width=${pageWidthPoints},height=${pageHeightPoints}</meta>
     ${smilFileNames.length > 0 ? '<meta property="media:active-class">-epub-media-overlay-active</meta>' : ''}
     ${smilFileNames.length > 0 ? '<meta property="media:playback-active-class">-epub-media-overlay-playing</meta>' : ''}
     
@@ -1775,6 +2452,11 @@ body > p {
     return this.convertToDTO(job);
   }
 
+  static async getAllConversions() {
+    const jobs = await ConversionJobModel.findAll();
+    return jobs.map(job => this.convertToDTO(job));
+  }
+
   static async getConversionsByPdf(pdfDocumentId) {
     const jobs = await ConversionJobModel.findByPdfDocumentId(pdfDocumentId);
     return jobs.map(job => this.convertToDTO(job));
@@ -1827,7 +2509,14 @@ body > p {
    */
   static mapSyncIdToXhtmlId(sync, pageNumber, textBlocks, idMapping = {}) {
     // Get the sync's block ID (handle different field names)
-    const syncBlockId = sync.textBlockId || sync.text_block_id || sync.blockId;
+    // mapTimingsToBlocks returns { blockId, clipBegin, clipEnd, audioFileName }
+    // Editorial syncs return { id, clipBegin, clipEnd, audioFileName }
+    const syncBlockId = sync.id || sync.blockId || sync.textBlockId || sync.text_block_id;
+    
+    if (!syncBlockId) {
+      console.warn(`[SMIL] No block ID found in sync:`, sync);
+      return null;
+    }
     
     // First, check if we have a direct mapping from XHTML generation
     if (idMapping[syncBlockId]) {
@@ -1836,12 +2525,13 @@ body > p {
     
     // Try to find matching block in textBlocks
     if (syncBlockId && textBlocks && textBlocks.length > 0) {
-      const matchingBlock = textBlocks.find(b => 
-        b.id === syncBlockId || 
-        b.blockId === syncBlockId ||
-        (b.id && String(b.id).includes(String(syncBlockId))) ||
-        (b.blockId && String(b.blockId).includes(String(syncBlockId)))
-      );
+      const matchingBlock = textBlocks.find(b => {
+        const blockId = b.id || b.blockId;
+        return blockId === syncBlockId || 
+               String(blockId) === String(syncBlockId) ||
+               (blockId && String(blockId).includes(String(syncBlockId))) ||
+               (syncBlockId && String(syncBlockId).includes(String(blockId)));
+      });
       
       if (matchingBlock) {
         // Check if this block ID is in the mapping
@@ -1856,20 +2546,29 @@ body > p {
       }
     }
     
+    // If syncBlockId looks like a valid ID, use it directly
+    // (XHTML generation uses block.id directly, so it should match)
+    if (syncBlockId && (syncBlockId.startsWith('block_') || syncBlockId.match(/^[a-zA-Z0-9_-]+$/))) {
+      return syncBlockId;
+    }
+    
     // Fallback: try TTS flow text IDs (sequential)
     // This is a last resort - ideally we should track which block maps to which paraIndex
     const syncIndex = sync.index || 0;
     return `tts-flow-${pageNumber}-${syncIndex}`;
   }
 
-  static generateSMILContent(pageNumber, syncs, audioFileName, textData, idMapping = {}) {
+  static generateSMILContent(pageNumber, syncs, audioFileName, textData, idMapping = {}, xhtmlFileName = null) {
     // Get the page data to access textBlocks
     const page = textData?.pages?.find(p => p.pageNumber === pageNumber);
     const textBlocks = page?.textBlocks || [];
     
+    // Use provided XHTML filename or default
+    const xhtmlFile = xhtmlFileName || `page_${pageNumber}.xhtml`;
+    
     const sortedSyncs = [...syncs].sort((a, b) => {
-      const startA = a.startTime || a.start_time || 0;
-      const startB = b.startTime || b.start_time || 0;
+      const startA = a.clipBegin ?? a.startTime ?? a.start_time ?? 0;
+      const startB = b.clipBegin ?? b.startTime ?? b.start_time ?? 0;
       return startA - startB;
     });
     
@@ -1881,7 +2580,7 @@ body > p {
     // SMIL files are in OEBPS/, audio files should be in OEBPS/audio/
     let audioPath = audioFileName;
     if (!audioPath.startsWith('../') && !audioPath.startsWith('/')) {
-      // If audio is in OEBPS/audio/, SMIL in OEBPS/ needs ../audio/ or just audio/
+      // If audio is in OEBPS/audio/, SMIL in OEBPS/ needs audio/ (same directory level)
       if (audioPath.includes('audio/')) {
         audioPath = audioPath.replace(/^.*?audio\//, 'audio/');
       } else {
@@ -1891,14 +2590,15 @@ body > p {
     
     for (let i = 0; i < sortedSyncs.length; i++) {
       const sync = sortedSyncs[i];
-      const startTime = sync.startTime || sync.start_time || 0;
-      const endTime = sync.endTime || sync.end_time || (startTime + 5);
+      const startTime = sync.clipBegin ?? sync.startTime ?? sync.start_time ?? 0;
+      const endTime = sync.clipEnd ?? sync.endTime ?? sync.end_time ?? (startTime + 5);
       
       // FIXED: Map sync blockId to actual XHTML ID
       let blockId = this.mapSyncIdToXhtmlId(sync, pageNumber, textBlocks, idMapping);
       
       // If mapping failed, try sequential TTS flow text IDs
-      if (!blockId || blockId.startsWith('tts-flow-') && paraIndex < 10) {
+      if (!blockId) {
+        console.warn(`[SMIL Page ${pageNumber}] Could not map sync ID ${sync.id || sync.blockId}, using fallback`);
         blockId = `tts-flow-${pageNumber}-${paraIndex}`;
         paraIndex++;
       }
@@ -1907,23 +2607,31 @@ body > p {
       const escapedBlockId = this.escapeHtml(blockId);
       const escapedAudioPath = this.escapeHtml(audioPath);
       
+      // Debug logging for first few syncs
+      if (i < 3) {
+        console.log(`[SMIL Page ${pageNumber}] Sync ${i}: blockId=${blockId}, clipBegin=${startTime}, clipEnd=${endTime}, audioPath=${audioPath}`);
+      }
+      
       bodyContent += `    <par id="par-${escapedBlockId}">
-      <text src="page_${pageNumber}.xhtml#${escapedBlockId}"/>
+      <text src="${this.escapeHtml(xhtmlFile)}#${escapedBlockId}"/>
       <audio src="${escapedAudioPath}" clipBegin="${startTime}s" clipEnd="${endTime}s"/>
     </par>\n`;
       
       totalDuration = Math.max(totalDuration, endTime);
     }
     
+    // EPUB 3 SMIL structure with <seq> wrapper
     return `<?xml version="1.0" encoding="UTF-8"?>
-<smil xmlns="http://www.w3.org/ns/SMIL" version="3.0">
+<smil xmlns="http://www.w3.org/ns/SMIL" xmlns:epub="http://www.idpf.org/2007/ops" version="3.0">
   <head>
     <meta name="dtb:uid" content="conversion-job-${pageNumber}"/>
     <meta name="dtb:depth" content="1"/>
-    <meta name="dtb:totalElapsedTime" content="${totalDuration}"/>
+    <meta name="dtb:totalElapsedTime" content="${totalDuration.toFixed(3)}"/>
   </head>
   <body>
+    <seq id="seq-page${pageNumber}" epub:textref="${this.escapeHtml(xhtmlFile)}">
 ${bodyContent}
+    </seq>
   </body>
 </smil>`;
   }

@@ -7,6 +7,21 @@ import { successResponse, errorResponse, notFoundResponse, badRequestResponse } 
 
 const router = express.Router();
 
+// GET /api/conversions - Get all conversions
+router.get('/', async (req, res) => {
+  try {
+    const jobs = await ConversionService.getAllConversions();
+    
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
+    return successResponse(res, jobs);
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+});
+
 // POST /api/conversions/start/:pdfDocumentId - Start conversion
 router.post('/start/:pdfDocumentId', async (req, res) => {
   try {
@@ -141,15 +156,30 @@ router.post('/:jobId/retry', async (req, res) => {
   try {
     const job = await ConversionService.getConversionJob(parseInt(req.params.jobId));
     
-    if (job.status !== 'FAILED' && job.status !== 'CANCELLED') {
-      return badRequestResponse(res, 'Can only retry FAILED or CANCELLED jobs');
+    // Allow retrying FAILED, CANCELLED, or stuck IN_PROGRESS jobs
+    // IN_PROGRESS jobs might be stuck if server restarted during conversion
+    if (job.status !== 'FAILED' && job.status !== 'CANCELLED' && job.status !== 'IN_PROGRESS') {
+      return badRequestResponse(res, 'Can only retry FAILED, CANCELLED, or IN_PROGRESS jobs');
+    }
+
+    // If job is IN_PROGRESS, check if it's been stuck for more than 5 minutes
+    if (job.status === 'IN_PROGRESS') {
+      const updatedAt = new Date(job.updated_at || job.updatedAt);
+      const now = new Date();
+      const minutesSinceUpdate = (now - updatedAt) / (1000 * 60);
+      
+      if (minutesSinceUpdate < 5) {
+        return badRequestResponse(res, `Job is still in progress (updated ${Math.round(minutesSinceUpdate)} minutes ago). Wait a bit longer or check if conversion is still running.`);
+      }
+      
+      console.log(`[Job ${req.params.jobId}] Retrying stuck IN_PROGRESS job (stuck for ${Math.round(minutesSinceUpdate)} minutes)`);
     }
 
     const updatedJob = await ConversionService.updateJobStatus(parseInt(req.params.jobId), {
       status: 'PENDING',
       currentStep: 'STEP_0_CLASSIFICATION',
       progressPercentage: 0,
-      errorMessage: null
+      errorMessage: job.status === 'IN_PROGRESS' ? 'Job was interrupted by server restart' : null
     });
 
     // Restart conversion
@@ -209,6 +239,29 @@ router.get('/:jobId/download', async (req, res) => {
       return notFoundResponse(res, error.message);
     }
     return errorResponse(res, error.message || 'Failed to download EPUB', 500);
+  }
+});
+
+// POST /api/conversions/:jobId/regenerate - Regenerate EPUB with updated syncs
+router.post('/:jobId/regenerate', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const job = await ConversionService.getConversionJob(jobId);
+    
+    if (!job) {
+      return notFoundResponse(res, 'Conversion job not found');
+    }
+    
+    if (job.status !== 'COMPLETED') {
+      return badRequestResponse(res, 'Can only regenerate EPUB for completed conversions');
+    }
+    
+    // Regenerate EPUB with updated sync files
+    const result = await ConversionService.regenerateEpub(jobId);
+    return successResponse(res, result);
+  } catch (error) {
+    console.error('Error regenerating EPUB:', error);
+    return errorResponse(res, error.message, 500);
   }
 });
 

@@ -10,6 +10,7 @@ import pdfRoutes from './src/routes/pdfRoutes.js';
 import conversionRoutes from './src/routes/conversionRoutes.js';
 import aiConfigRoutes from './src/routes/aiConfigRoutes.js';
 import audioSyncRoutes from './src/routes/audioSyncRoutes.js';
+import jobPagesRoutes from './src/routes/jobPagesRoutes.js';
 
 // Import middleware
 import { errorHandler } from './src/middlewares/errorHandler.js';
@@ -43,6 +44,7 @@ app.use('/api/pdfs', pdfRoutes);
 app.use('/api/conversions', conversionRoutes);
 app.use('/api/ai', aiConfigRoutes);
 app.use('/api/audio-sync', audioSyncRoutes);
+app.use('/api/jobs', jobPagesRoutes);
 
 // Error handling middleware (must be last)
 app.use(errorHandler);
