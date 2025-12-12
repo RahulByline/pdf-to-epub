@@ -484,6 +484,27 @@ const MediaOverlaySyncEditor = () => {
       const result = await response.json();
       alert(`TTS audio generated successfully! ${result.syncs?.length || 0} sync entries created.`);
       
+      // Auto-populate CLIPBEGIN/CLIPEND from generated syncs
+      if (result.syncs && result.syncs.length > 0) {
+        setPageData(prev => {
+          const updatedBlocks = prev.textBlocks.map(block => {
+            const sync = result.syncs.find(s => s.id === block.id);
+            if (sync) {
+              return {
+                ...block,
+                clipBegin: sync.clipBegin || null,
+                clipEnd: sync.clipEnd || null
+              };
+            }
+            return block;
+          });
+          return {
+            ...prev,
+            textBlocks: updatedBlocks
+          };
+        });
+      }
+      
       // Reload page data to get new audio and syncs
       await loadPageData();
       
@@ -946,9 +967,12 @@ const MediaOverlaySyncEditor = () => {
                           {pageData.textBlocks
                             .filter(block => block.clipBegin !== null && block.clipEnd !== null && duration > 0)
                             .map(block => {
-                              const beginX = (block.clipBegin / duration) * 100;
-                              const endX = (block.clipEnd / duration) * 100;
-                              const isActive = currentTime >= block.clipBegin && currentTime <= block.clipEnd;
+                              // Use CLIPBEGIN/CLIPEND values (already normalized from backend)
+                              const clipBegin = block.clipBegin || 0;
+                              const clipEnd = block.clipEnd || 0;
+                              const beginX = (clipBegin / duration) * 100;
+                              const endX = (clipEnd / duration) * 100;
+                              const isActive = currentTime >= clipBegin && currentTime <= clipEnd;
                               return (
                                 <rect
                                   key={block.id}
@@ -960,6 +984,7 @@ const MediaOverlaySyncEditor = () => {
                                   stroke={isActive ? '#1976d2' : '#4caf50'}
                                   strokeWidth="1"
                                   opacity="0.7"
+                                  title={`Block: ${formatTime(clipBegin)} - ${formatTime(clipEnd)}`}
                                 />
                               );
                             })}
@@ -1025,7 +1050,18 @@ const MediaOverlaySyncEditor = () => {
                   className={`text-block-item ${selectedBlockId === block.id ? 'selected' : ''}`}
                   onMouseEnter={() => setHoveredBlockId(block.id)}
                   onMouseLeave={() => setHoveredBlockId(null)}
-                  onClick={() => setSelectedBlockId(block.id)}
+                  onClick={(e) => {
+                    // If clicking on input or button, don't select block
+                    if (e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON' || e.target.closest('button')) {
+                      return;
+                    }
+                    setSelectedBlockId(block.id);
+                    // If block has CLIPBEGIN, seek to it
+                    if (block.clipBegin !== null && audioRef.current) {
+                      audioRef.current.currentTime = block.clipBegin;
+                      setCurrentTime(block.clipBegin);
+                    }
+                  }}
                   style={{
                     borderLeftWidth: syncValidation.errors.some(e => e.blockId === block.id) ? '4px' : '2px',
                     borderLeftColor: syncValidation.errors.some(e => e.blockId === block.id) 
@@ -1059,7 +1095,7 @@ const MediaOverlaySyncEditor = () => {
                   
                   <div className="block-timing-controls">
                     <div className="timing-input-group">
-                      <label>clipBegin (s):</label>
+                      <label>CLIPBEGIN (S):</label>
                       <input
                         type="number"
                         step="0.001"
@@ -1071,10 +1107,39 @@ const MediaOverlaySyncEditor = () => {
                         style={{
                           borderColor: syncValidation.errors.some(e => e.blockId === block.id && e.type === 'invalid_range') ? '#d32f2f' : undefined
                         }}
+                        placeholder="0.000"
                       />
+                      {block.clipBegin !== null && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (audioRef.current) {
+                              audioRef.current.currentTime = block.clipBegin;
+                              setCurrentTime(block.clipBegin);
+                              if (!isPlaying) {
+                                audioRef.current.play();
+                                setIsPlaying(true);
+                              }
+                            }
+                          }}
+                          style={{
+                            marginLeft: '8px',
+                            padding: '4px 8px',
+                            border: '1px solid #4caf50',
+                            borderRadius: '4px',
+                            backgroundColor: '#4caf50',
+                            color: 'white',
+                            cursor: 'pointer',
+                            fontSize: '11px'
+                          }}
+                          title="Seek to CLIPBEGIN time"
+                        >
+                          ▶ Play
+                        </button>
+                      )}
                     </div>
                     <div className="timing-input-group">
-                      <label>clipEnd (s):</label>
+                      <label>CLIPEND (S):</label>
                       <input
                         type="number"
                         step="0.001"
@@ -1086,10 +1151,16 @@ const MediaOverlaySyncEditor = () => {
                         style={{
                           borderColor: syncValidation.errors.some(e => e.blockId === block.id && (e.type === 'duration_exceeded' || e.type === 'invalid_range')) ? '#d32f2f' : undefined
                         }}
+                        placeholder="0.000"
                       />
                       {duration > 0 && block.clipEnd !== null && block.clipEnd > duration && (
                         <span style={{ fontSize: '11px', color: '#d32f2f', marginTop: '4px', display: 'block' }}>
                           ⚠ Exceeds audio duration ({duration.toFixed(2)}s)
+                        </span>
+                      )}
+                      {block.clipBegin !== null && block.clipEnd !== null && (
+                        <span style={{ fontSize: '11px', color: '#4caf50', marginTop: '4px', display: 'block' }}>
+                          ✓ Auto-detected: {formatTime(block.clipBegin)} - {formatTime(block.clipEnd)}
                         </span>
                       )}
                     </div>

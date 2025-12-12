@@ -207,7 +207,13 @@ export class PdfExtractionService {
       const x = item.transform[4] || 0;
       const y = item.transform[5] || 0;
       const width = item.width || 0;
-      const height = item.height || (item.transform[0] || 0);
+      // item.height might be font size, but we need actual text height
+      // For proper bounding box, use font size * 1.3 to account for ascent (80%) + descent (20%)
+      // Large decorative text needs more height coverage
+      const fontSize = item.transform[0] || item.height || 12;
+      // Use actual item.height if available, otherwise estimate from font size
+      // For large text, multiply by 1.3 to ensure full coverage
+      const height = item.height ? Math.max(item.height, fontSize * 1.1) : (fontSize * 1.3);
       
       if (!currentBlock) {
         // Start new block
@@ -256,8 +262,15 @@ export class PdfExtractionService {
           currentBlock.text += item.str;
           currentBlock.minX = Math.min(currentBlock.minX, x);
           currentBlock.maxX = Math.max(currentBlock.maxX, x + width);
-          currentBlock.minY = Math.min(currentBlock.minY, y);
-          currentBlock.maxY = Math.max(currentBlock.maxY, y + height);
+          // For Y coordinates in PDF: higher Y = closer to top, lower Y = closer to bottom
+          // minY = lowest baseline (bottom-most text), maxY = highest baseline + height (top-most text)
+          // Calculate proper height for this item
+          const itemFontSize = item.transform[0] || item.height || 12;
+          const itemHeight = item.height || (itemFontSize * 1.2); // Full glyph height
+          currentBlock.minY = Math.min(currentBlock.minY, y); // Lowest baseline
+          // maxY should be the highest point of text (highest baseline + its height)
+          // In PDF coords, y is baseline, so top of text is y + height
+          currentBlock.maxY = Math.max(currentBlock.maxY, y + itemHeight);
         } else {
           // Finish current block and start new one
           const finishedBlock = this.createTextBlock(currentBlock, viewport);
