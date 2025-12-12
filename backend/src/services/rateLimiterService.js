@@ -1,6 +1,11 @@
 /**
  * Rate Limiter Service using Token Bucket Algorithm
  * Limits requests per provider to avoid 429 errors
+ * 
+ * Configurable via environment variables:
+ * - GEMINI_RATE_LIMIT_PER_MINUTE: Requests per minute (default: 50)
+ * - GEMINI_RATE_LIMIT_PER_HOUR: Requests per hour (default: 3000)
+ * - GEMINI_MIN_INTERVAL_MS: Minimum interval between requests in ms (default: 1000 = 1s)
  */
 export class RateLimiterService {
   static limiters = new Map();
@@ -12,17 +17,31 @@ export class RateLimiterService {
    */
   static getLimiter(provider = 'Gemini') {
     if (!this.limiters.has(provider)) {
+      // Get configurable limits from environment variables
+      const tokensPerMinute = parseInt(process.env.GEMINI_RATE_LIMIT_PER_MINUTE || '50', 10);
+      const tokensPerHour = parseInt(process.env.GEMINI_RATE_LIMIT_PER_HOUR || '3000', 10);
+      const minInterval = parseInt(process.env.GEMINI_MIN_INTERVAL_MS || '1000', 10); // 1 second default
+      
+      // Calculate minInterval from tokensPerMinute if not explicitly set
+      const calculatedMinInterval = Math.max(100, Math.floor(60000 / tokensPerMinute));
+      const actualMinInterval = minInterval >= 100 ? minInterval : calculatedMinInterval;
+      
+      console.log(`[RateLimiter] Initialized for ${provider}:`);
+      console.log(`  - Requests per minute: ${tokensPerMinute}`);
+      console.log(`  - Requests per hour: ${tokensPerHour}`);
+      console.log(`  - Min interval: ${actualMinInterval}ms`);
+      
       this.limiters.set(provider, {
-        // Token bucket: 10 requests per minute
-        tokensPerMinute: 10,
-        tokensPerHour: 600,
-        currentTokens: 10,
+        // Token bucket: configurable requests per minute
+        tokensPerMinute: tokensPerMinute,
+        tokensPerHour: tokensPerHour,
+        currentTokens: tokensPerMinute, // Start with full bucket
         lastRefill: Date.now(),
         lastRequest: 0,
-        minInterval: 6000, // 6 seconds between requests (for 10/min)
+        minInterval: actualMinInterval, // Configurable minimum interval
         // Hourly tracking
         hourlyRequests: [],
-        hourlyLimit: 600
+        hourlyLimit: tokensPerHour
       });
     }
     return this.limiters.get(provider);
@@ -79,7 +98,7 @@ export class RateLimiterService {
     const minutesPassed = timePassed / 60000;
 
     if (minutesPassed >= 1) {
-      // Refill tokens: 10 per minute
+      // Refill tokens based on configured tokensPerMinute
       const tokensToAdd = Math.floor(minutesPassed * limiter.tokensPerMinute);
       limiter.currentTokens = Math.min(
         limiter.tokensPerMinute,
