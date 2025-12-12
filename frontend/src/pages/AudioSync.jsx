@@ -31,6 +31,7 @@ const AudioSync = () => {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [selectedChunk, setSelectedChunk] = useState(null);
+  const [clipTimings, setClipTimings] = useState({}); // { blockId: { clipBegin: number, clipEnd: number } }
 
   useEffect(() => {
     loadData();
@@ -127,6 +128,18 @@ const AudioSync = () => {
         if (voiceMatch) {
           setSelectedVoice(voiceMatch[1]);
         }
+        
+        // Auto-populate CLIPBEGIN/CLIPEND from audio segments
+        const timings = {};
+        audioData.forEach(segment => {
+          if (segment.blockId) {
+            timings[segment.blockId] = {
+              clipBegin: segment.startTime || 0,
+              clipEnd: segment.endTime || 0
+            };
+          }
+        });
+        setClipTimings(timings);
       }
     } catch (err) {
       console.error('Error loading data:', err);
@@ -176,10 +189,33 @@ const AudioSync = () => {
       setAudioSegments(segments);
       setSelectedBlocks([]); // Clear selection after generation
       
+      // Auto-populate CLIPBEGIN/CLIPEND from generated segments
+      const timings = {};
+      segments.forEach(segment => {
+        if (segment.blockId) {
+          timings[segment.blockId] = {
+            clipBegin: segment.startTime || 0,
+            clipEnd: segment.endTime || 0
+          };
+        }
+      });
+      setClipTimings(prev => ({ ...prev, ...timings }));
+      
       // Reload audio syncs to get the updated audio file
       const audioData = await audioSyncService.getAudioSyncsByJob(parseInt(jobId));
       if (audioData && audioData.length > 0) {
         setAudioSegments(audioData);
+        // Update timings from reloaded data
+        const updatedTimings = {};
+        audioData.forEach(segment => {
+          if (segment.blockId) {
+            updatedTimings[segment.blockId] = {
+              clipBegin: segment.startTime || 0,
+              clipEnd: segment.endTime || 0
+            };
+          }
+        });
+        setClipTimings(prev => ({ ...prev, ...updatedTimings }));
         // Force audio player to reload
         if (audioRef.current) {
           audioRef.current.load();
@@ -245,6 +281,26 @@ const AudioSync = () => {
     }
   };
 
+  // Handle clicking on a text block to seek to its CLIPBEGIN time
+  const handleBlockSeek = (blockId) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    
+    // Use CLIPBEGIN from clipTimings, or fallback to segment startTime
+    const timing = clipTimings[blockId];
+    const segment = audioSegments.find(s => s.blockId === blockId);
+    const seekTime = timing?.clipBegin ?? segment?.startTime ?? 0;
+    
+    if (seekTime > 0) {
+      audio.currentTime = seekTime;
+      setCurrentTime(seekTime);
+      if (!isPlaying) {
+        audio.play();
+        setIsPlaying(true);
+      }
+    }
+  };
+
   const handleSeek = (e) => {
     const audio = audioRef.current;
     if (!audio || !duration) return;
@@ -259,10 +315,18 @@ const AudioSync = () => {
   };
 
   const handleBlockClick = (block) => {
+    // Use CLIPBEGIN from clipTimings, or fallback to segment startTime
+    const timing = clipTimings[block.id];
     const segment = audioSegments.find(s => s.blockId === block.id);
-    if (segment && audioRef.current) {
-      audioRef.current.currentTime = segment.startTime;
-      setCurrentTime(segment.startTime);
+    const seekTime = timing?.clipBegin ?? segment?.startTime ?? 0;
+    
+    if (seekTime > 0 && audioRef.current) {
+      audioRef.current.currentTime = seekTime;
+      setCurrentTime(seekTime);
+      if (!isPlaying) {
+        audioRef.current.play();
+        setIsPlaying(true);
+      }
     }
   };
 
@@ -507,7 +571,11 @@ const AudioSync = () => {
                       const isSelected = selectedBlocks.includes(block.id);
                       const isEditing = editingBlockId === block.id;
                       const segment = audioSegments.find(s => s.blockId === block.id);
-                      const isActive = segment && currentTime >= segment.startTime && currentTime <= segment.endTime;
+                      // Use CLIPBEGIN/CLIPEND from clipTimings, or fallback to segment times
+                      const timing = clipTimings[block.id];
+                      const clipBegin = timing?.clipBegin ?? segment?.startTime ?? 0;
+                      const clipEnd = timing?.clipEnd ?? segment?.endTime ?? 0;
+                      const isActive = clipBegin > 0 && currentTime >= clipBegin && currentTime <= clipEnd;
 
                       return (
                         <div
@@ -560,10 +628,34 @@ const AudioSync = () => {
                               Block {idx + 1}
                             </span>
                             <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                              {segment && (
+                              {(segment || clipTimings[block.id]) && (
                                 <span style={{ fontSize: '12px', color: '#666' }}>
-                                  {formatTime(segment.startTime)} - {formatTime(segment.endTime)}
+                                  {formatTime(clipBegin)} - {formatTime(clipEnd)}
                                 </span>
+                              )}
+                              {(segment || clipTimings[block.id]) && (
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleBlockSeek(block.id);
+                                  }}
+                                  style={{
+                                    padding: '4px 8px',
+                                    border: '1px solid #4caf50',
+                                    borderRadius: '4px',
+                                    backgroundColor: '#4caf50',
+                                    color: 'white',
+                                    cursor: 'pointer',
+                                    fontSize: '11px',
+                                    display: 'flex',
+                                    alignItems: 'center',
+                                    gap: '4px'
+                                  }}
+                                  title="Click to seek to this block's start time"
+                                >
+                                  <HiOutlinePlay size={12} />
+                                  Play
+                                </button>
                               )}
                               {!isEditing ? (
                                 <button
@@ -669,6 +761,94 @@ const AudioSync = () => {
                               {block.text || '(Empty block)'}
                             </p>
                           )}
+                          {/* CLIPBEGIN/CLIPEND timing inputs - Auto-populated from audio segments */}
+                          <div style={{ marginTop: '12px', display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <label style={{ fontSize: '12px', fontWeight: '500', color: '#666', minWidth: '100px' }}>
+                                CLIPBEGIN (S):
+                              </label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={clipTimings[block.id]?.clipBegin?.toFixed(2) || segment?.startTime?.toFixed(2) || '0.00'}
+                                onChange={(e) => {
+                                  const value = parseFloat(e.target.value) || 0;
+                                  setClipTimings(prev => ({
+                                    ...prev,
+                                    [block.id]: {
+                                      ...prev[block.id],
+                                      clipBegin: value
+                                    }
+                                  }));
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                style={{
+                                  width: '80px',
+                                  padding: '4px 8px',
+                                  border: '1px solid #ddd',
+                                  borderRadius: '4px',
+                                  fontSize: '12px',
+                                  fontFamily: 'monospace'
+                                }}
+                                placeholder="0.00"
+                              />
+                            </div>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                              <label style={{ fontSize: '12px', fontWeight: '500', color: '#666', minWidth: '90px' }}>
+                                CLIPEND (S):
+                              </label>
+                              <input
+                                type="number"
+                                step="0.01"
+                                value={clipTimings[block.id]?.clipEnd?.toFixed(2) || segment?.endTime?.toFixed(2) || '0.00'}
+                                onChange={(e) => {
+                                  const value = parseFloat(e.target.value) || 0;
+                                  setClipTimings(prev => ({
+                                    ...prev,
+                                    [block.id]: {
+                                      ...prev[block.id],
+                                      clipEnd: value
+                                    }
+                                  }));
+                                }}
+                                onClick={(e) => e.stopPropagation()}
+                                style={{
+                                  width: '80px',
+                                  padding: '4px 8px',
+                                  border: '1px solid #ddd',
+                                  borderRadius: '4px',
+                                  fontSize: '12px',
+                                  fontFamily: 'monospace'
+                                }}
+                                placeholder="0.00"
+                              />
+                            </div>
+                            {segment && (
+                              <span style={{ fontSize: '11px', color: '#4caf50', fontStyle: 'italic' }}>
+                                ✓ Auto-detected
+                              </span>
+                            )}
+                          </div>
+                          
+                          {/* Display coordinates and size information */}
+                          {(block.x !== undefined || block.normalizedX !== undefined) && (
+                            <div style={{ marginTop: '8px', fontSize: '11px', color: '#666', fontFamily: 'monospace', display: 'flex', gap: '16px', flexWrap: 'wrap' }}>
+                              <span>
+                                <strong>Position:</strong> x: {block.normalizedX !== undefined ? block.normalizedX.toFixed(2) : (block.x || 0).toFixed(2)}, 
+                                y: {block.normalizedY !== undefined ? block.normalizedY.toFixed(2) : (block.y || 0).toFixed(2)}
+                              </span>
+                              <span>
+                                <strong>Size:</strong> w: {block.normalizedWidth !== undefined ? block.normalizedWidth.toFixed(2) : (block.width || 0).toFixed(2)}, 
+                                h: {block.normalizedHeight !== undefined ? block.normalizedHeight.toFixed(2) : (block.height || 0).toFixed(2)}
+                              </span>
+                              {block.x !== undefined && block.normalizedX === undefined && (
+                                <span style={{ color: '#999' }}>
+                                  <strong>Absolute:</strong> ({block.x.toFixed(1)}pt, {block.y.toFixed(1)}pt) 
+                                  {block.width && block.height && ` [${block.width.toFixed(1)}×${block.height.toFixed(1)}]`}
+                                </span>
+                              )}
+                            </div>
+                          )}
                           {!segment && !isEditing && (
                             <div style={{ marginTop: '8px', fontSize: '12px', color: '#999', fontStyle: 'italic' }}>
                               {isSelected ? 'Selected - will generate audio' : 'Click to select for audio generation'}
@@ -720,8 +900,12 @@ const AudioSync = () => {
                 />
                 {audioSegments.map(segment => {
                   if (!duration) return null;
-                  const startPercent = (segment.startTime / duration) * 100;
-                  const widthPercent = ((segment.endTime - segment.startTime) / duration) * 100;
+                  // Use CLIPBEGIN/CLIPEND from clipTimings if available, otherwise use segment times
+                  const timing = clipTimings[segment.blockId];
+                  const clipBegin = timing?.clipBegin ?? segment.startTime ?? 0;
+                  const clipEnd = timing?.clipEnd ?? segment.endTime ?? 0;
+                  const startPercent = (clipBegin / duration) * 100;
+                  const widthPercent = ((clipEnd - clipBegin) / duration) * 100;
                   return (
                     <div
                       key={segment.id}
@@ -735,6 +919,7 @@ const AudioSync = () => {
                         pointerEvents: 'none',
                         top: 0
                       }}
+                      title={`Block: ${formatTime(clipBegin)} - ${formatTime(clipEnd)}`}
                     />
                   );
                 })}

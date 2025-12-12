@@ -1678,24 +1678,33 @@ export class ConversionService {
       pointer-events: none;
     }
 
-    /* Text blocks with exact positioning */
+    /* LAYER 2: Highlight Target (Invisible but positioned for highlighting) */
+    /* These blocks are absolutely positioned to match text on the image */
+    /* They are invisible but provide the target for highlight CSS activation */
     .text-block {
       position: absolute;
       margin: 0;
       padding: 0;
       white-space: pre-wrap;
       word-wrap: break-word;
-      user-select: text;
-      -webkit-user-select: text;
-      pointer-events: auto;
-      overflow: visible;
-    }
-
-    /* Optional: hide overlays while keeping them for TTS/search */
-    .overlay-hidden .text-block {
+      /* CRITICAL: Make invisible but keep for highlighting */
       color: transparent !important;
       opacity: 0 !important;
-      pointer-events: none !important;
+      /* Keep pointer-events for potential interaction, but text is invisible */
+      pointer-events: none;
+      overflow: visible;
+      z-index: 2;
+    }
+    
+    /* When media overlay activates, make highlight visible */
+    .text-block.-epub-media-overlay-active,
+    .text-block.epub-media-overlay-active {
+      /* Highlight becomes visible when active */
+      background-color: rgba(255, 255, 0, 0.4) !important;
+      outline: 2px solid rgba(255, 200, 0, 0.8) !important;
+      /* Text remains invisible - only highlight box is visible */
+      color: transparent !important;
+      opacity: 1 !important; /* Make highlight visible */
     }
     
     /* TTS flow text (hidden but accessible) */
@@ -1708,9 +1717,26 @@ export class ConversionService {
       white-space: nowrap;
     }
     
-    /* Text content div for TTS accessibility */
+    /* LAYER 3: TTS Source (Hidden but accessible for TTS engine) */
+    /* This layer provides sequential text for the player's built-in TTS */
+    /* CRITICAL: Must be accessible to TTS but visually hidden */
+    /* Using "screen reader only" technique - text in normal flow but visually hidden */
+    /* This is the most compatible approach for EPUB TTS engines */
+    /* Position: static keeps it in normal document flow for TTS accessibility */
     .text-content {
-      margin-top: 20px;
+      position: static;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: 0;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border-width: 0;
+      /* Ensure it's accessible to screen readers and TTS */
+      /* Do NOT use visibility:hidden or display:none - it breaks TTS */
+      /* Text is in normal flow for maximum TTS compatibility */
     }
     
     .text-content p,
@@ -1720,11 +1746,20 @@ export class ConversionService {
     .text-content h4,
     .text-content h5,
     .text-content h6 {
-      margin: 10px 0;
+      margin: 0;
+      padding: 0;
       color: #000;
-      visibility: visible;
-      opacity: 1;
+      /* Text must be visible to TTS engine */
+      /* Do NOT use visibility:hidden or display:none */
       display: block;
+      position: static;
+      /* Ensure text is readable by TTS */
+      white-space: normal;
+      word-wrap: break-word;
+      /* Make sure text is accessible */
+      font-size: 1em;
+      line-height: 1.2;
+      /* Text is accessible but visually hidden via parent clipping */
     }
     
     /* Media overlay highlighting */
@@ -1900,10 +1935,16 @@ export class ConversionService {
     html += `
     </div>`;
 
+    // Close page-container
+    html += `
+  </div>`;
+
     // Generate text-content div with paragraphs for TTS (like reference file)
     // This is essential for player's built-in TTS to work properly
+    // CRITICAL: Place text-content OUTSIDE page-container so it's in normal document flow
+    // This makes it accessible to TTS engines even though it's visually hidden
     html += `
-    <div class="text-content" epub:type="bodymatter" role="main" aria-label="Page ${pageNumber} content">`;
+  <div class="text-content" epub:type="bodymatter" role="main" aria-label="Page ${pageNumber} content" aria-hidden="false">`;
     
     // Generate paragraphs from textBlocks - each block becomes a paragraph with matching ID
     if (textBlocks.length > 0) {
@@ -1913,7 +1954,7 @@ export class ConversionService {
           const blockId = block.id || `block_${pageNumber}_${i}`;
           const escapedText = this.escapeHtml(block.text.trim());
           html += `
-     <p id="${blockId}" lang="en" xml:lang="en">${escapedText}</p>`;
+    <p id="${blockId}" lang="en" xml:lang="en" aria-hidden="false">${escapedText}</p>`;
         }
       }
     } else if (allTextForTTS.length > 0) {
@@ -1921,12 +1962,9 @@ export class ConversionService {
       const ttsText = allTextForTTS.join(' ').replace(/\s+/g, ' ').trim();
       const escapedText = this.escapeHtml(ttsText);
       html += `
-     <p id="block_${pageNumber}_0" lang="en" xml:lang="en">${escapedText}</p>`;
+    <p id="block_${pageNumber}_0" lang="en" xml:lang="en" aria-hidden="false">${escapedText}</p>`;
     }
     
-    html += `
-    </div>`;
-
     html += `
   </div>
 </body>
