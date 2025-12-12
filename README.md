@@ -195,6 +195,11 @@ HTML_INTERMEDIATE_DIR=html_intermediate
 GEMINI_API_KEY=your-api-key
 GEMINI_API_ENABLED=true
 GEMINI_API_MODEL=gemini-2.5-flash
+
+# Google Cloud Text-to-Speech (Optional - for TTS audio generation)
+# If not set, you can still upload human-narrated audio files
+# GOOGLE_APPLICATION_CREDENTIALS=/path/to/service-account-key.json
+# TTS_ENABLED=true  # Set to false to disable TTS even if credentials exist
 ```
 
 ### Frontend (.env)

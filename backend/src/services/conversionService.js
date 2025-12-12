@@ -592,7 +592,16 @@ export class ConversionService {
       `Converted Document ${jobId}`
     );
     
-    const pageImages = pageImagesData.images || [];
+    // Normalize and sort page images by pageNumber to keep alignment with PDF order
+    const pageImages = (pageImagesData.images || [])
+      .filter(img => img && (img.pageNumber || img.pdfPageNumber))
+      .map(img => ({
+        ...img,
+        pageNumber: img.pageNumber || img.pdfPageNumber || 0,
+        pdfPageNumber: img.pdfPageNumber || img.pageNumber || img.pageNumber || 0,
+        renderFailed: !!img.renderFailed
+      }))
+      .sort((a, b) => (a.pageNumber || 0) - (b.pageNumber || 0));
     const renderedWidth = pageImagesData.renderedWidth || 0;
     const renderedHeight = pageImagesData.renderedHeight || 0;
     const pageWidthPoints = pageImagesData.maxWidth || 612.0;
@@ -616,6 +625,11 @@ export class ConversionService {
     const spineItems = [];
     const tocItems = [];
     const smilFileNames = [];
+
+    console.log(`[Job ${jobId}] Page images after normalization: ${pageImages.length}`);
+    pageImages.slice(0, 5).forEach(img => {
+      console.log(`[Job ${jobId}] pageImage pageNumber=${img.pageNumber}, pdfPageNumber=${img.pdfPageNumber}, renderFailed=${img.renderFailed}, file=${img.fileName}`);
+    });
     // Track mapping from source block IDs to actual XHTML IDs per page (for SMIL/audio and TTS alignment)
     let pageIdMappings = {};
     
@@ -2256,7 +2270,6 @@ body > p {
   </manifest>
   <spine toc="nav">
     ${spineItems.join('\n    ')}
-    <itemref idref="nav" linear="no"/>
   </spine>
 </package>`;
   }

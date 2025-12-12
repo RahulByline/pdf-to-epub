@@ -493,7 +493,8 @@ export class PdfExtractionService {
             // Handle page 1 (index 0) which might fail
             let pdfPage = null;
             let viewport = null;
-            let actualPageIndex = pageNum - 1; // 0-based index for pdfjs
+            // pdfjs getPage expects 1-based page numbers
+            let actualPageIndex = pageNum; // 1-based index for pdfjs
             let retryCount = 0;
             const maxRetries = 3;
             
@@ -636,7 +637,8 @@ export class PdfExtractionService {
                   width: fallbackPageRenderedWidth,
                   height: fallbackPageRenderedHeight,
                   pageWidthPoints: fallbackPageWidthPoints,
-                  pageHeightPoints: fallbackPageHeightPoints
+                  pageHeightPoints: fallbackPageHeightPoints,
+                  renderFailed: false
                 });
                 
                 console.log(`[PDF Page ${pageNum} → EPUB Page ${pageImages.length}] Rendered via Puppeteer fallback: ${fallbackPageRenderedWidth}x${fallbackPageRenderedHeight}px (${fallbackPageWidthPoints}x${fallbackPageHeightPoints}pt)`);
@@ -666,7 +668,8 @@ export class PdfExtractionService {
                   width: fallbackPageRenderedWidth,
                   height: fallbackPageRenderedHeight,
                   pageWidthPoints: fallbackPageWidthPoints,
-                  pageHeightPoints: fallbackPageHeightPoints
+                  pageHeightPoints: fallbackPageHeightPoints,
+                  renderFailed: true
                 });
                 
                 console.log(`[PDF Page ${pageNum} → EPUB Page ${pageImages.length}] Created blank placeholder: ${fallbackPageRenderedWidth}x${fallbackPageRenderedHeight}px`);
@@ -713,9 +716,9 @@ export class PdfExtractionService {
   <script>
     (async function() {
         const pdfData = atob('${pdfBase64}');
-        const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
-        const pageIndex = ${actualPageIndex}; // Use the actual page index
-        const page = await pdf.getPage(pageIndex);
+                const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+                const pageIndex = ${pageNum}; // pdfjs getPage is 1-based
+                const page = await pdf.getPage(pageIndex);
         
         const viewport = page.getViewport({ scale: ${scale} });
         const canvas = document.getElementById('pdf-canvas');
@@ -756,8 +759,8 @@ export class PdfExtractionService {
             await new Promise(resolve => setTimeout(resolve, 1000));
             
             // Take screenshot
-            // EPUB page number starts from 1 for the first valid PDF page
-            const epubPageNumber = pageImages.length + 1; // Sequential numbering starting from 1
+            // Keep EPUB page number aligned with the PDF page number to prevent off-by-one shifts
+            const epubPageNumber = pageNum;
             const imageFileName = `page_${epubPageNumber}.png`;
             const imagePath = path.join(outputDir, imageFileName);
             
@@ -799,16 +802,17 @@ export class PdfExtractionService {
               }
             }
             
-            // Store both PDF page number (original) and EPUB page number (sequential from 1)
+            // Store both PDF page number (original) and EPUB page number (matching PDF page)
             pageImages.push({
               pdfPageNumber: pageNum, // Original PDF page number
-              pageNumber: epubPageNumber, // EPUB page number (starts from 1 for first valid page)
+              pageNumber: epubPageNumber, // EPUB page number matches PDF page number
               path: imagePath,
               fileName: imageFileName,
               width: maxRenderedWidth,
               height: maxRenderedHeight,
               pageWidth: pageWidthPoints,
-              pageHeight: pageHeightPoints
+              pageHeight: pageHeightPoints,
+              renderFailed: false
             });
             
             console.log(`[PDF Page ${pageNum} → EPUB Page ${epubPageNumber}] Rendered successfully: ${maxRenderedWidth}x${maxRenderedHeight}px (${pageWidthPoints}x${pageHeightPoints}pt)`);
@@ -816,9 +820,43 @@ export class PdfExtractionService {
             await page.close();
           } catch (pageError) {
             console.error(`[Page ${pageNum}] Failed to render:`, pageError.message);
-            // Skip invalid pages - don't create blank placeholder
-            console.warn(`[Page ${pageNum}] Skipping invalid page (will not be included in EPUB)`);
-            // Continue to next page without adding to pageImages
+            // Create a blank placeholder to preserve page numbering and avoid text/page misalignment
+            try {
+              const fallbackPageWidthPoints = maxWidth || 612;
+              const fallbackPageHeightPoints = maxHeight || 792;
+              const fallbackPageRenderedWidth = Math.ceil(fallbackPageWidthPoints * scale);
+              const fallbackPageRenderedHeight = Math.ceil(fallbackPageHeightPoints * scale);
+
+              const sharp = (await import('sharp')).default;
+              const blankImage = await sharp({
+                create: {
+                  width: fallbackPageRenderedWidth,
+                  height: fallbackPageRenderedHeight,
+                  channels: 3,
+                  background: { r: 255, g: 255, b: 255 }
+                }
+              }).png().toBuffer();
+
+              const imageFileName = `page_${pageNum}.png`;
+              const imagePath = path.join(outputDir, imageFileName);
+              await fs.writeFile(imagePath, blankImage);
+
+              pageImages.push({
+                pdfPageNumber: pageNum,
+                pageNumber: pageNum,
+                path: imagePath,
+                fileName: imageFileName,
+                width: fallbackPageRenderedWidth,
+                height: fallbackPageRenderedHeight,
+                pageWidth: fallbackPageWidthPoints,
+                pageHeight: fallbackPageHeightPoints,
+                renderFailed: true
+              });
+
+              console.warn(`[Page ${pageNum}] Render failed. Inserted blank placeholder to preserve ordering (${fallbackPageRenderedWidth}x${fallbackPageRenderedHeight}px).`);
+            } catch (placeholderError) {
+              console.warn(`[Page ${pageNum}] Failed to create placeholder after render error:`, placeholderError.message);
+            }
           }
         }
       } finally {
