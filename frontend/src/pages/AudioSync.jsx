@@ -1,9 +1,9 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { audioSyncService } from '../services/audioSyncService';
 import { conversionService } from '../services/conversionService';
 import { pdfService } from '../services/pdfService';
-import { HiOutlinePlay, HiOutlinePause, HiOutlineVolumeUp, HiOutlineArrowLeft, HiOutlineCode, HiOutlineDocumentText, HiOutlineDownload, HiOutlinePencil, HiOutlineCheck, HiOutlineX } from 'react-icons/hi';
+import { HiOutlinePlay, HiOutlinePause, HiOutlineVolumeUp, HiOutlineArrowLeft, HiOutlineCode, HiOutlineDocumentText, HiOutlineDownload, HiOutlinePencil, HiOutlineCheck, HiOutlineX, HiOutlineAdjustments } from 'react-icons/hi';
 import './AudioSync.css';
 
 const AudioSync = () => {
@@ -304,14 +304,24 @@ const AudioSync = () => {
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           {job?.status === 'COMPLETED' && (
-            <button
-              onClick={handleDownloadEpub}
-              className="btn btn-success"
-              style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
-            >
-              <HiOutlineDownload size={18} />
-              Download EPUB
-            </button>
+            <>
+              <Link
+                to={`/media-overlay-sync/${jobId}/1`}
+                className="btn btn-primary"
+                style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', backgroundColor: '#9c27b0' }}
+              >
+                <HiOutlineAdjustments size={18} />
+                Media Overlay Sync
+              </Link>
+              <button
+                onClick={handleDownloadEpub}
+                className="btn btn-success"
+                style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+              >
+                <HiOutlineDownload size={18} />
+                Download EPUB
+              </button>
+            </>
           )}
           <label style={{ fontSize: '14px', fontWeight: '500' }}>Voice:</label>
           <select

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { conversionService } from '../services/conversionService';
 import { pdfService } from '../services/pdfService';
-import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineVolumeUp } from 'react-icons/hi';
+import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineVolumeUp, HiOutlineAdjustments } from 'react-icons/hi';
 import { Link } from 'react-router-dom';
 
 const Conversions = () => {
@@ -368,21 +368,29 @@ const Conversions = () => {
                 )}
               </div>
 
-              <div style={{ display: 'flex', gap: '10px' }}>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 {job.status === 'COMPLETED' && (
                   <>
                     <Link
                       to={`/audio-sync/${job.id}`}
                       className="btn btn-primary"
-                      style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                      style={{ flex: 1, minWidth: '120px', textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
                     >
                       <HiOutlineVolumeUp size={18} />
                       Audio Sync
                     </Link>
+                    <Link
+                      to={`/media-overlay-sync/${job.id}/1`}
+                      className="btn btn-primary"
+                      style={{ flex: 1, minWidth: '120px', textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', backgroundColor: '#9c27b0' }}
+                    >
+                      <HiOutlineAdjustments size={18} />
+                      Media Sync
+                    </Link>
                     <button
                       onClick={() => handleDownload(job.id)}
                       className="btn btn-success"
-                      style={{ flex: 1 }}
+                      style={{ flex: 1, minWidth: '120px' }}
                     >
                       Download EPUB
                     </button>
@@ -518,6 +526,14 @@ const Conversions = () => {
                         >
                           <HiOutlineVolumeUp size={14} />
                           Audio Sync
+                        </Link>
+                        <Link
+                          to={`/media-overlay-sync/${job.id}/1`}
+                          className="btn btn-primary"
+                          style={{ marginRight: '5px', padding: '6px 12px', fontSize: '14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', backgroundColor: '#9c27b0' }}
+                        >
+                          <HiOutlineAdjustments size={14} />
+                          Media Sync
                         </Link>
                         <button
                           onClick={() => handleDownload(job.id)}
