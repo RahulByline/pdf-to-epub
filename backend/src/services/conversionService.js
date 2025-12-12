@@ -1681,30 +1681,44 @@ export class ConversionService {
     /* LAYER 2: Highlight Target (Invisible but positioned for highlighting) */
     /* These blocks are absolutely positioned to match text on the image */
     /* They are invisible but provide the target for highlight CSS activation */
+    /* CRITICAL: Use color: transparent with opacity: 1 (NOT opacity: 0) */
+    /* This ensures the element box is present and can receive highlight styles */
     .text-block {
       position: absolute;
       margin: 0;
-      padding: 0;
+      padding: 2px;
       white-space: pre-wrap;
       word-wrap: break-word;
-      /* CRITICAL: Make invisible but keep for highlighting */
+      /* Text is invisible but element box is present */
       color: transparent !important;
-      opacity: 0 !important;
-      /* Keep pointer-events for potential interaction, but text is invisible */
+      background-color: transparent;
+      /* CRITICAL: opacity must be 1 so highlight background can show */
+      opacity: 1 !important;
+      visibility: visible;
+      /* Ensure blocks are positioned correctly for highlighting */
       pointer-events: none;
       overflow: visible;
       z-index: 2;
     }
     
     /* When media overlay activates, make highlight visible */
+    /* EPUB standard: Thorium applies this class automatically when reading matching ID */
     .text-block.-epub-media-overlay-active,
     .text-block.epub-media-overlay-active {
-      /* Highlight becomes visible when active */
+      /* This draws the yellow highlight box */
       background-color: rgba(255, 255, 0, 0.4) !important;
       outline: 2px solid rgba(255, 200, 0, 0.8) !important;
-      /* Text remains invisible - only highlight box is visible */
+      /* Text remains transparent - only highlight box is visible */
       color: transparent !important;
-      opacity: 1 !important; /* Make highlight visible */
+      opacity: 1 !important;
+    }
+    
+    .text-block.-epub-media-overlay-playing,
+    .text-block.epub-media-overlay-playing {
+      background-color: rgba(255, 255, 0, 0.6) !important;
+      outline: 3px solid rgba(255, 150, 0, 1) !important;
+      color: transparent !important;
+      opacity: 1 !important;
     }
     
     /* TTS flow text (hidden but accessible) */
@@ -1762,17 +1776,39 @@ export class ConversionService {
       /* Text is accessible but visually hidden via parent clipping */
     }
     
-    /* Media overlay highlighting */
+    /* Media overlay highlighting - CRITICAL for TTS synchronization */
     .text-block.-epub-media-overlay-active,
     .text-block.epub-media-overlay-active {
       background-color: rgba(255, 255, 0, 0.4) !important;
       outline: 2px solid rgba(255, 200, 0, 0.8) !important;
+      /* Make highlight visible by restoring opacity */
+      opacity: 1 !important;
+      /* Ensure highlight is above image */
+      z-index: 3 !important;
+      /* Add subtle shadow for better visibility */
+      box-shadow: 0 0 4px rgba(255, 200, 0, 0.6) !important;
     }
     
     .text-block.-epub-media-overlay-playing,
     .text-block.epub-media-overlay-playing {
       background-color: rgba(255, 255, 0, 0.6) !important;
       outline: 3px solid rgba(255, 150, 0, 1) !important;
+      /* Make highlight more visible when actively playing */
+      opacity: 1 !important;
+      z-index: 3 !important;
+      /* Stronger shadow for active playback */
+      box-shadow: 0 0 8px rgba(255, 150, 0, 0.8) !important;
+      /* Add pulse animation for active playback */
+      animation: highlightPulse 1s ease-in-out infinite;
+    }
+    
+    @keyframes highlightPulse {
+      0%, 100% {
+        box-shadow: 0 0 8px rgba(255, 150, 0, 0.8);
+      }
+      50% {
+        box-shadow: 0 0 12px rgba(255, 150, 0, 1);
+      }
     }
 /*]]>*/`;
 
@@ -1816,11 +1852,16 @@ export class ConversionService {
     const avgScale = (scaleX + scaleY) / 2;
 
     // Generate positioned text blocks
+    // CRITICAL: Track actual block index to ensure ID matching with text-content
+    let actualBlockIndex = 0;
     for (let i = 0; i < textBlocks.length; i++) {
       const block = textBlocks[i];
       if (!block.text || block.text.trim().length === 0) continue;
 
-      const blockId = block.id || `block_${pageNumber}_${i}`;
+      // CRITICAL: Use actualBlockIndex (not loop index i) to ensure ID matching
+      // This ensures IDs match exactly between text-layer and text-content
+      const blockId = block.id || `block_${pageNumber}_${actualBlockIndex}`;
+      actualBlockIndex++;
       const escapedText = this.escapeHtml(block.text.trim());
       allTextForTTS.push(block.text.trim());
 
@@ -1927,8 +1968,9 @@ export class ConversionService {
       }
 
       // Generate HTML element
+      // CRITICAL: Include text content even though it's invisible - this ensures the block has proper dimensions for highlighting
       html += `
-    <${tag} id="${blockId}" class="text-block" role="text"${attributes} style="${style}">${escapedText}</${tag}>`;
+    <${tag} id="${blockId}" class="text-block" role="text"${attributes} style="${style}" aria-label="${escapedText.substring(0, 50)}">${escapedText}</${tag}>`;
     }
 
     // Close text layer
@@ -1947,14 +1989,24 @@ export class ConversionService {
   <div class="text-content" epub:type="bodymatter" role="main" aria-label="Page ${pageNumber} content" aria-hidden="false">`;
     
     // Generate paragraphs from textBlocks - each block becomes a paragraph with matching ID
+    // CRITICAL: IDs must match EXACTLY between text-layer and text-content for highlighting to work
+    // We use the same textBlocks array and same ID generation logic to ensure perfect matching
     if (textBlocks.length > 0) {
+      // Use the same textBlocks array that was used for text-layer generation
+      // Iterate in the same order and use the same ID generation logic
+      // CRITICAL: Use the same actualBlockIndex counter to ensure exact ID matching
+      let actualBlockIndex = 0;
       for (let i = 0; i < textBlocks.length; i++) {
         const block = textBlocks[i];
         if (block.text && block.text.trim().length > 0) {
-          const blockId = block.id || `block_${pageNumber}_${i}`;
+          // CRITICAL: Use the EXACT same blockId generation as in text-layer
+          // Use actualBlockIndex (not loop index i) to match text-layer ID generation
+          // This ensures character-for-character ID matching
+          const blockId = block.id || `block_${pageNumber}_${actualBlockIndex}`;
           const escapedText = this.escapeHtml(block.text.trim());
           html += `
     <p id="${blockId}" lang="en" xml:lang="en" aria-hidden="false">${escapedText}</p>`;
+          actualBlockIndex++;
         }
       }
     } else if (allTextForTTS.length > 0) {
