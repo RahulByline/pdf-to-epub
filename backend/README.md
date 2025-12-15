@@ -66,3 +66,5 @@ Global error handler in `src/middlewares/errorHandler.js` catches and formats al
 
 JWT-based authentication middleware in `src/middlewares/auth.js`. Currently optional - can be added to protected routes.
 
+
+

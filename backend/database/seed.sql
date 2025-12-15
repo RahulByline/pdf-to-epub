@@ -12,3 +12,5 @@ INSERT INTO ai_configurations (api_key, model_name, is_active, description) VALU
 ('', 'gemini-pro', FALSE, 'Default configuration')
 ON DUPLICATE KEY UPDATE id=id;
 
+
+

@@ -8,6 +8,7 @@ import { getEpubOutputDir, getHtmlIntermediateDir } from '../config/fileStorage.
 import { PdfExtractionService } from './pdfExtractionService.js';
 import { GeminiService } from './geminiService.js';
 import { JobConcurrencyService } from './jobConcurrencyService.js';
+import { TextBasedConversionPipeline } from './textBasedConversionPipeline.js';
 // TtsService and mapTimingsToBlocks removed - using player's built-in TTS instead of generating audio files
 
 export class ConversionService {
@@ -136,6 +137,48 @@ export class ConversionService {
         progressPercentage: steps[2].progress
       });
 
+      // Use new text-based conversion pipeline
+      const useTextBasedPipeline = (process.env.USE_TEXT_BASED_PIPELINE || 'true').toLowerCase() === 'true';
+      
+      if (useTextBasedPipeline) {
+        console.log(`[Job ${jobId}] Using text-based EPUB3 conversion pipeline...`);
+        
+        await ConversionJobModel.update(jobId, {
+          currentStep: steps[3].step,
+          progressPercentage: steps[3].progress
+        });
+        
+        try {
+          const epubOutputDir = getEpubOutputDir();
+          const result = await TextBasedConversionPipeline.convert(
+            pdfFilePath,
+            epubOutputDir,
+            jobId,
+            {
+              generateAudio: true,
+              useAI: true,
+              ocrLang: process.env.OCR_LANGUAGE || 'eng',
+              ocrDpi: parseInt(process.env.OCR_DPI || '300'),
+              ocrPsm: parseInt(process.env.OCR_PSM || '6')
+            }
+          );
+          
+          await ConversionJobModel.update(jobId, {
+            status: 'COMPLETED',
+            currentStep: steps[steps.length - 1].step,
+            progressPercentage: 100,
+            epubFilePath: result.epubPath
+          });
+          
+          console.log(`[Job ${jobId}] Text-based EPUB3 conversion completed: ${result.epubPath}`);
+          return;
+        } catch (pipelineError) {
+          console.error(`[Job ${jobId}] Text-based pipeline failed, falling back to legacy:`, pipelineError.message);
+          // Fall through to legacy conversion
+        }
+      }
+      
+      // Legacy conversion (image-based) - kept as fallback
       let structuredContent;
       try {
         structuredContent = await GeminiService.structureContent(textData.pages);

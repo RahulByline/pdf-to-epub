@@ -37,10 +37,13 @@ export class AudioSyncService {
   static async saveAudioSync(syncData) {
     // Validate required fields
     if (!syncData.pdfDocumentId || !syncData.conversionJobId || 
-        !syncData.pageNumber || syncData.startTime === undefined || 
-        syncData.endTime === undefined || !syncData.audioFilePath) {
-      throw new Error('Missing required fields for audio sync');
+        syncData.startTime === undefined || syncData.endTime === undefined) {
+      throw new Error('Missing required fields for audio sync: pdfDocumentId, conversionJobId, startTime, and endTime are required');
     }
+
+    // pageNumber and audioFilePath are optional (can be null)
+    // audioFilePath can be null initially and set later when audio is generated
+    // pageNumber can be derived from blockId or defaulted if not provided
 
     return await AudioSyncModel.create(syncData);
   }

@@ -13,3 +13,5 @@ export const aiConfigService = {
     api.post('/ai/test', { apiKey, modelName }).then(res => res.data.data)
 };
 
+
+

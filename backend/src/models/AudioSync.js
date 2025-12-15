@@ -41,6 +41,10 @@ export class AudioSyncModel {
   }
 
   static async create(syncData) {
+    // Provide defaults for optional fields
+    const pageNumber = syncData.pageNumber || 1;
+    const audioFilePath = syncData.audioFilePath || ''; // Empty string as placeholder until audio is generated
+    
     const [result] = await pool.execute(
       `INSERT INTO audio_syncs (
         pdf_document_id, conversion_job_id, page_number, block_id,
@@ -49,11 +53,11 @@ export class AudioSyncModel {
       [
         syncData.pdfDocumentId,
         syncData.conversionJobId,
-        syncData.pageNumber,
+        pageNumber,
         syncData.blockId || null,
         syncData.startTime,
         syncData.endTime,
-        syncData.audioFilePath,
+        audioFilePath,
         syncData.notes || null,
         syncData.customText || null,
         syncData.isCustomSegment || false

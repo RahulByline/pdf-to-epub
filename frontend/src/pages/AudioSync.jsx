@@ -3,7 +3,8 @@ import { useParams, useNavigate, Link } from 'react-router-dom';
 import { audioSyncService } from '../services/audioSyncService';
 import { conversionService } from '../services/conversionService';
 import { pdfService } from '../services/pdfService';
-import { HiOutlinePlay, HiOutlinePause, HiOutlineVolumeUp, HiOutlineArrowLeft, HiOutlineCode, HiOutlineDocumentText, HiOutlineDownload, HiOutlinePencil, HiOutlineCheck, HiOutlineX, HiOutlineAdjustments } from 'react-icons/hi';
+import EpubViewer from '../components/EpubViewer';
+import { HiOutlinePlay, HiOutlinePause, HiOutlineVolumeUp, HiOutlineArrowLeft, HiOutlineCode, HiOutlineDocumentText, HiOutlineDownload, HiOutlinePencil, HiOutlineCheck, HiOutlineX } from 'react-icons/hi';
 import './AudioSync.css';
 
 const AudioSync = () => {
@@ -31,7 +32,10 @@ const AudioSync = () => {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [selectedChunk, setSelectedChunk] = useState(null);
-  const [clipTimings, setClipTimings] = useState({}); // { blockId: { clipBegin: number, clipEnd: number } }
+  const [changesSaved, setChangesSaved] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+  const [playingBlockId, setPlayingBlockId] = useState(null);
+  const [blockAudioElements, setBlockAudioElements] = useState({});
 
   useEffect(() => {
     loadData();
@@ -123,23 +127,18 @@ const AudioSync = () => {
       }
 
       if (audioData && audioData.length > 0) {
+        // Don't set audioUrl - we'll use TTS instead
         setAudioSegments(audioData);
         const voiceMatch = audioData[0].notes?.match(/voice:\s*(\w+)/);
         if (voiceMatch) {
           setSelectedVoice(voiceMatch[1]);
         }
-        
-        // Auto-populate CLIPBEGIN/CLIPEND from audio segments
-        const timings = {};
-        audioData.forEach(segment => {
-          if (segment.blockId) {
-            timings[segment.blockId] = {
-              clipBegin: segment.startTime || 0,
-              clipEnd: segment.endTime || 0
-            };
-          }
-        });
-        setClipTimings(timings);
+        // If audio mappings exist, assume changes were saved previously
+        setChangesSaved(true);
+        setHasUnsavedChanges(false);
+      } else {
+        setChangesSaved(false);
+        setHasUnsavedChanges(false);
       }
     } catch (err) {
       console.error('Error loading data:', err);
@@ -329,12 +328,131 @@ const AudioSync = () => {
       }
     }
   };
+  
+  const handleTextClickForAudioMapping = async (textId, text, chunk) => {
+    // When user clicks text in EPUB viewer, create audio mapping
+    try {
+      // Check if audio segment already exists
+      const existingSegment = audioSegments.find(s => s.blockId === textId);
+      
+      if (existingSegment) {
+        // If audio exists, jump to that time
+        if (audioRef.current) {
+          audioRef.current.currentTime = existingSegment.startTime;
+          setCurrentTime(existingSegment.startTime);
+        }
+        setError('');
+      } else {
+        // Create new mapping - use current audio time if playing, otherwise use 0
+        const startTime = (audioRef.current && audioRef.current.currentTime > 0) 
+          ? audioRef.current.currentTime 
+          : 0;
+        const estimatedDuration = Math.max(1, text.length * 0.1); // Rough estimate: 0.1s per character
+        const endTime = startTime + estimatedDuration;
+        
+        // Create mapping
+        await createAudioMapping(textId, text, startTime, endTime);
+        setError('');
+      }
+    } catch (err) {
+      console.error('Error handling text click for audio mapping:', err);
+      setError('Failed to create audio mapping: ' + err.message);
+    }
+  };
+  
+  const createAudioMapping = async (textId, text, startTime, endTime) => {
+    try {
+      // Check if mapping already exists
+      const existing = audioSegments.find(s => s.blockId === textId);
+      if (existing) {
+        // Update existing mapping
+        await audioSyncService.updateAudioSync(existing.id, {
+          startTime: startTime,
+          endTime: endTime,
+          text: text
+        });
+      } else {
+        // Find the page number from the text chunk
+        const chunk = textChunks.find(c => c.id === textId);
+        const pageNumber = chunk?.pageNumber || 1;
+        
+        // Create new mapping
+        await audioSyncService.createAudioSync({
+          conversionJobId: parseInt(jobId),
+          pdfDocumentId: job.pdfDocumentId,
+          blockId: textId,
+          pageNumber: pageNumber,
+          startTime: startTime,
+          endTime: endTime,
+          audioFilePath: null, // Will be set when audio is generated
+          customText: text // Store the text for reference
+        });
+      }
+      
+      // Mark as having unsaved changes
+      setHasUnsavedChanges(true);
+      setChangesSaved(false);
+      
+      // Reload audio segments
+      const segments = await audioSyncService.getAudioSyncsByJob(parseInt(jobId));
+      setAudioSegments(segments);
+      
+      // Update text chunks
+      setTextChunks(prev => prev.map(chunk => 
+        chunk.id === textId 
+          ? { ...chunk, startTime, endTime }
+          : chunk
+      ));
+    } catch (err) {
+      console.error('Error creating/updating audio mapping:', err);
+      throw err;
+    }
+  };
+  
+  const handleSaveChanges = async () => {
+    try {
+      setError('');
+      setLoading(true);
+      
+      // Regenerate EPUB with current audio mappings
+      if (audioSegments.length > 0) {
+        console.log('Saving changes: Regenerating EPUB with audio mappings...');
+        await conversionService.regenerateEpub(parseInt(jobId));
+      }
+      
+      // Mark changes as saved
+      setChangesSaved(true);
+      setHasUnsavedChanges(false);
+      setError('');
+      
+      console.log('Changes saved successfully!');
+    } catch (err) {
+      console.error('Error saving changes:', err);
+      setError('Failed to save changes: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const handleDownloadEpub = async () => {
     try {
+      setError('');
+      setLoading(true);
+      
+      // Only allow download if changes are saved
+      if (!changesSaved && audioSegments.length > 0) {
+        setError('Please save changes before downloading. Click "Save Changes" button first.');
+        setLoading(false);
+        return;
+      }
+      
+      // Download the EPUB (already regenerated with mappings)
       await conversionService.downloadEpub(parseInt(jobId));
     } catch (err) {
-      setError(err.message || 'Failed to download EPUB');
+      console.error('Error downloading EPUB:', err);
+      setError(err.message || 'Failed to download EPUB. Make sure changes are saved.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -344,6 +462,136 @@ const AudioSync = () => {
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
+
+  const handlePlayBlockAudio = async (blockId, segment) => {
+    // Stop any currently playing audio
+    Object.values(blockAudioElements).forEach(audio => {
+      if (audio && !audio.paused) {
+        audio.pause();
+        audio.currentTime = 0;
+      }
+    });
+
+    // Stop browser TTS if playing
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+
+    // If this block is already playing, stop it
+    if (playingBlockId === blockId) {
+      const audio = blockAudioElements[blockId];
+      if (audio) {
+        audio.pause();
+        audio.currentTime = 0;
+      }
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      setPlayingBlockId(null);
+      return;
+    }
+
+    // Get the text for this block
+    const block = textChunks.find(c => c.id === blockId);
+    if (!block) {
+      setError('Block not found');
+      return;
+    }
+
+    const textToSpeak = block.text || segment.text || '';
+
+    // Use browser's built-in TTS (SpeechSynthesis API) - no audio files needed
+    if (!('speechSynthesis' in window)) {
+      setError('Your browser does not support text-to-speech. Please use a modern browser like Chrome, Firefox, or Edge.');
+      return;
+    }
+
+    try {
+      setPlayingBlockId(blockId);
+      setError('');
+
+      // Load voices - may need to wait for them to load
+      let voices = window.speechSynthesis.getVoices();
+      
+      // If voices aren't loaded yet, wait for them
+      if (voices.length === 0) {
+        const loadVoices = () => {
+          voices = window.speechSynthesis.getVoices();
+          if (voices.length > 0) {
+            speakWithVoice();
+          }
+        };
+        window.speechSynthesis.onvoiceschanged = loadVoices;
+        // Try again after a short delay
+        setTimeout(loadVoices, 100);
+        return;
+      }
+
+      const speakWithVoice = () => {
+        // Create speech utterance
+        const utterance = new SpeechSynthesisUtterance(textToSpeak);
+        
+        // Set voice properties
+        utterance.rate = 1.0;
+        utterance.pitch = 1.0;
+        utterance.volume = 1.0;
+
+        // Try to use a preferred voice
+        const preferredVoice = voices.find(v => 
+          v.name.toLowerCase().includes('english') || 
+          v.lang.startsWith('en')
+        ) || voices.find(v => v.lang.startsWith('en')) || voices[0];
+        
+        if (preferredVoice) {
+          utterance.voice = preferredVoice;
+        }
+
+        // Handle speech end
+        utterance.onend = () => {
+          setPlayingBlockId(null);
+        };
+
+        // Handle speech error
+        utterance.onerror = (e) => {
+          console.error('Speech synthesis error:', e);
+          const errorMsg = e.error ? `Error: ${e.error}` : 'Unknown error occurred';
+          setError('Failed to play audio: ' + errorMsg);
+          setPlayingBlockId(null);
+        };
+
+        // Speak the text
+        window.speechSynthesis.speak(utterance);
+
+        // Store the utterance for cleanup (so we can cancel it if needed)
+        setBlockAudioElements(prev => ({ ...prev, [blockId]: utterance }));
+      };
+
+      speakWithVoice();
+    } catch (err) {
+      console.error('Error with speech synthesis:', err);
+      setError('Failed to play audio: ' + err.message);
+      setPlayingBlockId(null);
+    }
+  };
+
+  // Cleanup TTS on unmount
+  useEffect(() => {
+    return () => {
+      // Stop browser TTS
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, []);
+  
+  // Stop TTS when component unmounts or playingBlockId changes
+  useEffect(() => {
+    return () => {
+      if ('speechSynthesis' in window && playingBlockId) {
+        window.speechSynthesis.cancel();
+      }
+    };
+  }, [playingBlockId]);
 
   if (loading) {
     return <div className="loading">Loading audio sync interface...</div>;
@@ -361,30 +609,75 @@ const AudioSync = () => {
           Back to Conversions
         </button>
         <div>
-          <h1 style={{ margin: 0, fontSize: '28px', fontWeight: '700' }}>Audio Synchronization</h1>
+          <h1 style={{ margin: 0, fontSize: '28px', fontWeight: '700' }}>Reconstruct & Audio Mapping</h1>
           <p style={{ margin: '4px 0 0 0', color: '#666', fontSize: '14px' }}>
             Job #{jobId} • {pdf?.originalFileName || 'PDF Document'}
+            {hasUnsavedChanges && (
+              <span style={{ marginLeft: '12px', color: '#ff9800', fontWeight: '600' }}>
+                • Unsaved changes
+              </span>
+            )}
+            {changesSaved && (
+              <span style={{ marginLeft: '12px', color: '#4caf50', fontWeight: '600' }}>
+                • Changes saved
+              </span>
+            )}
           </p>
         </div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap' }}>
           {job?.status === 'COMPLETED' && (
             <>
-              <Link
-                to={`/media-overlay-sync/${jobId}/1`}
-                className="btn btn-primary"
-                style={{ display: 'flex', alignItems: 'center', gap: '8px', textDecoration: 'none', backgroundColor: '#9c27b0' }}
-              >
-                <HiOutlineAdjustments size={18} />
-                Media Overlay Sync
-              </Link>
-              <button
-                onClick={handleDownloadEpub}
-                className="btn btn-success"
-                style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
-              >
-                <HiOutlineDownload size={18} />
-                Download EPUB
-              </button>
+              {hasUnsavedChanges && audioSegments.length > 0 && (
+                <button
+                  onClick={handleSaveChanges}
+                  className="btn btn-warning"
+                  style={{ 
+                    display: 'flex', 
+                    alignItems: 'center', 
+                    gap: '8px', 
+                    backgroundColor: '#ff9800', 
+                    borderColor: '#ff9800',
+                    color: '#fff'
+                  }}
+                  disabled={loading || audioSegments.length === 0}
+                >
+                  <HiOutlineCheck size={18} />
+                  Save Changes
+                  {audioSegments.length > 0 && (
+                    <span style={{ 
+                      marginLeft: '4px', 
+                      fontSize: '11px', 
+                      backgroundColor: 'rgba(255,255,255,0.3)',
+                      padding: '2px 6px',
+                      borderRadius: '10px',
+                      fontWeight: '600'
+                    }}>
+                      {audioSegments.length} mapping{audioSegments.length !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                </button>
+              )}
+              {changesSaved && audioSegments.length > 0 && (
+                <button
+                  onClick={handleDownloadEpub}
+                  className="btn btn-success"
+                  style={{ display: 'flex', alignItems: 'center', gap: '8px' }}
+                  disabled={loading}
+                >
+                  <HiOutlineDownload size={18} />
+                  Download Final EPUB3
+                  <span style={{ 
+                    marginLeft: '4px', 
+                    fontSize: '11px', 
+                    backgroundColor: 'rgba(255,255,255,0.3)',
+                    padding: '2px 6px',
+                    borderRadius: '10px',
+                    fontWeight: '600'
+                  }}>
+                    Ready
+                  </span>
+                </button>
+              )}
             </>
           )}
           <label style={{ fontSize: '14px', fontWeight: '500' }}>Voice:</label>
@@ -419,28 +712,50 @@ const AudioSync = () => {
       {error && <div className="error">{error}</div>}
 
       <div className="audio-sync-content">
-        {/* Left Side - PDF Viewer */}
-        <div className="pdf-viewer-panel">
-          <div className="panel-header">
-            PDF Document
-            {pdf && (
-              <span style={{ fontSize: '13px', fontWeight: '400', color: '#666', marginLeft: '12px' }}>
-                {pdf.originalFileName}
-              </span>
+        {/* Left Side - EPUB Viewer */}
+        <div className="pdf-viewer-panel epub-viewer-panel">
+          <div className="panel-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <div>
+              <strong>EPUB Preview</strong>
+              {job && job.status === 'COMPLETED' && (
+                <span style={{ fontSize: '13px', fontWeight: '400', color: '#666', marginLeft: '12px' }}>
+                  • Click text to map audio
+                </span>
+              )}
+            </div>
+            {audioSegments.length > 0 && (
+              <div style={{ fontSize: '12px', color: '#1976d2', fontWeight: '500' }}>
+                {audioSegments.length} text{audioSegments.length !== 1 ? 's' : ''} mapped
+              </div>
             )}
           </div>
-          <div className="pdf-viewer">
-            {pdf ? (
-              <iframe
-                src={`/api/pdfs/${pdf.id}/view#toolbar=1&navpanes=1&scrollbar=1&page=1`}
-                title="PDF Viewer"
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  border: 'none',
-                  backgroundColor: '#525252'
+          <div className="epub-viewer-wrapper">
+            {job && job.status === 'COMPLETED' ? (
+              <EpubViewer 
+                jobId={jobId}
+                onTextSelect={(textId, text, element) => {
+                  // Handle text selection for audio mapping
+                  const matchingChunk = textChunks.find(chunk => chunk.id === textId);
+                  if (matchingChunk) {
+                    setSelectedBlocks([textId]);
+                    setSelectedChunk(matchingChunk);
+                    // Show audio mapping interface
+                    handleTextClickForAudioMapping(textId, text, matchingChunk);
+                  } else {
+                    // Create new chunk if not found
+                    const newChunk = {
+                      id: textId,
+                      text: text,
+                      pageNumber: 1,
+                      startTime: null,
+                      endTime: null
+                    };
+                    setTextChunks(prev => [...prev, newChunk]);
+                    setSelectedBlocks([textId]);
+                    setSelectedChunk(newChunk);
+                    handleTextClickForAudioMapping(textId, text, newChunk);
+                  }
                 }}
-                type="application/pdf"
               />
             ) : (
               <div style={{ 
@@ -453,10 +768,12 @@ const AudioSync = () => {
                 justifyContent: 'center',
                 height: '100%'
               }}>
-                <div style={{ fontSize: '48px', marginBottom: '16px' }}>📄</div>
-                <div style={{ fontSize: '16px', fontWeight: '500' }}>PDF not available</div>
-                <div style={{ fontSize: '14px', color: '#999', marginTop: '8px' }}>
-                  Please wait while the PDF is being loaded
+                <div style={{ fontSize: '48px', marginBottom: '16px' }}>📚</div>
+                <div style={{ fontSize: '16px', fontWeight: '500', marginBottom: '8px' }}>EPUB not available</div>
+                <div style={{ fontSize: '14px', color: '#999' }}>
+                  {job?.status === 'IN_PROGRESS' 
+                    ? 'Conversion in progress...' 
+                    : 'Please wait for conversion to complete'}
                 </div>
               </div>
             )}
@@ -627,36 +944,53 @@ const AudioSync = () => {
                             <span style={{ fontSize: '12px', color: '#666', fontWeight: '600' }}>
                               Block {idx + 1}
                             </span>
-                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                              {(segment || clipTimings[block.id]) && (
+                            <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                              {segment && (
                                 <span style={{ fontSize: '12px', color: '#666' }}>
                                   {formatTime(clipBegin)} - {formatTime(clipEnd)}
                                 </span>
                               )}
-                              {(segment || clipTimings[block.id]) && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleBlockSeek(block.id);
-                                  }}
-                                  style={{
-                                    padding: '4px 8px',
-                                    border: '1px solid #4caf50',
-                                    borderRadius: '4px',
-                                    backgroundColor: '#4caf50',
-                                    color: 'white',
-                                    cursor: 'pointer',
-                                    fontSize: '11px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    gap: '4px'
-                                  }}
-                                  title="Click to seek to this block's start time"
-                                >
-                                  <HiOutlinePlay size={12} />
-                                  Play
-                                </button>
-                              )}
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handlePlayBlockAudio(block.id, segment || {});
+                                }}
+                                style={{
+                                  padding: '4px 8px',
+                                  border: '1px solid #1976d2',
+                                  borderRadius: '4px',
+                                  backgroundColor: playingBlockId === block.id ? '#1976d2' : '#ffffff',
+                                  color: playingBlockId === block.id ? 'white' : '#1976d2',
+                                  cursor: 'pointer',
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '4px',
+                                  fontSize: '11px',
+                                  transition: 'all 0.2s ease'
+                                }}
+                                onMouseEnter={(e) => {
+                                  if (playingBlockId !== block.id) {
+                                    e.currentTarget.style.backgroundColor = '#e3f2fd';
+                                  }
+                                }}
+                                onMouseLeave={(e) => {
+                                  if (playingBlockId !== block.id) {
+                                    e.currentTarget.style.backgroundColor = '#ffffff';
+                                  }
+                                }}
+                              >
+                                {playingBlockId === block.id ? (
+                                  <>
+                                    <HiOutlinePause size={14} />
+                                    Pause
+                                  </>
+                                ) : (
+                                  <>
+                                    <HiOutlinePlay size={14} />
+                                    Play
+                                  </>
+                                )}
+                              </button>
                               {!isEditing ? (
                                 <button
                                   className="edit-button"
@@ -865,95 +1199,7 @@ const AudioSync = () => {
         </div>
       </div>
 
-      {/* Bottom - Audio Player */}
-      {audioSegments.length > 0 && (
-        <div className="audio-player-panel">
-          <div className="audio-player">
-            <button
-              onClick={handlePlayPause}
-              className="btn btn-primary"
-              style={{
-                width: '48px',
-                height: '48px',
-                borderRadius: '50%',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                padding: 0
-              }}
-            >
-              {isPlaying ? <HiOutlinePause size={24} /> : <HiOutlinePlay size={24} />}
-            </button>
-
-            <div style={{ flex: 1, marginLeft: '16px' }}>
-              <div
-                className="progress-bar-container"
-                onClick={handleSeek}
-                style={{ cursor: 'pointer', marginBottom: '8px', position: 'relative' }}
-              >
-                <div
-                  className="progress-bar-fill"
-                  style={{
-                    width: duration > 0 ? `${(currentTime / duration) * 100}%` : '0%',
-                    backgroundColor: '#1976d2'
-                  }}
-                />
-                {audioSegments.map(segment => {
-                  if (!duration) return null;
-                  // Use CLIPBEGIN/CLIPEND from clipTimings if available, otherwise use segment times
-                  const timing = clipTimings[segment.blockId];
-                  const clipBegin = timing?.clipBegin ?? segment.startTime ?? 0;
-                  const clipEnd = timing?.clipEnd ?? segment.endTime ?? 0;
-                  const startPercent = (clipBegin / duration) * 100;
-                  const widthPercent = ((clipEnd - clipBegin) / duration) * 100;
-                  return (
-                    <div
-                      key={segment.id}
-                      style={{
-                        position: 'absolute',
-                        left: `${startPercent}%`,
-                        width: `${widthPercent}%`,
-                        height: '100%',
-                        backgroundColor: 'rgba(76, 175, 80, 0.3)',
-                        border: '1px solid rgba(76, 175, 80, 0.5)',
-                        pointerEvents: 'none',
-                        top: 0
-                      }}
-                      title={`Block: ${formatTime(clipBegin)} - ${formatTime(clipEnd)}`}
-                    />
-                  );
-                })}
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '12px', color: '#666' }}>
-                <span>{formatTime(currentTime)}</span>
-                <span>{formatTime(duration)}</span>
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginLeft: '16px' }}>
-              <HiOutlineVolumeUp size={20} style={{ color: '#666' }} />
-              <input
-                type="range"
-                min="0"
-                max="100"
-                defaultValue="100"
-                onChange={(e) => {
-                  if (audioRef.current) {
-                    audioRef.current.volume = e.target.value / 100;
-                  }
-                }}
-                style={{ width: '100px' }}
-              />
-            </div>
-
-            <audio
-              ref={audioRef}
-              src={`/api/audio-sync/job/${jobId}/combined-audio`}
-              style={{ display: 'none' }}
-            />
-          </div>
-        </div>
-      )}
+      {/* Bottom audio player removed - using individual block TTS instead */}
     </div>
   );
 };
