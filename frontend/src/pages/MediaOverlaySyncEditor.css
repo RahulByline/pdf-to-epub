@@ -1,0 +1,384 @@
+.media-overlay-sync-editor {
+  width: 100%;
+  height: calc(100vh - 80px);
+  display: flex;
+  flex-direction: column;
+  background-color: #f5f5f5;
+}
+
+.editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20px 24px;
+  background-color: #ffffff;
+  border-bottom: 2px solid #e0e0e0;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+}
+
+.editor-header h1 {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 600;
+  color: #212121;
+  flex: 1;
+  text-align: center;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.page-info {
+  font-size: 14px;
+  color: #666;
+  font-weight: 500;
+}
+
+.editor-content {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  gap: 0;
+}
+
+.left-column,
+.right-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background-color: #ffffff;
+  overflow: hidden;
+}
+
+.left-column {
+  border-right: 2px solid #e0e0e0;
+}
+
+.image-viewer-panel,
+.audio-controls-panel,
+.text-blocks-panel {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.image-viewer-panel {
+  flex: 2;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.audio-controls-panel {
+  flex: 1;
+}
+
+.panel-header {
+  padding: 16px 20px;
+  background-color: #f5f5f5;
+  border-bottom: 1px solid #e0e0e0;
+  font-weight: 600;
+  font-size: 16px;
+  color: #212121;
+}
+
+.image-container {
+  position: relative;
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #fafafa;
+  padding: 20px;
+}
+
+.page-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+.bounding-box-canvas {
+  position: absolute;
+  top: 20px;
+  left: 20px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.audio-player-container {
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.play-pause-btn {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: none;
+  background-color: #1976d2;
+  color: white;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+  align-self: center;
+}
+
+.play-pause-btn:hover {
+  background-color: #1565c0;
+}
+
+.audio-progress-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.audio-progress-bar {
+  position: relative;
+  height: 8px;
+  background-color: #e0e0e0;
+  border-radius: 4px;
+  cursor: pointer;
+  overflow: visible;
+}
+
+.audio-progress-fill {
+  height: 100%;
+  background-color: #1976d2;
+  border-radius: 4px;
+  transition: width 0.1s linear;
+}
+
+.audio-time-display {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #666;
+}
+
+.time-setter-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.btn {
+  padding: 10px 16px;
+  border: none;
+  border-radius: 6px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.btn-primary {
+  background-color: #1976d2;
+  color: white;
+}
+
+.btn-primary:hover:not(:disabled) {
+  background-color: #1565c0;
+}
+
+.btn-secondary {
+  background-color: #757575;
+  color: white;
+}
+
+.btn-secondary:hover {
+  background-color: #616161;
+}
+
+.btn-small {
+  padding: 8px 12px;
+  font-size: 13px;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.text-blocks-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.text-block-item {
+  padding: 16px;
+  border: 2px solid #e0e0e0;
+  border-radius: 8px;
+  background-color: #fafafa;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.text-block-item:hover {
+  border-color: #bdbdbd;
+  background-color: #f5f5f5;
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+.text-block-item.selected {
+  border-color: #1976d2;
+  background-color: #e3f2fd;
+  box-shadow: 0 4px 12px rgba(25, 118, 210, 0.2);
+}
+
+.block-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.block-number {
+  font-size: 13px;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.selected-indicator {
+  font-size: 12px;
+  color: #1976d2;
+  font-weight: 600;
+}
+
+.block-text {
+  font-size: 15px;
+  line-height: 1.6;
+  color: #212121;
+  margin-bottom: 16px;
+  padding: 12px;
+  background-color: #ffffff;
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+}
+
+.block-timing-controls {
+  display: flex;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.timing-input-group {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.timing-input-group label {
+  font-size: 12px;
+  font-weight: 600;
+  color: #666;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.timing-input {
+  padding: 8px 12px;
+  border: 1px solid #e0e0e0;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: 'Courier New', monospace;
+  transition: border-color 0.2s ease;
+}
+
+.timing-input:focus {
+  outline: none;
+  border-color: #1976d2;
+  box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.1);
+}
+
+.timing-input.input-error {
+  border-color: #d32f2f;
+  background-color: #ffebee;
+}
+
+.timing-input.input-error:focus {
+  border-color: #d32f2f;
+  box-shadow: 0 0 0 2px rgba(211, 47, 47, 0.1);
+}
+
+.block-info {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e0e0e0;
+  font-size: 12px;
+  color: #666;
+}
+
+.info-row {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.info-row span:first-child {
+  font-weight: 600;
+}
+
+/* Scrollbar styling */
+.text-blocks-list::-webkit-scrollbar,
+.image-container::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.text-blocks-list::-webkit-scrollbar-track,
+.image-container::-webkit-scrollbar-track {
+  background: #f1f1f1;
+}
+
+.text-blocks-list::-webkit-scrollbar-thumb,
+.image-container::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+.text-blocks-list::-webkit-scrollbar-thumb:hover,
+.image-container::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+@media (max-width: 1024px) {
+  .editor-content {
+    flex-direction: column;
+  }
+
+  .left-column {
+    border-right: none;
+    border-bottom: 2px solid #e0e0e0;
+  }
+
+  .image-viewer-panel {
+    flex: 1;
+    min-height: 300px;
+  }
+
+  .audio-controls-panel {
+    flex: 0 0 auto;
+  }
+}
+

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { conversionService } from '../services/conversionService';
 import { pdfService } from '../services/pdfService';
-import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineVolumeUp } from 'react-icons/hi';
+import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineVolumeUp, HiOutlineAdjustments } from 'react-icons/hi';
 import { Link } from 'react-router-dom';
 
 const Conversions = () => {
@@ -368,7 +368,7 @@ const Conversions = () => {
                 )}
               </div>
 
-              <div style={{ display: 'flex', gap: '10px' }}>
+              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 {job.status === 'COMPLETED' && (
                   <Link
                     to={`/audio-sync/${job.id}`}

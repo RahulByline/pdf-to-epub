@@ -414,20 +414,40 @@ router.get('/:jobId/text-blocks', async (req, res) => {
     
     const textData = await PdfExtractionService.extractText(resolvedPdfPath);
     
-    // Format text blocks for frontend
+    // Format text blocks for frontend with proper coordinate extraction
+    // CRITICAL: Convert PDF coordinates (bottom-left origin) to image/HTML coordinates (top-left origin)
     const textBlocks = [];
     textData.pages.forEach((page, pageIndex) => {
+      const pageHeight = page.height || 792; // Default page height in points
       (page.textBlocks || []).forEach((block, blockIndex) => {
+        // Extract coordinates from boundingBox (primary) or direct properties (fallback)
+        const bbox = block.boundingBox || {};
+        const x = bbox.x || block.x || 0;
+        const yBottom = bbox.y || block.y || 0; // PDF Y from bottom
+        const width = bbox.width || block.width || 0;
+        const height = bbox.height || block.height || 0;
+        
+        // Convert Y from bottom-left (PDF) to top-left (HTML/image)
+        // Formula: yTop = pageHeight - (yBottom + height)
+        const yTop = pageHeight - (yBottom + height);
+        
         textBlocks.push({
-          id: `page_${page.pageNumber}_block_${blockIndex}`,
+          id: block.id || `page_${page.pageNumber}_block_${blockIndex}`,
           pageNumber: page.pageNumber,
           text: block.text || '',
-          x: block.x || 0,
-          y: block.y || 0,
-          width: block.width || 0,
-          height: block.height || 0,
+          x: x,
+          y: yTop, // Converted to top-left origin
+          width: width,
+          height: height,
           fontSize: block.fontSize || 12,
-          fontName: block.fontName || 'Arial'
+          fontName: block.fontName || 'Arial',
+          // Include full boundingBox for reference (with original PDF coordinates)
+          boundingBox: bbox,
+          // Include normalized coordinates (0-1 range) for overlay positioning (top-left origin)
+          normalizedX: page.width ? x / page.width : 0,
+          normalizedY: page.height ? yTop / page.height : 0,
+          normalizedWidth: page.width ? width / page.width : 0,
+          normalizedHeight: page.height ? height / page.height : 0
         });
       });
     });
@@ -436,17 +456,41 @@ router.get('/:jobId/text-blocks', async (req, res) => {
       pages: textData.pages.map(p => ({
         pageNumber: p.pageNumber,
         text: p.text,
-        textBlocks: (p.textBlocks || []).map((block, idx) => ({
-          id: `page_${p.pageNumber}_block_${idx}`,
-          pageNumber: p.pageNumber,
-          text: block.text || '',
-          x: block.x || 0,
-          y: block.y || 0,
-          width: block.width || 0,
-          height: block.height || 0,
-          fontSize: block.fontSize || 12,
-          fontName: block.fontName || 'Arial'
-        }))
+        width: p.width || 612, // Default page width in points
+        height: p.height || 792, // Default page height in points
+        textBlocks: (p.textBlocks || []).map((block, idx) => {
+          // Extract coordinates from boundingBox (primary) or direct properties (fallback)
+          const bbox = block.boundingBox || {};
+          const x = bbox.x || block.x || 0;
+          const yBottom = bbox.y || block.y || 0; // PDF Y from bottom
+          const width = bbox.width || block.width || 0;
+          const height = bbox.height || block.height || 0;
+          const pageWidth = p.width || 612;
+          const pageHeight = p.height || 792;
+          
+          // Convert Y from bottom-left (PDF) to top-left (HTML/image)
+          // Formula: yTop = pageHeight - (yBottom + height)
+          const yTop = pageHeight - (yBottom + height);
+          
+          return {
+            id: block.id || `page_${p.pageNumber}_block_${idx}`,
+            pageNumber: p.pageNumber,
+            text: block.text || '',
+            x: x,
+            y: yTop, // Converted to top-left origin
+            width: width,
+            height: height,
+            fontSize: block.fontSize || 12,
+            fontName: block.fontName || 'Arial',
+            // Include full boundingBox for reference (with original PDF coordinates)
+            boundingBox: bbox,
+            // Include normalized coordinates (0-1 range) for overlay positioning (top-left origin)
+            normalizedX: pageWidth ? x / pageWidth : 0,
+            normalizedY: pageHeight ? yTop / pageHeight : 0,
+            normalizedWidth: pageWidth ? width / pageWidth : 0,
+            normalizedHeight: pageHeight ? height / pageHeight : 0
+          };
+        })
       }))
     });
   } catch (error) {
