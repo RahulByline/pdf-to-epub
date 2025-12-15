@@ -129,6 +129,202 @@ export class GeminiService {
   }
 
   /**
+   * Convert a PNG image of a PDF page to XHTML 1.0 Strict markup and CSS
+   * @param {string} imagePath - Path to the PNG image file
+   * @param {number} pageNumber - Page number
+   * @returns {Promise<{xhtml: string, css: string}|null>} XHTML and CSS or null if failed
+   */
+  static async convertPngToXhtml(imagePath, pageNumber) {
+    const client = this.getClient();
+    if (!client) {
+      return null;
+    }
+
+    // Check circuit breaker
+    if (!CircuitBreakerService.canMakeRequest('Gemini')) {
+      console.warn(`[Page ${pageNumber}] Circuit breaker is OPEN, skipping XHTML conversion`);
+      return null;
+    }
+
+    // Wrap entire operation in a timeout
+    const overallTimeout = 120000; // 120 seconds max for entire operation
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Overall timeout after 90s')), overallTimeout)
+    );
+
+    const operationPromise = RequestQueueService.enqueue('Gemini', async () => {
+      // Pre-request rate limit check with retry logic
+      let retries = 0;
+      const maxRetries = 5;
+      const maxTotalWait = 20000;
+      let totalWaitTime = 0;
+      
+      let acquired = false;
+      while (!acquired && retries < maxRetries && totalWaitTime < maxTotalWait) {
+        acquired = RateLimiterService.acquire('Gemini');
+        if (!acquired) {
+          const waitTime = RateLimiterService.getTimeUntilNextToken('Gemini');
+          if (waitTime > 0 && waitTime < 10000 && (totalWaitTime + waitTime) < maxTotalWait) {
+            const actualWait = Math.min(waitTime + 200, maxTotalWait - totalWaitTime);
+            console.log(`[Page ${pageNumber}] Waiting ${Math.round(actualWait/1000)}s for rate limit...`);
+            await new Promise(resolve => setTimeout(resolve, actualWait));
+            totalWaitTime += actualWait;
+            retries++;
+          } else {
+            if (totalWaitTime >= maxTotalWait) {
+              console.warn(`[Page ${pageNumber}] Max wait time (20s) exceeded, skipping XHTML conversion`);
+            } else {
+              console.warn(`[Page ${pageNumber}] Rate limit wait time too long (${Math.round(waitTime/1000)}s), skipping`);
+            }
+            return null;
+          }
+        }
+      }
+      
+      if (!acquired) {
+        console.warn(`[Page ${pageNumber}] Rate limit retries exhausted, skipping XHTML conversion`);
+        return null;
+      }
+
+      try {
+        console.log(`[Page ${pageNumber}] Reading PNG image for XHTML conversion...`);
+        const imageBuffer = await fs.readFile(imagePath);
+        
+        const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+        const model = client.getGenerativeModel({ model: modelName });
+
+        const prompt = `Analyze the provided image of the worksheet page(s).
+
+Two-step task:
+1) Layout decision: if the content shows two distinct columns/pages (dashed divider, separate activities, separate page numbers), use a CSS two-column layout; otherwise use a single-column layout.
+2) Generate full XHTML 1.0 Strict with embedded CSS.
+
+Strict XHTML constraints:
+- DOCTYPE: XHTML 1.0 Strict.
+- All tags lowercase, properly nested; self-closing tags end with />.
+- No deprecated presentational tags/attributes (no center, font, align, border, bgcolor, etc.).
+- All styling (layout, colors, borders) must be in the <style> block; no inline presentational attributes.
+- Represent every image/graphic as a structured <div> placeholder with descriptive classes (e.g., activity-column-left, face-angry-placeholder, word-box).
+
+Output format: return pure JSON (no markdown):
+{
+  "xhtml": "<!DOCTYPE html PUBLIC \\"-//W3C//DTD XHTML 1.0 Strict//EN\\" \\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\\">\\n<html xmlns=\\"http://www.w3.org/1999/xhtml\\" lang=\\"en\\" xml:lang=\\"en\\">\\n<head>\\n<meta http-equiv=\\"Content-Type\\" content=\\"text/html; charset=utf-8\\"/>\\n<title>Page ${pageNumber}</title>\\n<style type=\\"text/css\\">/* CSS styles here */</style>\\n</head>\\n<body>\\n<!-- XHTML content here -->\\n</body>\\n</html>",
+  "css": "" // keep CSS in the style block above; this can be empty or omitted
+}
+
+Layout/style guidance:
+- Use a top-level container. If two logical columns/pages: .container with two .page children; else one .page.
+- Common sections: .header (label <p> and <h1>), .activity-area, optional columns (.faces-column, .words-column, .activity-column-left/right), story blocks (.story-block), instructions (.instruction), footer (.footer with .page-number).
+- Placeholders: <div class="face-placeholder ..."></div>, <div class="word-box ...">WORD</div>, <div class="placeholder ..."></div>, etc. Do not embed images.
+- Preserve all visible text and hierarchy: use h1/h2/h3 for headings; <p> for body/instructions; avoid spans unless necessary.
+- CSS: include layout (flex/widths), spacing, borders (solid/dashed), colors, and sizing to approximate the image; keep it readable and minimal.
+`;
+
+        console.log(`[Page ${pageNumber}] Calling Gemini API for XHTML conversion...`);
+        
+        const maxApiAttempts = 2;
+        let attempt = 0;
+        let result = null;
+        let lastError = null;
+
+        while (attempt < maxApiAttempts && !result) {
+          attempt++;
+          const apiTimeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('API call timeout after 90s')), 90000)
+          );
+
+          const apiCallPromise = model.generateContent([
+            { text: prompt },
+            {
+              inlineData: {
+                data: imageBuffer.toString('base64'),
+                mimeType: 'image/png'
+              }
+            }
+          ]);
+
+          try {
+            result = await Promise.race([apiCallPromise, apiTimeoutPromise]);
+          } catch (apiErr) {
+            lastError = apiErr;
+            const isTimeout = apiErr?.message?.includes('timeout');
+            if (isTimeout && attempt < maxApiAttempts) {
+              console.warn(`[Page ${pageNumber}] API call timed out (attempt ${attempt}/${maxApiAttempts}), retrying...`);
+              await new Promise(res => setTimeout(res, 2000));
+              continue;
+            }
+            throw apiErr;
+          }
+        }
+
+        console.log(`[Page ${pageNumber}] Received response from Gemini API...`);
+        
+        const response = await result.response;
+        const rawResponse = response.text() || '';
+        
+        // Record success
+        CircuitBreakerService.recordSuccess('Gemini');
+        
+        // Try to parse JSON from response
+        try {
+          // Extract JSON from markdown code blocks if present
+          let jsonStr = rawResponse.trim();
+          const jsonMatch = jsonStr.match(/```json\n([\s\S]*?)\n```/) || 
+                           jsonStr.match(/```\n([\s\S]*?)\n```/) ||
+                           jsonStr.match(/\{[\s\S]*\}/);
+          
+          if (jsonMatch) {
+            jsonStr = jsonMatch[1] || jsonMatch[0];
+          }
+          
+          const parsed = JSON.parse(jsonStr);
+          
+          if (parsed.xhtml && parsed.css) {
+            console.log(`[Page ${pageNumber}] Successfully converted to XHTML (${parsed.xhtml.length} chars XHTML, ${parsed.css.length} chars CSS)`);
+            return {
+              xhtml: parsed.xhtml,
+              css: parsed.css,
+              pageNumber: pageNumber
+            };
+          } else {
+            console.warn(`[Page ${pageNumber}] Response missing xhtml or css fields`);
+            return null;
+          }
+        } catch (parseError) {
+          console.error(`[Page ${pageNumber}] Failed to parse JSON response:`, parseError.message);
+          console.debug(`[Page ${pageNumber}] Raw response (first 500 chars):`, rawResponse.substring(0, 500));
+          return null;
+        }
+      } catch (error) {
+        const is429 = error?.status === 429 || error?.statusCode === 429;
+        const isTimeout = error?.message?.includes('timeout');
+        
+        if (is429) {
+          CircuitBreakerService.recordFailure('Gemini', true);
+          console.warn(`[Page ${pageNumber}] 429 error during XHTML conversion`);
+        } else if (isTimeout) {
+          console.warn(`[Page ${pageNumber}] API call timed out, skipping`);
+          CircuitBreakerService.recordFailure('Gemini', false);
+        } else {
+          console.error(`[Page ${pageNumber}] Error converting PNG to XHTML:`, error.message);
+          CircuitBreakerService.recordFailure('Gemini', false);
+        }
+        return null;
+      }
+    }, 1); // High priority for XHTML conversion
+
+    try {
+      return await Promise.race([operationPromise, timeoutPromise]);
+    } catch (error) {
+      if (error?.message?.includes('Overall timeout')) {
+        console.error(`[Page ${pageNumber}] Overall operation timed out after 90s, skipping`);
+        CircuitBreakerService.recordFailure('Gemini', false);
+      }
+      return null;
+    }
+  }
+
+  /**
    * Extract text directly from a PDF using Gemini (vision models).
    * Falls back to returning null if anything fails.
    * @param {string} pdfFilePath

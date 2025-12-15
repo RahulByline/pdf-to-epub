@@ -12,6 +12,263 @@ import { TextBasedConversionPipeline } from './textBasedConversionPipeline.js';
 // TtsService and mapTimingsToBlocks removed - using player's built-in TTS instead of generating audio files
 
 export class ConversionService {
+  /**
+   * Convert PDF to EPUB by converting each page to PNG and processing through Gemini for XHTML
+   * @param {string} jobId - Conversion job ID
+   * @param {string} pdfFilePath - Path to PDF file
+   * @param {Array} steps - Conversion steps array
+   * @returns {Promise<{epubPath: string}>} EPUB file path
+   */
+  static async convertPdfToXhtmlViaPng(jobId, pdfFilePath, steps) {
+    const htmlIntermediateDir = getHtmlIntermediateDir();
+    const epubOutputDir = getEpubOutputDir();
+    
+    // Create job-specific directories
+    const jobHtmlDir = path.join(htmlIntermediateDir, `job_${jobId}_html`);
+    const jobPngDir = path.join(htmlIntermediateDir, `job_${jobId}_png`);
+    await fs.mkdir(jobHtmlDir, { recursive: true });
+    await fs.mkdir(jobPngDir, { recursive: true });
+
+    // Step 1: Convert PDF pages to PNG images
+    await ConversionJobModel.update(jobId, {
+      currentStep: steps[1].step,
+      progressPercentage: steps[1].progress
+    });
+
+    console.log(`[Job ${jobId}] Converting PDF pages to PNG images...`);
+    const renderResult = await PdfExtractionService.renderPagesAsImages(pdfFilePath, jobPngDir);
+    const pageImages = renderResult?.images || renderResult || [];
+    
+    if (!Array.isArray(pageImages) || pageImages.length === 0) {
+      throw new Error('Failed to convert PDF pages to PNG images');
+    }
+
+    console.log(`[Job ${jobId}] Converted ${pageImages.length} pages to PNG`);
+
+    // Step 2: Process each PNG through Gemini to get XHTML and CSS
+    await ConversionJobModel.update(jobId, {
+      currentStep: steps[2].step,
+      progressPercentage: steps[2].progress
+    });
+
+    const xhtmlPages = [];
+    
+    for (let i = 0; i < pageImages.length; i++) {
+      const pageImage = pageImages[i];
+      const progress = steps[2].progress + Math.floor((steps[3].progress - steps[2].progress) * (i + 1) / pageImages.length);
+      
+      await ConversionJobModel.update(jobId, {
+        currentStep: steps[2].step,
+        progressPercentage: progress
+      });
+
+      console.log(`[Job ${jobId}] Processing page ${pageImage.pageNumber}/${pageImages.length} through Gemini...`);
+      
+      const xhtmlResult = await GeminiService.convertPngToXhtml(pageImage.path, pageImage.pageNumber);
+      
+      if (xhtmlResult && xhtmlResult.xhtml && xhtmlResult.css) {
+        // Save XHTML file
+        const xhtmlFileName = `page_${pageImage.pageNumber}.xhtml`;
+        const xhtmlFilePath = path.join(jobHtmlDir, xhtmlFileName);
+        
+        // Embed CSS in the XHTML if not already present
+        let xhtmlContent = xhtmlResult.xhtml;
+        if (!xhtmlContent.includes('<style') && !xhtmlContent.includes('<link')) {
+          // Insert CSS before </head> or at the beginning of <body>
+          if (xhtmlContent.includes('</head>')) {
+            xhtmlContent = xhtmlContent.replace('</head>', `<style type="text/css">\n${xhtmlResult.css}\n</style>\n</head>`);
+          } else if (xhtmlContent.includes('<body>')) {
+            xhtmlContent = xhtmlContent.replace('<body>', `<head><style type="text/css">\n${xhtmlResult.css}\n</style></head>\n<body>`);
+          } else {
+            // If no head/body structure, wrap in proper XHTML
+            xhtmlContent = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+<title>Page ${pageImage.pageNumber}</title>
+<style type="text/css">
+${xhtmlResult.css}
+</style>
+</head>
+<body>
+${xhtmlContent}
+</body>
+</html>`;
+          }
+        }
+        
+        await fs.writeFile(xhtmlFilePath, xhtmlContent, 'utf8');
+        
+        xhtmlPages.push({
+          pageNumber: pageImage.pageNumber,
+          xhtmlPath: xhtmlFilePath,
+          xhtmlFileName: xhtmlFileName,
+          css: xhtmlResult.css
+        });
+        
+        console.log(`[Job ${jobId}] Page ${pageImage.pageNumber} converted to XHTML successfully`);
+      } else {
+        console.warn(`[Job ${jobId}] Failed to convert page ${pageImage.pageNumber} to XHTML, skipping`);
+      }
+    }
+
+    if (xhtmlPages.length === 0) {
+      throw new Error('Failed to convert any pages to XHTML');
+    }
+
+    // Step 3: Generate EPUB from XHTML pages
+    await ConversionJobModel.update(jobId, {
+      currentStep: steps[7].step,
+      progressPercentage: steps[7].progress
+    });
+
+    console.log(`[Job ${jobId}] Generating EPUB from ${xhtmlPages.length} XHTML pages...`);
+    
+    const epubPath = await this.generateEpubFromXhtmlPages(
+      xhtmlPages,
+      epubOutputDir,
+      jobId,
+      {
+        title: `Converted PDF - Job ${jobId}`
+      }
+    );
+
+    return { epubPath };
+  }
+
+  /**
+   * Generate EPUB file from XHTML pages
+   * @param {Array} xhtmlPages - Array of {pageNumber, xhtmlPath, xhtmlFileName, css}
+   * @param {string} outputDir - Output directory
+   * @param {string} jobId - Job ID
+   * @param {Object} options - Options {title}
+   * @returns {Promise<string>} Path to generated EPUB file
+   */
+  static async generateEpubFromXhtmlPages(xhtmlPages, outputDir, jobId, options = {}) {
+    const tempEpubDir = path.join(outputDir, `temp_${jobId}`);
+    const oebpsDir = path.join(tempEpubDir, 'OEBPS');
+    const metaInfDir = path.join(tempEpubDir, 'META-INF');
+    
+    // Create directories
+    await fs.mkdir(oebpsDir, { recursive: true });
+    await fs.mkdir(metaInfDir, { recursive: true });
+    
+    // Copy XHTML files to OEBPS directory
+    const xhtmlFiles = [];
+    for (const page of xhtmlPages) {
+      const destPath = path.join(oebpsDir, page.xhtmlFileName);
+      await fs.copyFile(page.xhtmlPath, destPath);
+      xhtmlFiles.push({
+        id: `page-${page.pageNumber}`,
+        href: `OEBPS/${page.xhtmlFileName}`,
+        mediaType: 'application/xhtml+xml'
+      });
+    }
+    
+    // Generate OPF file
+    const opfContent = `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">urn:uuid:${jobId}</dc:identifier>
+    <dc:title>${this.escapeXml(options.title || 'Converted PDF')}</dc:title>
+    <dc:language>en</dc:language>
+    <meta property="dcterms:modified">${new Date().toISOString()}</meta>
+  </metadata>
+  <manifest>
+    <item id="nav" href="OEBPS/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+${xhtmlFiles.map(f => `    <item id="${f.id}" href="${f.href}" media-type="${f.mediaType}"/>`).join('\n')}
+  </manifest>
+  <spine toc="nav">
+${xhtmlFiles.map(f => `    <itemref idref="${f.id}"/>`).join('\n')}
+  </spine>
+</package>`;
+    
+    await fs.writeFile(path.join(tempEpubDir, 'content.opf'), opfContent, 'utf8');
+    
+    // Generate navigation XHTML
+    const navContent = `<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+<meta charset="utf-8"/>
+<title>Navigation</title>
+</head>
+<body>
+<nav epub:type="toc" id="toc">
+  <h1>Table of Contents</h1>
+  <ol>
+${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}</a></li>`).join('\n')}
+  </ol>
+</nav>
+</body>
+</html>`;
+    
+    await fs.writeFile(path.join(oebpsDir, 'nav.xhtml'), navContent, 'utf8');
+    
+    // Generate container.xml
+    const containerContent = `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`;
+    
+    await fs.writeFile(path.join(metaInfDir, 'container.xml'), containerContent, 'utf8');
+    
+    // Generate mimetype file
+    await fs.writeFile(path.join(tempEpubDir, 'mimetype'), 'application/epub+zip', 'utf8');
+    
+    // Create EPUB ZIP file
+    const epubFileName = `converted_${jobId}.epub`;
+    const epubPath = path.join(outputDir, epubFileName);
+    
+    const zip = new JSZip();
+    
+    // Add mimetype first (must be uncompressed and first file)
+    zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
+    
+    // Add all other files
+    const addDirectoryToZip = async (dirPath, zipPath = '') => {
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry.name);
+        const zipEntryPath = zipPath ? `${zipPath}/${entry.name}` : entry.name;
+        
+        if (entry.isDirectory()) {
+          await addDirectoryToZip(fullPath, zipEntryPath);
+        } else {
+          const content = await fs.readFile(fullPath);
+          zip.file(zipEntryPath, content);
+        }
+      }
+    };
+    
+    await addDirectoryToZip(tempEpubDir);
+    
+    // Generate EPUB file
+    const epubBuffer = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 9 }
+    });
+    
+    await fs.writeFile(epubPath, epubBuffer);
+    
+    // Cleanup temp directory
+    await fs.rm(tempEpubDir, { recursive: true, force: true }).catch(() => {});
+    
+    return epubPath;
+  }
+
+  static escapeXml(text) {
+    if (!text) return '';
+    return String(text)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&apos;');
+  }
+
   static async startConversion(pdfDocumentId) {
     const pdf = await PdfDocumentModel.findById(pdfDocumentId);
     if (!pdf) {
@@ -89,6 +346,27 @@ export class ConversionService {
         currentStep: steps[1].step,
         progressPercentage: steps[1].progress
       });
+
+      // Check if we should use PNG-to-XHTML conversion flow
+      const usePngToXhtmlFlow = (process.env.USE_PNG_TO_XHTML_FLOW || 'true').toLowerCase() === 'true';
+      
+      if (usePngToXhtmlFlow) {
+        console.log(`[Job ${jobId}] Using PNG-to-XHTML conversion flow...`);
+        try {
+          const result = await this.convertPdfToXhtmlViaPng(jobId, pdfFilePath, steps);
+          await ConversionJobModel.update(jobId, {
+            status: 'COMPLETED',
+            currentStep: steps[steps.length - 1].step,
+            progressPercentage: 100,
+            epubFilePath: result.epubPath
+          });
+          console.log(`[Job ${jobId}] PNG-to-XHTML conversion completed: ${result.epubPath}`);
+          return;
+        } catch (pngError) {
+          console.error(`[Job ${jobId}] PNG-to-XHTML flow failed, falling back to standard conversion:`, pngError.message);
+          // Fall through to standard conversion
+        }
+      }
 
       console.log(`[Job ${jobId}] Extracting text from PDF: ${pdfFilePath}`);
 

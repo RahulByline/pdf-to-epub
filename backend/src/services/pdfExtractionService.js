@@ -477,9 +477,9 @@ export class PdfExtractionService {
       // Don't destroy yet - we'll need it for getting individual page dimensions
       // We'll destroy it after we're done with all rendering
       
-      // Render at 300 DPI (like epub_app - renderImageWithDPI(300))
-      const dpi = 300;
-      const scale = dpi / 72; // 300 DPI = 300/72 points per pixel
+      // Render at 200 DPI to reduce image size for Gemini Vision calls
+      const dpi = 200;
+      const scale = dpi / 72; // 200 DPI = 200/72 points per pixel
       const maxRenderedWidth = Math.ceil(maxWidth * scale);
       const maxRenderedHeight = Math.ceil(maxHeight * scale);
       

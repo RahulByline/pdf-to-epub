@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { conversionService } from '../services/conversionService';
 import { pdfService } from '../services/pdfService';
-import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineVolumeUp, HiOutlineAdjustments } from 'react-icons/hi';
+import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineVolumeUp, HiOutlineAdjustments, HiOutlineDownload } from 'react-icons/hi';
 import { Link } from 'react-router-dom';
 
 const Conversions = () => {
@@ -370,14 +370,24 @@ const Conversions = () => {
 
               <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 {job.status === 'COMPLETED' && (
-                  <Link
-                    to={`/audio-sync/${job.id}`}
-                    className="btn btn-primary"
-                    style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-                  >
-                    <HiOutlineVolumeUp size={18} />
-                    Reconstruct & Map Audio
-                  </Link>
+                  <>
+                    <button
+                      onClick={() => handleDownload(job.id)}
+                      className="btn btn-primary"
+                      style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                    >
+                      <HiOutlineDownload size={18} />
+                      Download EPUB
+                    </button>
+                    <Link
+                      to={`/audio-sync/${job.id}`}
+                      className="btn btn-secondary"
+                      style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                    >
+                      <HiOutlineVolumeUp size={18} />
+                      Reconstruct & Map Audio
+                    </Link>
+                  </>
                 )}
                 {job.status === 'IN_PROGRESS' && (
                   <button
@@ -528,6 +538,16 @@ const Conversions = () => {
                         style={{ padding: '6px 12px', fontSize: '14px' }}
                       >
                         Retry
+                      </button>
+                    )}
+                    {job.status === 'COMPLETED' && (
+                      <button
+                        onClick={() => handleDownload(job.id)}
+                        className="btn btn-primary"
+                        style={{ marginRight: '5px', padding: '6px 12px', fontSize: '14px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                      >
+                        <HiOutlineDownload size={14} />
+                        Download
                       </button>
                     )}
                     {job.status === 'PENDING' && (
