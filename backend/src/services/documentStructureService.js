@@ -15,7 +15,7 @@ export class DocumentStructureService {
    */
   static async analyzeStructure(pages, options = {}) {
     try {
-      const aiConfig = await AiConfigService.getCurrentConfiguration();
+      const aiConfig = await AiConfigService.getActiveConfiguration();
       const useAI = options.useAI !== false && aiConfig && aiConfig.apiKey;
       
       if (useAI) {
@@ -241,5 +241,6 @@ Return ONLY the JSON, no other text.`;
     };
   }
 }
+
 
 

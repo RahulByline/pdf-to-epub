@@ -132,9 +132,10 @@ export class AudioSyncService {
   // Generate TTS audio for text chunks
   static async generateAudioForText(text, voice = 'standard', pdfId, chunkId) {
     // Get active AI configuration
-    const aiConfig = await AiConfigurationModel.findActive();
+    const { AiConfigService } = await import('./aiConfigService.js');
+    const aiConfig = await AiConfigService.getActiveConfiguration();
     
-    if (!aiConfig) {
+    if (!aiConfig || !aiConfig.apiKey) {
       throw new Error('No active AI configuration found. Please configure AI settings first.');
     }
 

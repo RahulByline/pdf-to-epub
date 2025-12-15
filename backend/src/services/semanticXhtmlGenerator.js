@@ -37,7 +37,7 @@ export class SemanticXhtmlGenerator {
     }
     
     // Use AI to enhance structure preservation if configured
-    const aiConfig = await AiConfigService.getCurrentConfiguration();
+    const aiConfig = await AiConfigService.getActiveConfiguration();
     if (aiConfig && aiConfig.apiKey && options.useAI !== false) {
       structuredPages = await this.enhanceStructureWithAI(structuredPages, aiConfig);
     }
@@ -187,7 +187,7 @@ export class SemanticXhtmlGenerator {
     let xhtmlContent = `<?xml version="1.0" encoding="UTF-8"?>\n${doc.documentElement.outerHTML}`;
     
     // Use Gemini to refine XHTML and preserve exact structure/alignment
-    const aiConfig = await AiConfigService.getCurrentConfiguration();
+    const aiConfig = await AiConfigService.getActiveConfiguration();
     if (aiConfig && aiConfig.apiKey) {
       try {
         xhtmlContent = await this.refineXhtmlWithGemini(xhtmlContent, chapter, aiConfig);

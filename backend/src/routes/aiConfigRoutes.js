@@ -56,18 +56,71 @@ router.post('/test', async (req, res) => {
     const { apiKey, modelName } = req.body;
     
     if (!apiKey || apiKey.trim().length < 20) {
-      return badRequestResponse(res, 'Invalid API key format');
+      return badRequestResponse(res, 'Invalid API key format. API key must be at least 20 characters.');
     }
 
-    // TODO: Implement actual API test call
-    // For now, just validate format
-    return successResponse(res, { message: 'Connection test successful! API key format is valid.' });
+    // Check if it's a masked key
+    if (apiKey.includes('****')) {
+      return badRequestResponse(res, 'Invalid API key format. Please enter a valid API key.');
+    }
+
+    // Try to make an actual API call to test the connection
+    try {
+      const { GoogleGenerativeAI } = await import('@google/generative-ai');
+      const genAI = new GoogleGenerativeAI(apiKey.trim());
+      const testModelName = modelName || 'gemini-pro';
+      const model = genAI.getGenerativeModel({ model: testModelName });
+      
+      // Make a simple test call and measure response time
+      const startTime = Date.now();
+      const result = await model.generateContent('Test');
+      const response = await result.response;
+      const responseTime = Date.now() - startTime;
+      
+      // Get response text to verify it's working
+      const responseText = await response.text();
+      
+      // Mask API key for response
+      const maskedApiKey = apiKey.length > 8 
+        ? apiKey.substring(0, 4) + '****' + apiKey.substring(apiKey.length - 4)
+        : '****';
+      
+      return successResponse(res, { 
+        message: 'Connection test successful!',
+        details: {
+          status: 'connected',
+          model: testModelName,
+          apiKey: maskedApiKey,
+          responseTime: `${responseTime}ms`,
+          responseReceived: responseText ? 'Yes' : 'No',
+          timestamp: new Date().toISOString()
+        },
+        summary: `Successfully connected to ${testModelName} model. API key is valid and working. Response time: ${responseTime}ms.`
+      });
+    } catch (apiError) {
+      // If API call fails, return error with details
+      const errorMessage = apiError.message || 'Unknown error';
+      let userFriendlyMessage = 'Connection test failed. ';
+      
+      if (errorMessage.includes('API_KEY_INVALID') || errorMessage.includes('401')) {
+        userFriendlyMessage += 'Invalid API key. Please check your API key.';
+      } else if (errorMessage.includes('MODEL_NOT_FOUND') || errorMessage.includes('404')) {
+        userFriendlyMessage += `Model "${modelName || 'gemini-pro'}" not found. Please check the model name.`;
+      } else if (errorMessage.includes('QUOTA') || errorMessage.includes('429')) {
+        userFriendlyMessage += 'API quota exceeded. Please check your API usage limits.';
+      } else {
+        userFriendlyMessage += errorMessage;
+      }
+      
+      return badRequestResponse(res, userFriendlyMessage);
+    }
   } catch (error) {
     return errorResponse(res, error.message, 500);
   }
 });
 
 export default router;
+
 
 
 
