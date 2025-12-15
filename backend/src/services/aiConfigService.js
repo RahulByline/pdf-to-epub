@@ -19,59 +19,78 @@ export class AiConfigService {
       apiKey: this.maskApiKey(config.api_key),
       modelName: config.model_name,
       isActive: config.is_active,
-      description: config.description
+      description: config.description,
+      createdAt: config.created_at,
+      updatedAt: config.updated_at
     };
   }
 
   static async saveConfiguration(configDTO) {
-    // Deactivate all existing configurations
-    await AiConfigurationModel.deactivateAll();
-
-    // Validate API key if provided
-    if (configDTO.apiKey) {
+    // Validate API key format if provided
+    if (configDTO.apiKey !== undefined && configDTO.apiKey !== null && configDTO.apiKey.trim().length > 0) {
       if (configDTO.apiKey.trim().length < 20) {
         throw new Error('API key must be at least 20 characters');
+      }
+      // Check if it's a masked key (contains ****)
+      if (configDTO.apiKey.includes('****')) {
+        throw new Error('Invalid API key format. Please enter a valid API key.');
       }
     }
 
     let config;
+    
+    // Check if we're updating an existing config
     if (configDTO.id && configDTO.id > 0) {
       const existing = await AiConfigurationModel.findById(configDTO.id);
       if (existing) {
-        // Update existing - preserve API key if not provided
+        // Update existing configuration
         const updateData = {
-          modelName: configDTO.modelName || existing.model_name,
-          isActive: configDTO.isActive !== undefined ? configDTO.isActive : true,
-          description: configDTO.description
+          modelName: configDTO.modelName !== undefined ? configDTO.modelName : existing.model_name,
+          isActive: configDTO.isActive !== undefined ? configDTO.isActive : existing.is_active,
+          description: configDTO.description !== undefined ? configDTO.description : existing.description
         };
 
-        if (configDTO.apiKey && configDTO.apiKey.trim().length >= 20) {
-          updateData.apiKey = configDTO.apiKey.trim();
-        } else {
-          updateData.apiKey = existing.api_key;
+        // Only update API key if a new one is provided
+        if (configDTO.apiKey !== undefined && configDTO.apiKey !== null && configDTO.apiKey.trim().length > 0) {
+          if (configDTO.apiKey.trim().length >= 20 && !configDTO.apiKey.includes('****')) {
+            updateData.apiKey = configDTO.apiKey.trim();
+          } else {
+            throw new Error('API key must be at least 20 characters and cannot be masked');
+          }
         }
+        // If API key not provided, keep existing one (don't include in updateData)
 
         config = await AiConfigurationModel.update(configDTO.id, updateData);
       } else {
-        // Create new
+        // ID provided but not found - create new
+        if (!configDTO.apiKey || configDTO.apiKey.trim().length < 20) {
+          throw new Error('API key is required and must be at least 20 characters for new configurations');
+        }
+        
+        // Deactivate all existing configurations before creating new one
+        await AiConfigurationModel.deactivateAll();
+        
         config = await AiConfigurationModel.create({
-          apiKey: configDTO.apiKey?.trim() || '',
+          apiKey: configDTO.apiKey.trim(),
           modelName: configDTO.modelName || 'gemini-pro',
           isActive: configDTO.isActive !== undefined ? configDTO.isActive : true,
-          description: configDTO.description
+          description: configDTO.description || ''
         });
       }
     } else {
-      // Create new
+      // Create new configuration
       if (!configDTO.apiKey || configDTO.apiKey.trim().length < 20) {
         throw new Error('API key is required and must be at least 20 characters');
       }
-
+      
+      // Deactivate all existing configurations before creating new one
+      await AiConfigurationModel.deactivateAll();
+      
       config = await AiConfigurationModel.create({
         apiKey: configDTO.apiKey.trim(),
         modelName: configDTO.modelName || 'gemini-pro',
         isActive: configDTO.isActive !== undefined ? configDTO.isActive : true,
-        description: configDTO.description
+        description: configDTO.description || ''
       });
     }
 
@@ -80,7 +99,9 @@ export class AiConfigService {
       apiKey: this.maskApiKey(config.api_key),
       modelName: config.model_name,
       isActive: config.is_active,
-      description: config.description
+      description: config.description,
+      createdAt: config.created_at,
+      updatedAt: config.updated_at
     };
   }
 
@@ -107,7 +128,28 @@ export class AiConfigService {
       'gemini-pro-vision'
     ];
   }
+
+  /**
+   * Get current AI configuration with real API key (for internal use only)
+   * This should NOT be exposed to frontend - use getCurrentConfiguration() instead
+   * @returns {Promise<Object|null>} Configuration object with real API key
+   */
+  static async getActiveConfiguration() {
+    const config = await AiConfigurationModel.findActive();
+    if (!config) {
+      return null;
+    }
+
+    return {
+      id: config.id,
+      apiKey: config.api_key, // Real API key, not masked
+      modelName: config.model_name,
+      isActive: config.is_active,
+      description: config.description
+    };
+  }
 }
+
 
 
 

@@ -11,11 +11,17 @@ export class AiPdfService {
    * Get AI configuration
    */
   static async getAiConfig() {
-    const config = await AiConfigurationModel.findActive();
-    if (!config || !config.api_key) {
+    const { AiConfigService } = await import('./aiConfigService.js');
+    const config = await AiConfigService.getActiveConfiguration();
+    if (!config || !config.apiKey) {
       throw new Error('AI configuration not found. Please configure AI settings first.');
     }
-    return config;
+    return {
+      api_key: config.apiKey,
+      model_name: config.modelName,
+      is_active: config.isActive,
+      description: config.description
+    };
   }
 
   /**
