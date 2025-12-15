@@ -370,23 +370,14 @@ const Conversions = () => {
 
               <div style={{ display: 'flex', gap: '10px' }}>
                 {job.status === 'COMPLETED' && (
-                  <>
-                    <Link
-                      to={`/audio-sync/${job.id}`}
-                      className="btn btn-primary"
-                      style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-                    >
-                      <HiOutlineVolumeUp size={18} />
-                      Audio Sync
-                    </Link>
-                    <button
-                      onClick={() => handleDownload(job.id)}
-                      className="btn btn-success"
-                      style={{ flex: 1 }}
-                    >
-                      Download EPUB
-                    </button>
-                  </>
+                  <Link
+                    to={`/audio-sync/${job.id}`}
+                    className="btn btn-primary"
+                    style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                  >
+                    <HiOutlineVolumeUp size={18} />
+                    Reconstruct & Map Audio
+                  </Link>
                 )}
                 {job.status === 'IN_PROGRESS' && (
                   <button
@@ -514,18 +505,11 @@ const Conversions = () => {
                         <Link
                           to={`/audio-sync/${job.id}`}
                           className="btn btn-primary"
-                          style={{ marginRight: '5px', padding: '6px 12px', fontSize: '14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                          style={{ padding: '6px 12px', fontSize: '14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                         >
                           <HiOutlineVolumeUp size={14} />
-                          Audio Sync
+                          Reconstruct & Map
                         </Link>
-                        <button
-                          onClick={() => handleDownload(job.id)}
-                          className="btn btn-success"
-                          style={{ padding: '6px 12px', fontSize: '14px' }}
-                        >
-                          Download
-                        </button>
                       </>
                     )}
                     {job.status === 'IN_PROGRESS' && (

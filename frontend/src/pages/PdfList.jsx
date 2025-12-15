@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { pdfService } from '../services/pdfService';
 import { conversionService } from '../services/conversionService';
 import { HiOutlineDocument, HiOutlineCloudUpload, HiOutlineTrash, HiOutlinePlay } from 'react-icons/hi';
 
 const PdfList = () => {
+  const navigate = useNavigate();
   const [pdfs, setPdfs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -46,8 +47,14 @@ const PdfList = () => {
 
   const handleStartConversion = async (pdfId) => {
     try {
-      await conversionService.startConversion(pdfId);
-      alert('Conversion started!');
+      setError('');
+      const job = await conversionService.startConversion(pdfId);
+      
+      // Redirect to audio-sync/preview page
+      // Wait a moment for conversion to initialize, then redirect
+      setTimeout(() => {
+        navigate(`/audio-sync/${job.id}`);
+      }, 500);
     } catch (err) {
       setError(err.message || 'Failed to start conversion');
     }

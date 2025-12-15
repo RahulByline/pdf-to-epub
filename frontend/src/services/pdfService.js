@@ -7,12 +7,9 @@ export const pdfService = {
   
   getPdfsGroupedByZip: () => api.get('/pdfs/grouped').then(res => res.data.data),
   
-  uploadPdf: (file, audioFile = null) => {
+  uploadPdf: (file) => {
     const formData = new FormData();
     formData.append('file', file);
-    if (audioFile) {
-      formData.append('audioFile', audioFile);
-    }
     return api.post('/pdfs/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     }).then(res => res.data.data);

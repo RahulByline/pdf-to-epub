@@ -4,7 +4,6 @@ import { pdfService } from '../services/pdfService';
 
 const PdfUpload = () => {
   const [file, setFile] = useState(null);
-  const [audioFile, setAudioFile] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
@@ -12,10 +11,6 @@ const PdfUpload = () => {
 
   const handleFileChange = (e) => {
     setFile(e.target.files[0]);
-  };
-
-  const handleAudioFileChange = (e) => {
-    setAudioFile(e.target.files[0]);
   };
 
   const handleSubmit = async (e) => {
@@ -30,7 +25,7 @@ const PdfUpload = () => {
     setSuccess('');
 
     try {
-      await pdfService.uploadPdf(file, audioFile);
+      await pdfService.uploadPdf(file);
       setSuccess('PDF uploaded successfully!');
       setTimeout(() => {
         navigate('/pdfs');
@@ -61,18 +56,6 @@ const PdfUpload = () => {
             />
           </div>
 
-          <div className="form-group">
-            <label>Audio File (Optional)</label>
-            <input
-              type="file"
-              accept="audio/*"
-              onChange={handleAudioFileChange}
-            />
-            <small style={{ color: '#666', marginTop: '5px', display: 'block' }}>
-              Upload an audio file to sync with the PDF
-            </small>
-          </div>
-
           <button
             type="submit"
             className="btn btn-primary"
@@ -87,4 +70,5 @@ const PdfUpload = () => {
 };
 
 export default PdfUpload;
+
 

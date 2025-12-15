@@ -54,13 +54,13 @@ const Layout = () => {
             <HiOutlineHome className="sidebar-icon" />
             <span>Dashboard</span>
           </Link>
+          <Link to="/pdfs/upload" className={`sidebar-link ${isActive('/pdfs/upload')}`}>
+            <HiOutlineCloudUpload className="sidebar-icon" />
+            <span>Upload PDF</span>
+          </Link>
           <Link to="/pdfs" className={`sidebar-link ${isActive('/pdfs')}`}>
             <HiOutlineDocument className="sidebar-icon" />
             <span>PDFs</span>
-          </Link>
-          <Link to="/pdfs/upload" className={`sidebar-link ${isActive('/pdfs/upload')}`}>
-            <HiOutlineCloudUpload className="sidebar-icon" />
-            <span>Upload</span>
           </Link>
           <Link to="/conversions" className={`sidebar-link ${isActive('/conversions')}`}>
             <HiOutlineRefresh className="sidebar-icon" />

@@ -21,20 +21,14 @@ const upload = multer({
 // Initialize directories
 ensureDirectories();
 
-// POST /api/pdfs/upload - Upload PDF (with optional audio file)
-router.post('/upload', upload.fields([
-  { name: 'file', maxCount: 1 },
-  { name: 'audioFile', maxCount: 1 }
-]), async (req, res) => {
+// POST /api/pdfs/upload - Upload PDF and convert to EPUB3
+router.post('/upload', upload.single('file'), async (req, res) => {
   try {
-    if (!req.files || !req.files.file || req.files.file.length === 0) {
+    if (!req.file) {
       return badRequestResponse(res, 'PDF file is required');
     }
 
-    const file = req.files.file[0];
-    const audioFile = req.files.audioFile && req.files.audioFile.length > 0 
-      ? req.files.audioFile[0] 
-      : null;
+    const file = req.file;
 
     // Check if ZIP file
     const isZip = file.mimetype === 'application/zip' || 
@@ -51,8 +45,8 @@ router.post('/upload', upload.fields([
         errors: []
       }, 201);
     } else {
-      // Handle single PDF
-      const response = await PdfService.uploadAndAnalyzePdf(file, audioFile);
+      // Handle single PDF - convert to EPUB3
+      const response = await PdfService.uploadAndAnalyzePdf(file);
       return successResponse(res, response, 201);
     }
   } catch (error) {

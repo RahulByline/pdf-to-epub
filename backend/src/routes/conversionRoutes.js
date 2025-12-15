@@ -316,13 +316,53 @@ router.get('/:jobId/epub-text', async (req, res) => {
 router.get('/:jobId/epub-section/:sectionId/xhtml', async (req, res) => {
   try {
     const { EpubService } = await import('../services/epubService.js');
-    const xhtml = await EpubService.getSectionXhtml(
-      parseInt(req.params.jobId),
-      parseInt(req.params.sectionId)
-    );
+    const jobId = parseInt(req.params.jobId);
+    const sectionId = req.params.sectionId; // Keep as string, don't parse as int
+    
+    console.log(`[EPUB Route] Requesting section XHTML for job ${jobId}, sectionId: ${sectionId}`);
+    
+    const xhtml = await EpubService.getSectionXhtml(jobId, sectionId);
     res.setHeader('Content-Type', 'application/xhtml+xml');
     return res.send(xhtml);
   } catch (error) {
+    console.error('[EPUB Route] Error getting section XHTML:', error);
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// GET /api/conversions/:jobId/epub-css - Get EPUB CSS
+router.get('/:jobId/epub-css', async (req, res) => {
+  try {
+    const { EpubService } = await import('../services/epubService.js');
+    const css = await EpubService.getEpubCss(parseInt(req.params.jobId));
+    res.setHeader('Content-Type', 'text/css');
+    return res.send(css);
+  } catch (error) {
+    console.error('[EPUB Route] Error getting CSS:', error);
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// GET /api/conversions/:jobId/epub-image/:imageName - Get EPUB image
+router.get('/:jobId/epub-image/:imageName', async (req, res) => {
+  try {
+    const { EpubService } = await import('../services/epubService.js');
+    const imageName = decodeURIComponent(req.params.imageName);
+    const imageBuffer = await EpubService.getEpubImage(parseInt(req.params.jobId), imageName);
+    
+    // Determine content type from file extension
+    const ext = path.extname(imageName).toLowerCase();
+    const contentType = ext === '.png' ? 'image/png' :
+                        ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+                        ext === '.gif' ? 'image/gif' :
+                        ext === '.svg' ? 'image/svg+xml' :
+                        'image/png';
+    
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=31536000');
+    return res.send(imageBuffer);
+  } catch (error) {
+    console.error('[EPUB Route] Error getting image:', error);
     return errorResponse(res, error.message, 500);
   }
 });

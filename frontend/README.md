@@ -72,3 +72,5 @@ React Router handles client-side routing. Protected routes can be added with aut
 
 Currently using React hooks (useState, useEffect). For complex state, consider Redux or Context API.
 
+
+

@@ -333,3 +333,5 @@ mysqldump -u epub_user -p epub_db > ~/backups/epub_db_$(date +%Y%m%d).sql
 For A2 Hosting specific issues, contact A2 Hosting support.
 For application issues, check logs and error messages.
 
+
+
