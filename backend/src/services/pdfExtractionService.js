@@ -729,9 +729,9 @@ export class PdfExtractionService {
   <script>
     (async function() {
         const pdfData = atob('${pdfBase64}');
-                const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
+        const pdf = await pdfjsLib.getDocument({ data: pdfData }).promise;
                 const pageIndex = ${pageNum}; // pdfjs getPage is 1-based
-                const page = await pdf.getPage(pageIndex);
+        const page = await pdf.getPage(pageIndex);
         
         const viewport = page.getViewport({ scale: ${scale} });
         const canvas = document.getElementById('pdf-canvas');

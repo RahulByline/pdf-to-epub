@@ -21,49 +21,100 @@ const Conversions = () => {
         let data = [];
         if (statusFilter === 'all') {
           // Load all conversions from different statuses
+          // Log errors but continue with empty arrays
+          // Each request has its own timeout (30s via axios config)
           const [pending, inProgress, completed, failed, cancelled] = await Promise.all([
-            conversionService.getConversionsByStatus('PENDING').catch(() => []),
-            conversionService.getConversionsByStatus('IN_PROGRESS').catch(() => []),
-            conversionService.getConversionsByStatus('COMPLETED').catch(() => []),
-            conversionService.getConversionsByStatus('FAILED').catch(() => []),
-            conversionService.getConversionsByStatus('CANCELLED').catch(() => [])
+            conversionService.getConversionsByStatus('PENDING').catch((err) => {
+              // Silently handle errors - return empty array
+              // Connection errors are expected if backend is down
+              return [];
+            }),
+            conversionService.getConversionsByStatus('IN_PROGRESS').catch((err) => {
+              return [];
+            }),
+            conversionService.getConversionsByStatus('COMPLETED').catch((err) => {
+              return [];
+            }),
+            conversionService.getConversionsByStatus('FAILED').catch((err) => {
+              return [];
+            }),
+            conversionService.getConversionsByStatus('CANCELLED').catch((err) => {
+              return [];
+            })
           ]);
           data = [...pending, ...inProgress, ...completed, ...failed, ...cancelled];
           // Sort by creation date, newest first
-          data.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          data.sort((a, b) => new Date(b.createdAt || b.created_at) - new Date(a.createdAt || a.created_at));
         } else {
           data = await conversionService.getConversionsByStatus(statusFilter);
         }
 
         if (!isMounted) return;
 
-        setConversions(data);
+        setConversions(data || []);
         
         // Build thumbnail map for all unique PDF IDs
-        const pdfIds = [...new Set(data.map(job => job.pdfDocumentId))];
+        const pdfIds = [...new Set((data || []).map(job => job.pdfDocumentId || job.pdf_document_id))];
         const thumbnailMap = {};
         pdfIds.forEach(pdfId => {
-          thumbnailMap[pdfId] = `/api/pdfs/${pdfId}/thumbnail`;
+          if (pdfId) {
+            thumbnailMap[pdfId] = `/api/pdfs/${pdfId}/thumbnail`;
+          }
         });
         setPdfThumbnails(thumbnailMap);
         
         if (!isMounted) return;
         setLoading(false);
+        
+        // Check if all requests failed (likely backend is down)
+        if (data.length === 0 && statusFilter === 'all') {
+          // Check if we got connection errors by trying one more request
+          try {
+            await conversionService.getConversionsByStatus('PENDING');
+            // If this succeeds, we just have no data
+            setError('');
+          } catch (checkErr) {
+            // Backend is likely down
+            if (checkErr.code === 'ECONNREFUSED' || checkErr.message?.includes('ERR_CONNECTION_REFUSED') || 
+                checkErr.code === 'ECONNABORTED' || checkErr.message?.includes('timeout')) {
+              setError('Backend server is not running. Please start the backend server on port 8081.');
+            } else {
+              setError('');
+            }
+          }
+        } else {
+          setError(''); // Clear any previous errors
+        }
       } catch (err) {
+        console.error('Error in loadData:', err);
         if (!isMounted) return;
-        setError(err.message || 'Failed to load conversions');
+        
+        // Check if it's a network/timeout error
+        let errorMessage = 'Failed to load conversions.';
+        if (err.code === 'ECONNABORTED' || err.message?.includes('timeout')) {
+          errorMessage = 'Request timeout: Backend server may not be running or is not responding. Please check if the backend server is running on port 8081.';
+        } else if (err.code === 'ECONNREFUSED' || err.message?.includes('Network Error')) {
+          errorMessage = 'Cannot connect to backend server. Please ensure the backend server is running on http://localhost:8081';
+        } else {
+          errorMessage = err.response?.data?.error || err.message || 'Failed to load conversions. Please check if the backend server is running.';
+        }
+        
+        setError(errorMessage);
         setLoading(false);
+        // Set empty array so page doesn't stay in loading state
+        setConversions([]);
       }
     };
 
     loadData();
 
-    // Poll more frequently if there are in-progress jobs
+    // Poll for updates every 3 seconds
+    // Note: If backend is down, errors will be caught and handled gracefully
     intervalId = setInterval(() => {
       if (isMounted) {
         loadData();
       }
-    }, 3000); // Refresh every 3 seconds for better progress updates
+    }, 3000);
 
     return () => {
       isMounted = false;
@@ -150,7 +201,35 @@ const Conversions = () => {
   };
 
   if (loading && conversions.length === 0) {
-    return <div className="loading">Loading...</div>;
+    return (
+      <div className="container">
+        <div className="loading" style={{ textAlign: 'center', padding: '50px' }}>
+          <div>Loading conversions...</div>
+          {error && (
+            <div className="error" style={{ 
+              marginTop: '20px', 
+              padding: '15px',
+              backgroundColor: '#f8d7da',
+              border: '1px solid #f5c6cb',
+              borderRadius: '4px',
+              color: '#721c24',
+              textAlign: 'left',
+              maxWidth: '600px',
+              margin: '20px auto'
+            }}>
+              <strong>⚠️ Connection Error:</strong><br />
+              {error}
+              <div style={{ marginTop: '10px', fontSize: '14px', color: '#856404' }}>
+                <strong>To fix this:</strong><br />
+                1. Open a terminal in the <code style={{ backgroundColor: '#fff3cd', padding: '2px 4px' }}>pdf-to-epub/backend</code> directory<br />
+                2. Run <code style={{ backgroundColor: '#fff3cd', padding: '2px 4px' }}>npm start</code> or <code style={{ backgroundColor: '#fff3cd', padding: '2px 4px' }}>node server.js</code><br />
+                3. Wait for "Server is running on port 8081" message
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    );
   }
 
   return (

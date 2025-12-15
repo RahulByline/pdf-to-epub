@@ -89,13 +89,116 @@ export class ConversionService {
         progressPercentage: steps[1].progress
       });
 
-      console.log(`[Job ${jobId}] Extracting text from PDF: ${pdfFilePath}`);
-
       let textData = null;
+      let pageHtmlData = null; // For Word documents - HTML pages instead of images
+
+      if (isWordDocument) {
+        console.log(`[Job ${jobId}] Extracting content from Word document: ${documentFilePath}`);
+        
+        // Update progress: Starting Word extraction
+        await ConversionJobModel.update(jobId, {
+          currentStep: 'STEP_2_TEXT_EXTRACTION',
+          progressPercentage: 15
+        });
+        
+        // Extract text and HTML from Word document
+        // Use setImmediate to yield to event loop periodically
+        console.log(`[Job ${jobId}] Starting Word document extraction...`);
+        
+        // Update status before starting extraction to ensure frontend knows we're working
+        await ConversionJobModel.update(jobId, {
+          currentStep: 'STEP_2_TEXT_EXTRACTION',
+          progressPercentage: 18,
+          status: 'IN_PROGRESS'
+        }).catch(err => console.error(`[Job ${jobId}] Error updating status:`, err));
+        
+        // Yield multiple times to ensure status update is processed and server stays responsive
+        await new Promise(resolve => setImmediate(resolve));
+        await new Promise(resolve => setTimeout(resolve, 100)); // Small delay to allow HTTP responses
+        
+        // Convert to HTML pages using AI for perfect formatting preservation
+        const epubOutputDir = getEpubOutputDir();
+        const jobDir = path.join(epubOutputDir, `job_${jobId}`);
+        const htmlPagesDir = path.join(jobDir, 'html_pages');
+        
+        // Check if AI conversion is enabled BEFORE extracting text
+        const useAIForWordConversion = (process.env.USE_AI_FOR_WORD_CONVERSION || 'true').toLowerCase() === 'true';
+        
+        if (useAIForWordConversion) {
+          console.log(`[Job ${jobId}] Using AI (Gemini) to convert Word document pages to HTML with full formatting preservation...`);
+          console.log(`[Job ${jobId}] Note: Mammoth will be used once internally to get initial HTML structure for rendering pages as images, then AI will generate perfectly formatted HTML from those images.`);
+          
+          // Update progress: Starting AI conversion
+          await ConversionJobModel.update(jobId, {
+            currentStep: 'STEP_3_PAGE_RENDERING',
+            progressPercentage: 20
+          });
+          
+          // AI conversion handles extraction internally - no need to call extractText() first
+          pageHtmlData = await WordExtractionService.convertToHtmlPagesWithAI(documentFilePath, htmlPagesDir, async (progress, total) => {
+            // Update progress as pages are processed (20% to 40%)
+            const progressPercent = 20 + Math.floor((progress / total) * 20);
+            try {
+              await ConversionJobModel.update(jobId, {
+                currentStep: 'STEP_3_PAGE_RENDERING',
+                progressPercentage: progressPercent
+              });
+              await new Promise(resolve => setImmediate(resolve));
+            } catch (err) {
+              console.error(`[Job ${jobId}] Error updating progress:`, err);
+            }
+          });
+          
+          // Extract textData from AI conversion result
+          textData = pageHtmlData.textData || { pages: pageHtmlData.pages, totalPages: pageHtmlData.pages.length };
+          console.log(`[Job ${jobId}] Converted Word document to ${pageHtmlData.pages.length} HTML pages using AI`);
+        } else {
+          // Fallback to mammoth-based conversion - extract text first
+          console.log(`[Job ${jobId}] Starting Word extraction (this may take a while for large documents)...`);
+          textData = await WordExtractionService.extractText(documentFilePath);
+          console.log(`[Job ${jobId}] Extracted text from Word document (${textData.totalPages} pages)`);
+          
+          // Yield to event loop to allow other requests to be processed
+          await new Promise(resolve => setImmediate(resolve));
+          
+          // Update progress: Text extracted, starting HTML conversion
+          await ConversionJobModel.update(jobId, {
+            currentStep: 'STEP_3_PAGE_RENDERING',
+            progressPercentage: 25
+          });
+          
+          console.log(`[Job ${jobId}] Using mammoth to convert Word document pages to HTML...`);
+          
+          const totalPages = textData.totalPages || 1;
+          console.log(`[Job ${jobId}] Converting ${totalPages} pages to HTML...`);
+          
+          pageHtmlData = await WordExtractionService.convertToHtmlPages(documentFilePath, htmlPagesDir, async (progress, total) => {
+            const progressPercent = 25 + Math.floor((progress / total) * 15);
+            try {
+              await ConversionJobModel.update(jobId, {
+                currentStep: 'STEP_3_PAGE_RENDERING',
+                progressPercentage: progressPercent
+              });
+              await new Promise(resolve => setImmediate(resolve));
+            } catch (err) {
+              console.error(`[Job ${jobId}] Error updating progress:`, err);
+            }
+          });
+          console.log(`[Job ${jobId}] Converted Word document to ${pageHtmlData.pages.length} HTML pages`);
+        }
+        
+        // Update progress: HTML conversion complete
+        await ConversionJobModel.update(jobId, {
+          currentStep: 'STEP_3_PAGE_RENDERING',
+          progressPercentage: 40
+        });
+      } else {
+        console.log(`[Job ${jobId}] Extracting text from PDF: ${documentFilePath}`);
+        
       const useGeminiExtraction = (process.env.GEMINI_TEXT_EXTRACTION || '').toLowerCase() === 'true';
       if (useGeminiExtraction) {
         try {
-          textData = await GeminiService.extractTextFromPdf(pdfFilePath);
+            textData = await GeminiService.extractTextFromPdf(documentFilePath);
           if (textData) {
             console.log(`[Job ${jobId}] Extracted text via Gemini (${textData.totalPages} pages)`);
           }
@@ -111,7 +214,7 @@ export class ConversionService {
           try {
             const { OcrService } = await import('./ocrService.js');
             const ocrLang = process.env.OCR_LANGUAGE || 'eng';
-            textData = await OcrService.extractTextFromPdf(pdfFilePath, {
+              textData = await OcrService.extractTextFromPdf(documentFilePath, {
               lang: ocrLang,
               psm: parseInt(process.env.OCR_PSM || '6'),
               dpi: parseInt(process.env.OCR_DPI || '300')
@@ -127,8 +230,9 @@ export class ConversionService {
       }
 
       if (!textData) {
-        textData = await PdfExtractionService.extractText(pdfFilePath);
+          textData = await PdfExtractionService.extractText(documentFilePath);
         console.log(`[Job ${jobId}] Extracted text via pdfjs-dist (${textData.totalPages} pages)`);
+        }
       }
 
       await ConversionJobModel.update(jobId, {
@@ -200,16 +304,26 @@ export class ConversionService {
         progressPercentage: steps[5].progress
       });
 
+      let pageImagesData = null;
+      
+      if (isWordDocument) {
+        // For Word documents, use HTML pages instead of images
+        console.log(`[Job ${jobId}] Using HTML pages from Word document conversion`);
+        pageImagesData = pageHtmlData; // Already converted to HTML pages
+      } else {
+        // For PDF documents, render pages as images
       const htmlIntermediateDir = getHtmlIntermediateDir();
       const jobImagesDir = path.join(htmlIntermediateDir, `job_${jobId}`);
       await fs.mkdir(jobImagesDir, { recursive: true }).catch(() => {});
 
       console.log(`[Job ${jobId}] Rendering PDF pages as images (fixed-layout)...`);
-      const pageImagesData = await PdfExtractionService.renderPagesAsImages(pdfFilePath, jobImagesDir);
+        pageImagesData = await PdfExtractionService.renderPagesAsImages(documentFilePath, jobImagesDir);
       console.log(`[Job ${jobId}] Rendered ${pageImagesData.images.length} page images`);
+      }
 
       const useVisionExtraction = (process.env.GEMINI_VISION_EXTRACTION || 'true').toLowerCase() === 'true';
-      if (useVisionExtraction && pageImagesData.images.length > 0) {
+      // Skip vision extraction for Word documents (already have HTML content)
+      if (!isWordDocument && useVisionExtraction && pageImagesData && pageImagesData.images && pageImagesData.images.length > 0) {
         await ConversionJobModel.update(jobId, {
           currentStep: 'STEP_6_VISION_EXTRACTION',
           progressPercentage: 70
@@ -341,7 +455,8 @@ export class ConversionService {
         structuredContent,
         pageImagesData,
         pdf.original_file_name || `Document ${jobId}`,
-        pdfFilePath
+        isWordDocument ? null : documentFilePath, // Pass null for Word documents
+        isWordDocument // Flag to indicate Word document
       );
 
       try {
@@ -551,7 +666,7 @@ export class ConversionService {
     };
   }
 
-  static async generateFixedLayoutEpub(jobId, textData, structuredContent, pageImagesData, documentTitle, pdfFilePath = null) {
+  static async generateFixedLayoutEpub(jobId, textData, structuredContent, pageImagesData, documentTitle, pdfFilePath = null, isWordDocument = false) {
     const { AudioSyncModel } = await import('../models/AudioSync.js');
     const audioSyncs = await AudioSyncModel.findByJobId(jobId).catch(() => []);
     let hasAudio = audioSyncs && audioSyncs.length > 0;
@@ -592,94 +707,152 @@ export class ConversionService {
       `Converted Document ${jobId}`
     );
     
-    // Normalize and sort page images by pageNumber to keep alignment with PDF order
-    const pageImages = (pageImagesData.images || [])
-      .filter(img => img && (img.pageNumber || img.pdfPageNumber))
-      .map(img => ({
-        ...img,
-        pageNumber: img.pageNumber || img.pdfPageNumber || 0,
-        pdfPageNumber: img.pdfPageNumber || img.pageNumber || img.pageNumber || 0,
-        renderFailed: !!img.renderFailed
-      }))
-      .sort((a, b) => (a.pageNumber || 0) - (b.pageNumber || 0));
-    const renderedWidth = pageImagesData.renderedWidth || 0;
-    const renderedHeight = pageImagesData.renderedHeight || 0;
-    const pageWidthPoints = pageImagesData.maxWidth || 612.0;
-    const pageHeightPoints = pageImagesData.maxHeight || 792.0;
+    // Handle Word documents (HTML pages) vs PDF documents (images)
+    let pageImages = [];
+    let pageHtmls = [];
     
-    let actualPdfPageCount = pageImages.length;
+    if (isWordDocument && pageImagesData && pageImagesData.pages) {
+      // For Word documents, use HTML pages
+      pageHtmls = (pageImagesData.pages || [])
+        .filter(page => page && (page.pageNumber || page.pageNumber))
+        .map(page => ({
+          ...page,
+          pageNumber: page.pageNumber || 0
+        }))
+        .sort((a, b) => (a.pageNumber || 0) - (b.pageNumber || 0));
+      console.log(`[Job ${jobId}] Processing ${pageHtmls.length} HTML pages from Word document`);
+    } else {
+      // For PDF documents, use rendered images
+      pageImages = (pageImagesData?.images || [])
+        .filter(img => img && (img.pageNumber || img.pdfPageNumber))
+        .map(img => ({
+          ...img,
+          pageNumber: img.pageNumber || img.pdfPageNumber || 0,
+          pdfPageNumber: img.pdfPageNumber || img.pageNumber || img.pageNumber || 0,
+          renderFailed: !!img.renderFailed
+        }))
+        .sort((a, b) => (a.pageNumber || 0) - (b.pageNumber || 0));
+    }
+    
+    const renderedWidth = pageImagesData?.renderedWidth || 0;
+    const renderedHeight = pageImagesData?.renderedHeight || 0;
+    const pageWidthPoints = pageImagesData?.maxWidth || 612.0;
+    const pageHeightPoints = pageImagesData?.maxHeight || 792.0;
+    
+    let actualPageCount = isWordDocument ? pageHtmls.length : pageImages.length;
+    if (!isWordDocument && pdfFilePath) {
     try {
       const pdfParse = (await import('pdf-parse')).default;
       const pdfData = await fs.readFile(pdfFilePath);
       const pdfParseResult = await pdfParse(pdfData);
-      actualPdfPageCount = pdfParseResult.numpages;
-      console.log(`[Job ${jobId}] Actual PDF has ${actualPdfPageCount} pages (from PDF file)`);
+        actualPageCount = pdfParseResult.numpages;
+        console.log(`[Job ${jobId}] Actual PDF has ${actualPageCount} pages (from PDF file)`);
     } catch (err) {
       console.warn(`[Job ${jobId}] Could not get PDF page count, using rendered images count: ${pageImages.length}`);
+      }
     }
     
-    const totalPages = Math.max(actualPdfPageCount, pageImages.length, textData.pages?.length || 0);
-    console.log(`[Job ${jobId}] EPUB generation: ${totalPages} total pages (PDF: ${actualPdfPageCount}, images: ${pageImages.length}, text: ${textData.pages?.length || 0})`);
+    const totalPages = Math.max(actualPageCount, isWordDocument ? pageHtmls.length : pageImages.length, textData.pages?.length || 0);
+    console.log(`[Job ${jobId}] EPUB generation: ${totalPages} total pages (${isWordDocument ? 'HTML' : 'images'}: ${isWordDocument ? pageHtmls.length : pageImages.length}, text: ${textData.pages?.length || 0})`);
     
     const manifestItems = [];
     const spineItems = [];
     const tocItems = [];
     const smilFileNames = [];
 
-    console.log(`[Job ${jobId}] Page images after normalization: ${pageImages.length}`);
-    pageImages.slice(0, 5).forEach(img => {
-      console.log(`[Job ${jobId}] pageImage pageNumber=${img.pageNumber}, pdfPageNumber=${img.pdfPageNumber}, renderFailed=${img.renderFailed}, file=${img.fileName}`);
-    });
+    if (isWordDocument) {
+      console.log(`[Job ${jobId}] Processing ${pageHtmls.length} HTML pages from Word document`);
+    } else {
+      console.log(`[Job ${jobId}] Page images after normalization: ${pageImages.length}`);
+      pageImages.slice(0, 5).forEach(img => {
+        console.log(`[Job ${jobId}] pageImage pageNumber=${img.pageNumber}, pdfPageNumber=${img.pdfPageNumber}, renderFailed=${img.renderFailed}, file=${img.fileName}`);
+      });
+    }
     // Track mapping from source block IDs to actual XHTML IDs per page (for SMIL/audio and TTS alignment)
     let pageIdMappings = {};
     
-    // STEP 1: Add images to EPUB FIRST and track which ones succeeded
-    // This ensures we know which pages have valid images before generating XHTML
+    // STEP 1: For PDF documents, add images to EPUB FIRST and track which ones succeeded
+    // For Word documents, we'll use HTML content directly
     const successfullyAddedImages = new Map(); // Map<pageNumber, epubPath>
-    for (const img of pageImages) {
-      try {
-        // Verify image file exists before trying to add it
-        await fs.access(img.path);
-        const imageData = await fs.readFile(img.path);
-        const imageFileName = img.fileName.replace(/^image\//, '');
-        const imagePath = `image/${imageFileName}`;
-        zip.file(`OEBPS/${imagePath}`, imageData);
-        
-        // Copy image to assets directory for API access
-        const assetsImageFileName = `page_${img.pageNumber}_render.png`;
-        const assetsImagePath = path.join(imagesDir, assetsImageFileName);
+    const successfullyAddedHtmls = new Map(); // Map<pageNumber, htmlContent>
+    
+    if (isWordDocument) {
+      // For Word documents, store HTML content
+      for (const htmlPage of pageHtmls) {
+        successfullyAddedHtmls.set(htmlPage.pageNumber, htmlPage.html);
+        console.log(`[Job ${jobId}] Prepared HTML page ${htmlPage.pageNumber}`);
+      }
+    } else {
+      // For PDF documents, add images
+      for (const img of pageImages) {
         try {
-          await fs.copyFile(img.path, assetsImagePath);
-        } catch (copyError) {
-          console.warn(`[Job ${jobId}] Could not copy image to assets:`, copyError.message);
+          // Verify image file exists before trying to add it
+          await fs.access(img.path);
+          const imageData = await fs.readFile(img.path);
+          const imageFileName = img.fileName.replace(/^image\//, '');
+          const imagePath = `image/${imageFileName}`;
+          zip.file(`OEBPS/${imagePath}`, imageData);
+          
+          // Copy image to assets directory for API access
+          const assetsImageFileName = `page_${img.pageNumber}_render.png`;
+          const assetsImagePath = path.join(imagesDir, assetsImageFileName);
+          try {
+            await fs.copyFile(img.path, assetsImagePath);
+          } catch (copyError) {
+            console.warn(`[Job ${jobId}] Could not copy image to assets:`, copyError.message);
+          }
+          
+          const imageId = `page-img-${img.pageNumber}`;
+          const imageMimeType = img.fileName.toLowerCase().endsWith('.jpg') || img.fileName.toLowerCase().endsWith('.jpeg') 
+            ? 'image/jpeg' 
+            : 'image/png';
+          manifestItems.push(`<item id="${imageId}" href="${imagePath}" media-type="${imageMimeType}"/>`);
+          
+          img.epubPath = imagePath;
+          successfullyAddedImages.set(img.pageNumber, imagePath);
+          console.log(`[Job ${jobId}] Successfully added image for page ${img.pageNumber}: ${imagePath}`);
+        } catch (imgError) {
+          console.warn(`[Job ${jobId}] Could not add page image ${img.fileName} (page ${img.pageNumber}):`, imgError.message);
+          // Don't set epubPath - this page will be skipped
         }
-        
-        const imageId = `page-img-${img.pageNumber}`;
-        const imageMimeType = img.fileName.toLowerCase().endsWith('.jpg') || img.fileName.toLowerCase().endsWith('.jpeg') 
-          ? 'image/jpeg' 
-          : 'image/png';
-        manifestItems.push(`<item id="${imageId}" href="${imagePath}" media-type="${imageMimeType}"/>`);
-        
-        img.epubPath = imagePath;
-        successfullyAddedImages.set(img.pageNumber, imagePath);
-        console.log(`[Job ${jobId}] Successfully added image for page ${img.pageNumber}: ${imagePath}`);
-      } catch (imgError) {
-        console.warn(`[Job ${jobId}] Could not add page image ${img.fileName} (page ${img.pageNumber}):`, imgError.message);
-        // Don't set epubPath - this page will be skipped
       }
     }
     
-    // STEP 2: Generate XHTML pages ONLY for pages with successfully added images
-    for (let i = 0; i < pageImages.length; i++) {
-      const pageImage = pageImages[i];
-      const epubPageNum = pageImage.pageNumber;
-      const pdfPageNum = pageImage.pdfPageNumber || pageImage.pageNumber;
+    // STEP 2: Generate XHTML pages
+    // For Word documents: use HTML pages
+    // For PDF documents: use images
+    const pagesToProcess = isWordDocument ? pageHtmls : pageImages;
+    const totalPagesToProcess = pagesToProcess.length;
+    
+    for (let i = 0; i < pagesToProcess.length; i++) {
+      const pageItem = pagesToProcess[i];
+      const epubPageNum = pageItem.pageNumber;
       
-      // CRITICAL: Only generate page if image was successfully added
-      if (!successfullyAddedImages.has(epubPageNum)) {
-        console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Image not found or failed to add, skipping page generation`);
-        continue; // Skip this page if image is missing
+      // Update progress during EPUB generation (40% to 90%)
+      // Update every 10% of pages or on last page
+      if (i % Math.max(1, Math.floor(totalPagesToProcess / 10)) === 0 || i === totalPagesToProcess - 1) {
+        const progressPercent = 40 + Math.floor((i / totalPagesToProcess) * 50);
+        await ConversionJobModel.update(jobId, {
+          currentStep: 'STEP_7_EPUB_GENERATION',
+          progressPercentage: progressPercent
+        }).catch(err => console.error(`[Job ${jobId}] Error updating progress:`, err));
       }
+      
+      if (isWordDocument) {
+        // For Word documents, check if HTML content exists
+        if (!successfullyAddedHtmls.has(epubPageNum)) {
+          console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: HTML content not found, skipping page generation`);
+          continue;
+        }
+      } else {
+        // For PDF documents, check if image was successfully added
+        if (!successfullyAddedImages.has(epubPageNum)) {
+          console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Image not found or failed to add, skipping page generation`);
+          continue; // Skip this page if image is missing
+        }
+      }
+      
+      const pdfPageNum = isWordDocument ? epubPageNum : (pageItem.pdfPageNumber || pageItem.pageNumber);
       
       let page = null;
       
@@ -718,15 +891,15 @@ export class ConversionService {
       // LAST RESORT: Create empty page if no exact match found
       if (!page) {
         console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): No exact matching text data found, creating EMPTY page (no text will be displayed)`);
-        page = {
-          pageNumber: epubPageNum,
+          page = {
+            pageNumber: epubPageNum,
           text: '', // Empty text - no fallback text
           textBlocks: [], // Empty textBlocks
           charCount: 0,
-          width: pageWidthPoints,
-          height: pageHeightPoints
-        };
-      } else {
+            width: pageWidthPoints,
+            height: pageHeightPoints
+          };
+        } else {
         // VALIDATION: If matched page has different pageNumber, reject it to prevent text bleeding
         if (page.pageNumber !== epubPageNum && page.pageNumber !== pdfPageNum) {
           console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Matched page has pageNumber=${page.pageNumber} (mismatch detected, using empty page to prevent text bleeding)`);
@@ -785,10 +958,14 @@ export class ConversionService {
       );
       
       // Generate XHTML and get ID mapping for SMIL sync
-      // Use HTML-based pages with page image background for pixel-perfect layout
-      const { html: rawPageXhtml, idMapping } = this.generateHtmlBasedPageXHTML(
+      let rawPageXhtml, idMapping;
+      
+      if (isWordDocument) {
+        // For Word documents, use HTML content directly
+        const htmlContent = successfullyAddedHtmls.get(epubPageNum);
+        const result = this.generateHtmlBasedPageXHTMLFromWord(
         page,
-        pageImage,
+          htmlContent,
         actualPageNum,
         actualPageWidthPoints,
         actualPageHeightPoints,
@@ -796,6 +973,23 @@ export class ConversionService {
         actualRenderedHeight,
         hasAudio
       );
+        rawPageXhtml = result.html;
+        idMapping = result.idMapping;
+      } else {
+        // For PDF documents, use image background
+        const result = this.generateHtmlBasedPageXHTML(
+          page,
+          pageItem, // pageImage
+          actualPageNum,
+          actualPageWidthPoints,
+          actualPageHeightPoints,
+          actualRenderedWidth,
+          actualRenderedHeight,
+          hasAudio
+        );
+        rawPageXhtml = result.html;
+        idMapping = result.idMapping;
+      }
       // Guard against accidental concatenation (trim anything after closing </html>)
       const pageXhtml = rawPageXhtml && rawPageXhtml.includes('</html>')
         ? rawPageXhtml.slice(0, rawPageXhtml.indexOf('</html>') + 7)
@@ -1006,7 +1200,7 @@ export class ConversionService {
       throw new Error('EPUB spine is empty - no pages to display');
     }
     
-    console.log(`[Job ${jobId}] EPUB structure: ${manifestItems.length} manifest items, ${spineItems.length} spine items, ${pageImages.length} images`);
+    console.log(`[Job ${jobId}] EPUB structure: ${manifestItems.length} manifest items, ${spineItems.length} spine items, ${isWordDocument ? pageHtmls.length : pageImages.length} ${isWordDocument ? 'HTML pages' : 'images'}`);
     
     const epubBuffer = await zip.generateAsync({
       type: 'nodebuffer',
@@ -1228,12 +1422,12 @@ export class ConversionService {
       
       // Only create blocks if cleaned text is not empty
       if (cleanText.length > 0) {
-        textBlocks = GeminiService.createSimpleTextBlocks(
-          cleanText || page.text,
-          pageNumber,
-          pageWidthPoints,
-          pageHeightPoints
-        );
+      textBlocks = GeminiService.createSimpleTextBlocks(
+        cleanText || page.text,
+        pageNumber,
+        pageWidthPoints,
+        pageHeightPoints
+      );
       }
     }
     
@@ -1241,20 +1435,20 @@ export class ConversionService {
     if (textBlocks.length === 0 && hasPageText) {
       const trimmedText = page.text.trim();
       if (trimmedText.length > 0 && !trimmedText.match(/^Page\s+\d+[:\-]?\s*$/i)) {
-        textBlocks = [{
-          id: `emergency_block_${pageNumber}`,
+      textBlocks = [{
+        id: `emergency_block_${pageNumber}`,
           text: trimmedText,
-          type: 'paragraph',
-          level: null,
-          isSimple: true,
-          boundingBox: null,
-          fontSize: 22,
-          fontName: 'Arial',
-          isBold: false,
-          isItalic: false,
-          readingOrder: 0,
-          pageNumber: pageNumber
-        }];
+        type: 'paragraph',
+        level: null,
+        isSimple: true,
+        boundingBox: null,
+        fontSize: 22,
+        fontName: 'Arial',
+        isBold: false,
+        isItalic: false,
+        readingOrder: 0,
+        pageNumber: pageNumber
+      }];
       }
     }
     
@@ -1443,7 +1637,7 @@ export class ConversionService {
           const blockId = `ocr_block_${pageNumber}_${paraIndex}`;
           html += `
      <p id="${blockId}" lang="en" xml:lang="en">${cleanPara}</p>`;
-            paraIndex++;
+          paraIndex++;
         }
       }
       
@@ -1700,7 +1894,7 @@ export class ConversionService {
       overflow: visible;
       z-index: 2;
     }
-    
+
     /* When media overlay activates, make highlight visible */
     /* EPUB standard: Thorium applies this class automatically when reading matching ID */
     .text-block.-epub-media-overlay-active,
@@ -1978,8 +2172,8 @@ export class ConversionService {
     </div>`;
 
     // Close page-container
-    html += `
-  </div>`;
+      html += `
+    </div>`;
 
     // Generate text-content div with paragraphs for TTS (like reference file)
     // This is essential for player's built-in TTS to work properly
@@ -2017,6 +2211,257 @@ export class ConversionService {
     <p id="block_${pageNumber}_0" lang="en" xml:lang="en" aria-hidden="false">${escapedText}</p>`;
     }
     
+    html += `
+  </div>
+</body>
+</html>`;
+
+    return { html, idMapping };
+  }
+
+  /**
+   * Generate XHTML page from Word document HTML content
+   * Embeds HTML directly instead of using image background
+   */
+  static generateHtmlBasedPageXHTMLFromWord(page, htmlContent, pageNumber, pageWidthPoints, pageHeightPoints, renderedWidth, renderedHeight, hasAudio = false) {
+    const idMapping = {};
+
+    const safeRenderedWidth = renderedWidth && renderedWidth > 0
+      ? renderedWidth
+      : Math.ceil((pageWidthPoints || 612) * (300 / 72));
+    const safeRenderedHeight = renderedHeight && renderedHeight > 0
+      ? renderedHeight
+      : Math.ceil((pageHeightPoints || 792) * (300 / 72));
+
+    // Extract styles from HTML content before processing
+    const extractedStyles = [];
+    let htmlContentForProcessing = htmlContent || '';
+    htmlContentForProcessing = htmlContentForProcessing.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (match, styleContent) => {
+      extractedStyles.push(styleContent);
+      return '';
+    });
+
+    let html = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en" xml:lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=${safeRenderedWidth}px, height=${safeRenderedHeight}px, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Page ${pageNumber}</title>
+  <style type="text/css">
+    /*<![CDATA[*/
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    
+    html, body {
+      margin: 0;
+      padding: 0;
+      width: ${safeRenderedWidth}px;
+      height: ${safeRenderedHeight}px;
+      overflow: auto;
+      background-color: white;
+      font-family: Arial, sans-serif;
+    }
+    
+    .page-container {
+      position: relative;
+      width: 100%;
+      min-height: ${safeRenderedHeight}px;
+      background-color: white;
+      /* Preserve original Word document padding/margins */
+      padding: 0;
+      margin: 0;
+    }
+    
+    .word-content {
+      width: 100%;
+      max-width: 100%;
+      /* Preserve exact positioning and layout from Word */
+      position: relative;
+      /* Don't override Word's original spacing */
+      margin: 0;
+      padding: 0;
+    }
+    
+    /* Preserve all Word document styles - don't override */
+    .word-content * {
+      /* Allow Word's inline styles to take precedence */
+      /* Only set defaults if not already specified */
+    }
+    
+    .word-content h1, .word-content h2, .word-content h3,
+    .word-content h4, .word-content h5, .word-content h6 {
+      /* Preserve Word's original margins and spacing */
+      margin: inherit;
+      font-weight: inherit;
+      color: inherit;
+      font-family: inherit;
+      font-size: inherit;
+      text-align: inherit;
+    }
+    
+    .word-content p {
+      /* Preserve Word's original spacing and formatting */
+      margin: inherit;
+      padding: inherit;
+      line-height: inherit;
+      color: inherit;
+      font-family: inherit;
+      font-size: inherit;
+      text-align: inherit;
+    }
+    
+    .word-content span, .word-content div, .word-content td, .word-content th {
+      /* Preserve all inline formatting */
+      color: inherit;
+      font-family: inherit;
+      font-size: inherit;
+      font-weight: inherit;
+      font-style: inherit;
+      text-decoration: inherit;
+      background-color: inherit;
+    }
+    
+    .word-content img {
+      /* Preserve image dimensions and positioning from Word */
+      max-width: none;
+      height: auto;
+      position: relative;
+      /* Allow Word's inline styles to control size and position */
+    }
+    
+    /* Preserve table formatting */
+    .word-content table {
+      border-collapse: collapse;
+      width: 100%;
+      /* Preserve Word's table styles */
+    }
+    
+    .word-content td, .word-content th {
+      /* Preserve cell padding and borders from Word */
+      padding: inherit;
+      border: inherit;
+    }
+    
+    /* Preserve extracted styles from Word document */
+    ${extractedStyles.length > 0 ? extractedStyles.join('\n    ') : ''}
+    
+    /* LAYER 3: TTS Source (Hidden but accessible for TTS engine) */
+    .text-content {
+      position: static;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+      z-index: 3;
+      border: 0;
+      padding: 0;
+      margin: -1px;
+    }
+    
+    .text-content p, .text-content h1, .text-content h2,
+    .text-content h3, .text-content h4, .text-content h5, .text-content h6 {
+      margin: 0;
+      padding: 0;
+      color: #000;
+      display: block;
+      position: static;
+      white-space: normal;
+      word-wrap: break-word;
+      font-size: 1em;
+      line-height: 1.2;
+    }
+    /* Preserve extracted styles from Word document */
+    ${extractedStyles.length > 0 ? extractedStyles.join('\n    ') : ''}
+    /*]]>*/
+  </style>
+</head>
+<body class="html-based-page" id="page${pageNumber}">
+  <div class="page-container">
+    <div class="word-content">`;
+
+    // Embed the HTML content from Word document
+    // CRITICAL: Preserve ALL formatting, styles, colors, positioning, and attributes
+    let cleanHtml = htmlContentForProcessing || '';
+    
+    // Remove script tags for security (styles already extracted above)
+    cleanHtml = cleanHtml.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '');
+    
+    // CRITICAL: Preserve ALL inline styles and attributes
+    // Mammoth preserves inline style attributes, colors, fonts, alignment, etc.
+    // DO NOT strip any style attributes - they contain Word's original formatting
+    // This includes: color, font-family, font-size, text-align, margin, padding, position, etc.
+    
+    // Ensure all elements have proper IDs for TTS highlighting
+    // Extract text blocks and create IDs
+    const textBlocks = page.textBlocks || [];
+    let blockIndex = 0;
+    
+    // Add IDs to paragraphs and headings in the HTML
+    // CRITICAL: Preserve all existing attributes including style, class, etc.
+    cleanHtml = cleanHtml.replace(/<(p|h[1-6]|div|span|td|th|li)[^>]*>(.*?)<\/\1>/gi, (match, tag, content) => {
+      const block = textBlocks[blockIndex];
+      const blockId = block ? block.id : `block_${pageNumber}_${blockIndex}`;
+      blockIndex++;
+      
+      if (block) {
+        idMapping[block.id] = blockId;
+      }
+      
+      // Extract the opening tag with all attributes
+      const tagStart = match.substring(0, match.indexOf('>'));
+      
+      // Check if id already exists
+      if (tagStart.includes('id=')) {
+        // Replace existing id
+        return match.replace(/id="[^"]*"/i, `id="${blockId}"`);
+      } else {
+        // Add id attribute while preserving all other attributes
+        // Insert id after the tag name, before other attributes
+        const tagNameEnd = tagStart.indexOf(' ');
+        if (tagNameEnd > 0) {
+          // Has other attributes - insert id after tag name
+          return `<${tagStart.substring(0, tagNameEnd)} id="${blockId}" ${tagStart.substring(tagNameEnd + 1)}>${content}</${tag}>`;
+        } else {
+          // No other attributes - just add id
+          return `<${tag} id="${blockId}">${content}</${tag}>`;
+        }
+      }
+    });
+    
+    html += cleanHtml;
+    html += `
+    </div>
+  </div>
+  
+  <!-- TTS Source Layer -->
+  <div class="text-content" epub:type="bodymatter" role="main" aria-label="Page ${pageNumber} content" aria-hidden="false">`;
+    
+    // Generate paragraphs from textBlocks for TTS
+    if (textBlocks.length > 0) {
+      let actualBlockIndex = 0;
+      for (let i = 0; i < textBlocks.length; i++) {
+        const block = textBlocks[i];
+        if (block.text && block.text.trim().length > 0) {
+          const blockId = block.id || `block_${pageNumber}_${actualBlockIndex}`;
+          const escapedText = this.escapeHtml(block.text.trim());
+          html += `
+    <p id="${blockId}" lang="en" xml:lang="en" aria-hidden="false">${escapedText}</p>`;
+          actualBlockIndex++;
+        }
+      }
+    } else if (page.text && page.text.trim().length > 0) {
+      // Fallback: use page text
+      const escapedText = this.escapeHtml(page.text.trim());
+      html += `
+    <p id="block_${pageNumber}_0" lang="en" xml:lang="en" aria-hidden="false">${escapedText}</p>`;
+    }
+
     html += `
   </div>
 </body>

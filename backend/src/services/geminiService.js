@@ -1088,5 +1088,610 @@ Return ONLY valid JSON array, no markdown, no explanations:
 
     return toc;
   }
+
+  /**
+   * Extract HTML directly from Word document using AI
+   * Sends the Word document file directly to Gemini for extraction and conversion
+   * @param {string} docxFilePath - Path to the Word document file
+   * @param {Object} options - Options for extraction
+   * @returns {Promise<Object>} Object with pages array containing HTML and text blocks
+   */
+  static async extractHtmlFromWordDocument(docxFilePath, options = {}) {
+    const client = this.getClient();
+    if (!client) {
+      throw new Error('Gemini API not available');
+    }
+
+    // Check circuit breaker
+    if (!CircuitBreakerService.canMakeRequest('Gemini')) {
+      throw new Error('Gemini API circuit breaker is OPEN');
+    }
+
+    try {
+      console.log(`[Gemini] Reading Word document file: ${docxFilePath}`);
+      const fileBuffer = await fs.readFile(docxFilePath);
+      const fileSizeMB = (fileBuffer.length / 1024 / 1024).toFixed(2);
+      console.log(`[Gemini] Word document size: ${fileSizeMB} MB`);
+
+      // Check file size limit (Gemini has ~20MB limit for file uploads)
+      if (fileBuffer.length > 20 * 1024 * 1024) {
+        throw new Error(`Word document is too large (${fileSizeMB} MB). Maximum size is 20 MB.`);
+      }
+
+      const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+      console.log(`[Gemini] Using model: ${modelName}`);
+      const model = client.getGenerativeModel({ model: modelName });
+
+      console.log(`[Gemini] Uploading Word document to Gemini for HTML extraction...`);
+      
+      // Note: Gemini API may not support Word documents directly via inlineData
+      // We'll try it, but it may fail and fall back to mammoth
+      const fileData = {
+        inlineData: {
+          data: fileBuffer.toString('base64'),
+          mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        }
+      };
+
+      const prompt = `You are an expert at extracting and converting Word documents to HTML/XHTML while preserving EXACT visual appearance, formatting, layout, structure, fonts, colors, images, styles, positions, and alignment.
+
+**CRITICAL REQUIREMENTS - Preserve EVERYTHING EXACTLY AS IT APPEARS:**
+
+1. **EXACT VISUAL APPEARANCE - PIXEL PERFECT**:
+   - The output HTML must look IDENTICAL to the original Word document when rendered
+   - Every element must be positioned EXACTLY where it appears in the document
+   - Preserve exact pixel positions using position: absolute with precise left, top, width, height values
+   - Calculate positions from the document's coordinate system (top-left origin)
+   - Preserve all spacing, margins, padding, borders EXACTLY as shown
+   - Maintain relative positioning between elements to match the original layout
+
+2. **EXACT STRUCTURE & LAYOUT**:
+   - Preserve document structure exactly: headers, paragraphs, lists, tables, sections
+   - Use semantic HTML: h1-h6 for headings, p for paragraphs, ul/ol/li for lists
+   - Preserve table structures (table, thead, tbody, tr, td, th) with EXACT styling and dimensions
+   - Preserve table cell widths, heights, borders, padding, alignment
+   - Use div containers for complex layouts with exact positioning
+   - Split content into pages based on page breaks (---PAGE BREAK--- markers)
+   - Preserve page margins, headers, footers exactly
+
+3. **EXACT FONTS - PRESERVE EVERY DETAIL**:
+   - Preserve font-family EXACTLY as specified (e.g., 'Arial', 'Times New Roman', 'Calibri', 'Verdana')
+   - Preserve font-size EXACTLY in pixels (px) or points (pt) - use the exact size from the document
+   - Preserve font-weight EXACTLY: bold, normal, or numeric values (100-900)
+   - Preserve font-style EXACTLY: italic, normal, oblique
+   - Preserve text-decoration EXACTLY: underline, none, line-through, overline
+   - Preserve font-variant: small-caps, normal
+   - Preserve letter-spacing, word-spacing EXACTLY
+   - Preserve line-height EXACTLY (e.g., 1.5, 1.2, or specific pixel values)
+
+4. **EXACT COLORS - MATCH EVERY COLOR**:
+   - Preserve text colors EXACTLY using color: #hex (e.g., #FF0000, #000000, #333333)
+   - Preserve background colors EXACTLY using background-color: #hex
+   - Preserve border colors EXACTLY using border-color: #hex
+   - Preserve highlight colors if present
+   - Use EXACT color values from the document - do not approximate or change colors
+   - Preserve transparency/opacity if present (rgba values)
+
+5. **EXACT IMAGES - PRESERVE EVERYTHING**:
+   - Extract ALL images and include as base64 data URIs: src="data:image/png;base64,..."
+   - Preserve EXACT image positions (left, top coordinates in pixels)
+   - Preserve EXACT image sizes (width, height in pixels)
+   - Preserve image styling: borders, padding, margins, alignment
+   - Preserve image aspect ratios exactly
+   - Include alt text for accessibility
+   - Preserve image wrapping (text around images) if present
+   - Preserve image rotation if present
+
+6. **EXACT STYLES & ALIGNMENT - EVERY DETAIL**:
+   - Use inline styles for ALL formatting - do not use CSS classes
+   - Preserve text-align EXACTLY: left, center, right, justify
+   - Preserve vertical-align EXACTLY: top, middle, bottom, baseline
+   - Preserve line-height EXACTLY (specific values, not approximations)
+   - Preserve letter-spacing EXACTLY (specific pixel or em values)
+   - Preserve word-spacing EXACTLY
+   - Preserve borders EXACTLY: width, style, color for all sides
+   - Preserve padding EXACTLY: top, right, bottom, left (specific pixel values)
+   - Preserve margins EXACTLY: top, right, bottom, left (specific pixel values)
+   - Preserve box-shadow if present
+   - Preserve text-shadow if present
+   - Preserve white-space handling (pre, nowrap, normal)
+
+7. **EXACT POSITIONING - PIXEL PERFECT**:
+   - Use position: absolute for elements that need exact placement
+   - Calculate EXACT pixel coordinates from the document
+   - Preserve z-index for layering (elements on top of others)
+   - Preserve float properties if present (left, right, none)
+   - Preserve clear properties if present
+   - Preserve transform properties if present (rotation, scaling)
+
+8. **EXACT TEXT CONTENT**:
+   - Preserve ALL text exactly as it appears - do not modify, summarize, or change text
+   - Preserve special characters, symbols, emojis exactly
+   - Preserve whitespace and line breaks where important
+   - Preserve text formatting within paragraphs (bold, italic, underline within text)
+   - Preserve hyperlinks with exact URLs and display text
+
+**Output Format:**
+- Return a JSON object with this structure:
+{
+  "pages": [
+    {
+      "pageNumber": 1,
+      "html": "<div class=\"word-content\" style=\"position: relative; width: 792px; height: 612px; background: white;\"><h1 style=\"position: absolute; left: 72px; top: 72px; font-family: 'Arial'; font-size: 24px; font-weight: bold; color: #000000; text-align: left;\">Title</h1><p style=\"position: absolute; left: 72px; top: 120px; width: 648px; font-family: 'Times New Roman'; font-size: 12px; color: #333333; line-height: 1.5; text-align: justify;\">Content...</p><img src=\"data:image/png;base64,...\" style=\"position: absolute; left: 200px; top: 300px; width: 200px; height: 150px;\" alt=\"Description\"/></div>",
+      "text": "All text content on this page",
+      "textBlocks": [
+        {
+          "id": "block_1_0",
+          "text": "Text content",
+          "type": "paragraph",
+          "readingOrder": 0
+        }
+      ]
+    }
+  ],
+  "totalPages": 1,
+  "metadata": {
+    "title": "Document Title",
+    "language": "en"
+  }
+}
+
+**CRITICAL OUTPUT REQUIREMENTS:**
+- Each page's HTML must be valid XHTML (all tags closed, attributes quoted)
+- Use ONLY inline styles - NEVER use CSS classes or external stylesheets
+- Every element MUST have explicit positioning and styling
+- Use position: absolute with EXACT pixel coordinates (left, top, width, height)
+- Preserve EXACT font sizes, colors, spacing, alignment
+- Include ALL images as base64 data URIs with EXACT positions and sizes
+- Split the document into pages based on page breaks
+- Extract text blocks for each page for TTS functionality
+- The rendered HTML must look IDENTICAL to the original Word document
+
+**Example of exact preservation:**
+- If text is at position (72px, 144px) in the document, use: style="position: absolute; left: 72px; top: 144px; ..."
+- If font is 'Arial' 14pt bold red, use: style="font-family: 'Arial'; font-size: 14pt; font-weight: bold; color: #FF0000; ..."
+- If image is 200x150px at (300px, 400px), use: <img style="position: absolute; left: 300px; top: 400px; width: 200px; height: 150px; ..."/>
+
+Analyze the Word document VERY CAREFULLY and extract HTML that preserves EVERYTHING EXACTLY as it appears - pixel positions, fonts, colors, sizes, spacing, images, structure, layout, alignment. The output must be visually IDENTICAL to the original document.`;
+
+      console.log(`[Gemini] Calling Gemini API for Word document HTML extraction (this may take 30-90 seconds)...`);
+      const startTime = Date.now();
+      
+      // Add timeout wrapper (180 seconds max for full document processing)
+      const timeoutMs = 180000; // 3 minutes
+      const apiCall = this.generateWithBackoff(model, [
+        { text: prompt },
+        fileData
+      ], options.priority || 1);
+      
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Gemini API timeout after ${timeoutMs/1000}s`)), timeoutMs);
+      });
+      
+      const result = await Promise.race([apiCall, timeoutPromise]);
+      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[Gemini] API call completed in ${elapsedTime}s`);
+
+      if (!result) {
+        throw new Error('Gemini API call failed or was rate limited');
+      }
+
+      console.log(`[Gemini] Processing response...`);
+      const response = await result.response;
+      let responseText = response.text() || '';
+      console.log(`[Gemini] Received ${(responseText.length / 1024).toFixed(2)} KB of response`);
+
+      // Try to parse JSON from response
+      let extractedData;
+      try {
+        // Remove markdown code blocks if present
+        responseText = responseText
+          .replace(/```json\n?/gi, '')
+          .replace(/```\n?/g, '')
+          .trim();
+        
+        extractedData = JSON.parse(responseText);
+      } catch (parseError) {
+        console.warn('[Gemini] Could not parse JSON response, trying to extract HTML directly...');
+        // Fallback: treat entire response as HTML for page 1
+        extractedData = {
+          pages: [{
+            pageNumber: 1,
+            html: responseText,
+            text: responseText.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+            textBlocks: []
+          }],
+          totalPages: 1,
+          metadata: { title: 'Extracted Document', language: 'en' }
+        };
+      }
+
+      // Extract text blocks from HTML if not provided
+      if (extractedData.pages) {
+        for (const page of extractedData.pages) {
+          if (!page.textBlocks || page.textBlocks.length === 0) {
+            page.textBlocks = this.extractTextBlocksFromHtml(page.html || '', page.pageNumber);
+          }
+          if (!page.text) {
+            page.text = page.textBlocks.map(b => b.text).join(' ').trim();
+          }
+        }
+      }
+
+      return {
+        pages: extractedData.pages || [],
+        totalPages: extractedData.totalPages || extractedData.pages?.length || 1,
+        metadata: extractedData.metadata || { title: 'Extracted Document', language: 'en' },
+        allText: extractedData.pages?.map(p => p.text).join('\n\n') || ''
+      };
+    } catch (error) {
+      console.error(`[Gemini] Error extracting HTML from Word document:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Convert Word document page HTML to enhanced HTML/XHTML with full formatting preservation
+   * Uses Gemini to enhance and format the HTML directly (faster than image-based conversion)
+   * @param {string} pageHtml - HTML content for the page
+   * @param {number} pageNumber - Page number
+   * @param {Object} options - Options for HTML generation
+   * @returns {Promise<Object>} Object with html, textBlocks, and metadata
+   */
+  static async convertWordPageHtmlToEnhancedHtml(pageHtml, pageNumber, options = {}) {
+    const client = this.getClient();
+    if (!client) {
+      throw new Error('Gemini API not available');
+    }
+
+    // Check circuit breaker
+    if (!CircuitBreakerService.canMakeRequest('Gemini')) {
+      throw new Error('Gemini API circuit breaker is OPEN');
+    }
+
+    try {
+      const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+      console.log(`[Gemini] Using model: ${modelName} for page ${pageNumber}`);
+      const model = client.getGenerativeModel({ model: modelName });
+      
+      console.log(`[Gemini] Preparing HTML enhancement request for page ${pageNumber}...`);
+      const htmlSizeKB = (pageHtml.length / 1024).toFixed(0);
+      console.log(`[Gemini] HTML size: ${htmlSizeKB} KB`);
+
+      const prompt = `You are an expert at enhancing Word document HTML to XHTML while preserving EXACT visual appearance, formatting, layout, structure, fonts, colors, images, styles, positions, and alignment. The output must look IDENTICAL to the original.
+
+**CRITICAL REQUIREMENTS - Preserve EVERYTHING EXACTLY AS IT APPEARS:**
+
+1. **EXACT VISUAL APPEARANCE - PIXEL PERFECT**:
+   - The output HTML must look IDENTICAL to the original when rendered
+   - Every element must be positioned EXACTLY where it appears
+   - Preserve exact pixel positions using position: absolute with precise left, top, width, height values
+   - Preserve all spacing, margins, padding, borders EXACTLY as shown
+   - Maintain relative positioning between elements to match the original layout
+
+2. **EXACT STRUCTURE & LAYOUT**:
+   - Preserve document structure exactly: headers, paragraphs, lists, tables, sections
+   - Use semantic HTML: h1-h6 for headings, p for paragraphs, ul/ol/li for lists
+   - Preserve table structures (table, thead, tbody, tr, td, th) with EXACT styling and dimensions
+   - Preserve table cell widths, heights, borders, padding, alignment
+   - Use div containers for complex layouts with exact positioning
+
+3. **EXACT FONTS - PRESERVE EVERY DETAIL**:
+   - Preserve font-family EXACTLY as specified (e.g., 'Arial', 'Times New Roman', 'Calibri', 'Verdana')
+   - Preserve font-size EXACTLY in pixels (px) or points (pt) - use the exact size
+   - Preserve font-weight EXACTLY: bold, normal, or numeric values (100-900)
+   - Preserve font-style EXACTLY: italic, normal, oblique
+   - Preserve text-decoration EXACTLY: underline, none, line-through, overline
+   - Preserve font-variant: small-caps, normal
+   - Preserve letter-spacing, word-spacing EXACTLY
+   - Preserve line-height EXACTLY (e.g., 1.5, 1.2, or specific pixel values)
+
+4. **EXACT COLORS - MATCH EVERY COLOR**:
+   - Preserve text colors EXACTLY using color: #hex (e.g., #FF0000, #000000, #333333)
+   - Preserve background colors EXACTLY using background-color: #hex
+   - Preserve border colors EXACTLY using border-color: #hex
+   - Preserve highlight colors if present
+   - Use EXACT color values - do not approximate or change colors
+   - Preserve transparency/opacity if present (rgba values)
+
+5. **EXACT IMAGES - PRESERVE EVERYTHING**:
+   - Preserve ALL images as base64 data URIs: src="data:image/png;base64,..."
+   - Preserve EXACT image positions (left, top coordinates in pixels)
+   - Preserve EXACT image sizes (width, height in pixels)
+   - Preserve image styling: borders, padding, margins, alignment
+   - Preserve image aspect ratios exactly
+   - Include alt text for accessibility
+   - Preserve image wrapping (text around images) if present
+   - Preserve image rotation if present
+
+6. **EXACT STYLES & ALIGNMENT - EVERY DETAIL**:
+   - Use inline styles for ALL formatting - do not use CSS classes
+   - Preserve text-align EXACTLY: left, center, right, justify
+   - Preserve vertical-align EXACTLY: top, middle, bottom, baseline
+   - Preserve line-height EXACTLY (specific values, not approximations)
+   - Preserve letter-spacing EXACTLY (specific pixel or em values)
+   - Preserve word-spacing EXACTLY
+   - Preserve borders EXACTLY: width, style, color for all sides
+   - Preserve padding EXACTLY: top, right, bottom, left (specific pixel values)
+   - Preserve margins EXACTLY: top, right, bottom, left (specific pixel values)
+   - Preserve box-shadow if present
+   - Preserve text-shadow if present
+   - Preserve white-space handling (pre, nowrap, normal)
+
+7. **EXACT POSITIONING - PIXEL PERFECT**:
+   - Use position: absolute for elements that need exact placement
+   - Calculate EXACT pixel coordinates from the document
+   - Preserve z-index for layering (elements on top of others)
+   - Preserve float properties if present (left, right, none)
+   - Preserve clear properties if present
+   - Preserve transform properties if present (rotation, scaling)
+
+8. **EXACT TEXT CONTENT**:
+   - Preserve ALL text exactly as it appears - do not modify, summarize, or change text
+   - Preserve special characters, symbols, emojis exactly
+   - Preserve whitespace and line breaks where important
+   - Preserve text formatting within paragraphs (bold, italic, underline within text)
+   - Preserve hyperlinks with exact URLs and display text
+
+**Input HTML:**
+${pageHtml}
+
+**Output Format:**
+- Return ONLY the XHTML body content (no <html>, <head>, <body> tags)
+- Start with a container div: <div class="word-content" style="position: relative; width: [width]px; height: [height]px; background: white;">
+- Use valid XHTML (all tags must be closed, attributes quoted)
+- Use ONLY inline styles - NEVER use CSS classes or external stylesheets
+- Every element MUST have explicit positioning and styling
+- Use position: absolute with EXACT pixel coordinates (left, top, width, height)
+- Preserve EXACT font sizes, colors, spacing, alignment
+- Include ALL images as base64 data URIs with EXACT positions and sizes
+- The rendered HTML must look IDENTICAL to the original
+
+**Example of exact preservation:**
+- If text is at position (72px, 144px), use: style="position: absolute; left: 72px; top: 144px; ..."
+- If font is 'Arial' 14pt bold red, use: style="font-family: 'Arial'; font-size: 14pt; font-weight: bold; color: #FF0000; ..."
+- If image is 200x150px at (300px, 400px), use: <img style="position: absolute; left: 300px; top: 400px; width: 200px; height: 150px; ..."/>
+
+Analyze the HTML VERY CAREFULLY and generate enhanced XHTML that preserves EVERYTHING EXACTLY as it appears - pixel positions, fonts, colors, sizes, spacing, images, structure, layout, alignment. The output must be visually IDENTICAL to the original.`;
+
+      console.log(`[Gemini] Calling Gemini API for page ${pageNumber} HTML enhancement (this may take 10-30 seconds)...`);
+      const startTime = Date.now();
+      
+      // Add timeout wrapper (60 seconds max for HTML processing - faster than images)
+      const timeoutMs = 60000; // 1 minute
+      const apiCall = this.generateWithBackoff(model, [
+        { text: prompt }
+      ], options.priority || 1);
+      
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Gemini API timeout after ${timeoutMs/1000}s`)), timeoutMs);
+      });
+      
+      const result = await Promise.race([apiCall, timeoutPromise]);
+      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[Gemini] API call completed for page ${pageNumber} in ${elapsedTime}s`);
+
+      if (!result) {
+        throw new Error('Gemini API call failed or was rate limited');
+      }
+
+      console.log(`[Gemini] Processing response for page ${pageNumber}...`);
+      const response = await result.response;
+      let htmlContent = response.text() || '';
+      console.log(`[Gemini] Received ${(htmlContent.length / 1024).toFixed(2)} KB of HTML for page ${pageNumber}`);
+
+      // Clean up the response - remove markdown code blocks if present
+      htmlContent = htmlContent
+        .replace(/```html\n?/gi, '')
+        .replace(/```xhtml\n?/gi, '')
+        .replace(/```\n?/g, '')
+        .trim();
+
+      // Extract text blocks from the HTML for TTS
+      const textBlocks = this.extractTextBlocksFromHtml(htmlContent, pageNumber);
+
+      return {
+        html: htmlContent,
+        textBlocks: textBlocks,
+        pageNumber: pageNumber,
+        width: options.width || 792,
+        height: options.height || 612
+      };
+    } catch (error) {
+      console.error(`[Gemini] Error converting Word page ${pageNumber} HTML to enhanced HTML:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Convert Word document page image to HTML/XHTML with full formatting preservation
+   * Uses Gemini vision to analyze the page and generate perfectly formatted HTML
+   * @param {string} imagePath - Path to the page image
+   * @param {number} pageNumber - Page number
+   * @param {Object} options - Options for HTML generation
+   * @returns {Promise<Object>} Object with html, textBlocks, and metadata
+   */
+  static async convertWordPageImageToHtml(imagePath, pageNumber, options = {}) {
+    const client = this.getClient();
+    if (!client) {
+      throw new Error('Gemini API not available');
+    }
+
+    // Check circuit breaker
+    if (!CircuitBreakerService.canMakeRequest('Gemini')) {
+      throw new Error('Gemini API circuit breaker is OPEN');
+    }
+
+    try {
+      console.log(`[Gemini] Reading image file for page ${pageNumber}...`);
+      const imageBuffer = await fs.readFile(imagePath);
+      const imageSizeMB = (imageBuffer.length / 1024 / 1024).toFixed(2);
+      const imageSizeKB = (imageBuffer.length / 1024).toFixed(0);
+      console.log(`[Gemini] Image size: ${imageSizeMB} MB (${imageSizeKB} KB)`);
+      
+      // Check if image is too large (Gemini has ~20MB limit for base64)
+      if (imageBuffer.length > 15 * 1024 * 1024) { // 15MB warning
+        console.warn(`[Gemini] Warning: Image is large (${imageSizeMB} MB). This may cause slow responses.`);
+      }
+      
+      const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+      console.log(`[Gemini] Using model: ${modelName}`);
+      const model = client.getGenerativeModel({ model: modelName });
+      
+      console.log(`[Gemini] Preparing API request for page ${pageNumber}...`);
+      console.log(`[Gemini] Encoding image to base64...`);
+      const base64Start = Date.now();
+      const base64Image = imageBuffer.toString('base64');
+      const base64Time = ((Date.now() - base64Start) / 1000).toFixed(2);
+      const base64SizeKB = (base64Image.length / 1024).toFixed(0);
+      console.log(`[Gemini] Base64 encoding completed in ${base64Time}s (size: ${base64SizeKB} KB)`);
+
+      const prompt = `You are an expert at converting Word document pages to HTML/XHTML while preserving EXACT formatting, layout, structure, fonts, colors, images, styles, positions, and alignment.
+
+**CRITICAL REQUIREMENTS - Preserve EVERYTHING:**
+
+1. **Layout & Positioning**: 
+   - Exact pixel positioning using position: absolute with left, top, width, height
+   - Preserve all spacing, margins, padding exactly as shown
+   - Maintain relative positioning between elements
+
+2. **Structure**: 
+   - Use semantic HTML: h1-h6 for headings, p for paragraphs, ul/ol/li for lists
+   - Preserve table structures (table, thead, tbody, tr, td, th) with exact styling
+   - Use div containers for complex layouts
+
+3. **Fonts**: 
+   - Preserve font-family exactly (e.g., 'Arial', 'Times New Roman', 'Calibri')
+   - Preserve font-size in pixels (px) or points (pt)
+   - Preserve font-weight: bold, normal, or numeric values (100-900)
+   - Preserve font-style: italic, normal
+   - Preserve text-decoration: underline, none, etc.
+
+4. **Colors**: 
+   - Preserve text colors using color: #hex (e.g., #FF0000, #000000)
+   - Preserve background colors using background-color: #hex
+   - Preserve border colors using border-color: #hex
+   - Use exact color values as shown in the image
+
+5. **Images**: 
+   - Extract images and include as base64 data URIs: src="data:image/png;base64,..."
+   - Preserve exact image positions, sizes, and styling
+   - Include alt text for accessibility
+
+6. **Styles & Alignment**: 
+   - Use inline styles for ALL formatting
+   - Preserve text-align: left, center, right, justify
+   - Preserve vertical-align where applicable
+   - Preserve line-height, letter-spacing, word-spacing
+   - Preserve borders, padding, margins exactly
+
+7. **Positioning**: 
+   - Use position: absolute for elements that need exact placement
+   - Calculate pixel coordinates from the image (left, top values)
+   - Preserve z-index for layering
+
+**Output Format:**
+- Return ONLY the XHTML body content (no <html>, <head>, <body> tags)
+- Start with a container div: <div class="word-content" style="position: relative; width: [width]px; height: [height]px; background: white;">
+- Use valid XHTML (all tags must be closed, attributes quoted)
+- Preserve ALL inline styles - do not use CSS classes
+- Ensure all text is extracted and properly structured
+
+**Example:**
+<div class="word-content" style="position: relative; width: 1654px; height: 2339px; background: white;">
+  <h1 style="position: absolute; left: 144px; top: 144px; font-family: 'Arial Black'; font-size: 32px; font-weight: bold; color: #FF0000; text-align: left;">Chapter Title</h1>
+  <p style="position: absolute; left: 144px; top: 240px; width: 1366px; font-family: 'Times New Roman'; font-size: 14px; color: #000000; line-height: 1.6; text-align: justify;">Paragraph text with exact formatting...</p>
+  <img src="data:image/png;base64,iVBORw0KG..." style="position: absolute; left: 400px; top: 600px; width: 400px; height: 300px;" alt="Image description"/>
+</div>
+
+Analyze the image carefully and generate XHTML that matches it EXACTLY.`;
+
+      console.log(`[Gemini] Calling Gemini API for page ${pageNumber} (this may take 30-120 seconds for large images)...`);
+      const startTime = Date.now();
+      
+      // Add timeout wrapper (120 seconds max)
+      const timeoutMs = 120000; // 2 minutes
+      const apiCall = this.generateWithBackoff(model, [
+        { text: prompt },
+        {
+          inlineData: {
+            data: base64Image,
+            mimeType: 'image/png'
+          }
+        }
+      ], options.priority || 1);
+      
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error(`Gemini API timeout after ${timeoutMs/1000}s`)), timeoutMs);
+      });
+      
+      const result = await Promise.race([apiCall, timeoutPromise]);
+      const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`[Gemini] API call completed for page ${pageNumber} in ${elapsedTime}s`);
+
+      if (!result) {
+        throw new Error('Gemini API call failed or was rate limited');
+      }
+
+      console.log(`[Gemini] Processing response for page ${pageNumber}...`);
+      const response = await result.response;
+      let htmlContent = response.text() || '';
+      console.log(`[Gemini] Received ${(htmlContent.length / 1024).toFixed(2)} KB of HTML for page ${pageNumber}`);
+
+      // Clean up the response - remove markdown code blocks if present
+      htmlContent = htmlContent
+        .replace(/```html\n?/gi, '')
+        .replace(/```xhtml\n?/gi, '')
+        .replace(/```\n?/g, '')
+        .trim();
+
+      // Extract text blocks from the HTML for TTS
+      const textBlocks = this.extractTextBlocksFromHtml(htmlContent, pageNumber);
+
+      return {
+        html: htmlContent,
+        textBlocks: textBlocks,
+        pageNumber: pageNumber,
+        width: options.width || 792,
+        height: options.height || 612
+      };
+    } catch (error) {
+      console.error(`[Gemini] Error converting Word page ${pageNumber} to HTML:`, error);
+      throw error;
+    }
+  }
+
+  /**
+   * Extract text blocks from HTML content for TTS
+   * @param {string} htmlContent - HTML content
+   * @param {number} pageNumber - Page number
+   * @returns {Array} Array of text blocks
+   */
+  static extractTextBlocksFromHtml(htmlContent, pageNumber) {
+    // Simple extraction - get all text from paragraphs, headings, etc.
+    // This is a basic implementation; can be enhanced
+    const blocks = [];
+    const textRegex = /<(p|h[1-6]|li|td|th)[^>]*>(.*?)<\/\1>/gi;
+    let match;
+    let blockIndex = 0;
+
+    while ((match = textRegex.exec(htmlContent)) !== null) {
+      const tag = match[1].toLowerCase();
+      const content = match[2];
+      const text = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+
+      if (text.length > 0) {
+        blocks.push({
+          id: `block_${pageNumber}_${blockIndex}`,
+          text: text,
+          type: tag.startsWith('h') ? 'heading' : 'paragraph',
+          readingOrder: blockIndex
+        });
+        blockIndex++;
+      }
+    }
+
+    return blocks;
+  }
 }
 

@@ -8,13 +8,13 @@ export const conversionService = {
     api.post('/conversions/start/bulk', { pdfIds }).then(res => res.data.data),
   
   getConversionJob: (jobId) => 
-    api.get(`/conversions/${jobId}`).then(res => res.data.data),
+    api.get(`/conversions/${jobId}`, { timeout: 60000 }).then(res => res.data.data), // 60s timeout for job status
   
   getConversionsByPdf: (pdfDocumentId) => 
     api.get(`/conversions/pdf/${pdfDocumentId}`).then(res => res.data.data),
   
   getConversionsByStatus: (status) => 
-    api.get(`/conversions/status/${status}`).then(res => res.data.data),
+    api.get(`/conversions/status/${status}`, { timeout: 60000 }).then(res => res.data.data), // 60s timeout for status polling
   
   getReviewRequired: () => 
     api.get('/conversions/review-required').then(res => res.data.data),
