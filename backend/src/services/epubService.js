@@ -10,6 +10,99 @@ import { JSDOM } from 'jsdom';
  */
 export class EpubService {
   /**
+   * Sanitize XHTML content to fix common XML parsing issues
+   * @param {string} xhtmlContent - Raw XHTML content
+   * @returns {string} - Sanitized XHTML content
+   */
+  static sanitizeXhtml(xhtmlContent) {
+    if (!xhtmlContent || typeof xhtmlContent !== 'string') {
+      return xhtmlContent;
+    }
+    
+    // Remove BOM and leading whitespace that might cause "text data outside of root node" errors
+    let sanitized = xhtmlContent.trim();
+    
+    // Handle double-escaped backslashes first (\\\\ -> \)
+    sanitized = sanitized.replace(/\\\\/g, '\\');
+    
+    // Fix escaped quotes (e.g., \" should be ", but handle both single and double escapes)
+    sanitized = sanitized.replace(/\\"/g, '"');
+    sanitized = sanitized.replace(/\\'/g, "'");
+    
+    // Fix escaped newlines and other escape sequences
+    sanitized = sanitized.replace(/\\n/g, '\n');
+    sanitized = sanitized.replace(/\\r/g, '\r');
+    sanitized = sanitized.replace(/\\t/g, '\t');
+    
+    // Remove any content before DOCTYPE (common issue causing "text data outside of root node")
+    const doctypeMatch = sanitized.match(/<!DOCTYPE\s+html[^>]*>/i);
+    if (doctypeMatch && doctypeMatch.index > 0) {
+      // There's content before DOCTYPE, remove it
+      sanitized = sanitized.substring(doctypeMatch.index);
+    }
+    
+    // Normalize DOCTYPE declaration - replace entire DOCTYPE with correct one
+    const correctDoctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+    
+    // Find DOCTYPE start
+    const doctypeStart = sanitized.indexOf('<!DOCTYPE');
+    if (doctypeStart !== -1) {
+      // Find the next > character (this should be the end of DOCTYPE)
+      // We'll look for the first > after <!DOCTYPE, up to 200 chars (DOCTYPE shouldn't be longer)
+      const searchEnd = Math.min(doctypeStart + 200, sanitized.length);
+      const doctypeSection = sanitized.substring(doctypeStart, searchEnd);
+      const doctypeEndMatch = doctypeSection.match(/>/);
+      
+      if (doctypeEndMatch) {
+        const doctypeEnd = doctypeStart + doctypeEndMatch.index + 1;
+        // Replace the entire DOCTYPE with the correct one
+        sanitized = sanitized.substring(0, doctypeStart) + correctDoctype + sanitized.substring(doctypeEnd);
+      } else {
+        // If we can't find the end, try regex replacement as fallback
+        sanitized = sanitized.replace(/<!DOCTYPE[^>]*>/i, correctDoctype);
+      }
+    }
+    
+    // Fix common DOCTYPE URL typo
+    sanitized = sanitized.replace(
+      /http:\/\/www\.w3\.org\/TR\/xhtml\/DTD\/xhtml1-strict\.dtd/gi,
+      'http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd'
+    );
+    
+    // Escape bare ampersands that are not part of an entity (but avoid double-escaping)
+    sanitized = sanitized.replace(/&(?!#?[a-zA-Z0-9]+;)(?![#][0-9]+;)/g, '&amp;');
+    
+    // Fix undefined entities (common ones that might appear)
+    sanitized = sanitized.replace(/&nbsp;/g, '&#160;');
+    sanitized = sanitized.replace(/&copy;/g, '&#169;');
+    sanitized = sanitized.replace(/&reg;/g, '&#174;');
+    sanitized = sanitized.replace(/&trade;/g, '&#8482;');
+    sanitized = sanitized.replace(/&mdash;/g, '&#8212;');
+    sanitized = sanitized.replace(/&ndash;/g, '&#8211;');
+    sanitized = sanitized.replace(/&hellip;/g, '&#8230;');
+    
+    // Ensure the document starts with DOCTYPE (add if missing)
+    if (!sanitized.trim().startsWith('<!DOCTYPE')) {
+      sanitized = correctDoctype + '\n' + sanitized;
+    }
+    
+    // Ensure there's a newline after DOCTYPE before <html> tag
+    // This fixes "Start tag expected" errors
+    sanitized = sanitized.replace(
+      /(<!DOCTYPE[^>]+>)([^\n<])/,
+      '$1\n$2'
+    );
+    
+    // Ensure <html> tag comes right after DOCTYPE (with optional whitespace)
+    sanitized = sanitized.replace(
+      /<!DOCTYPE[^>]+>\s*<html/,
+      correctDoctype + '\n<html'
+    );
+    
+    return sanitized;
+  }
+
+  /**
    * Extract EPUB sections/chapters from the actual EPUB file
    * @param {number} jobId - Conversion job ID
    * @returns {Promise<Array>} - Array of section objects
@@ -167,11 +260,27 @@ export class EpubService {
               
               if (xhtmlFile) {
                 console.log(`[EPUB Service] Reading XHTML file: ${xhtmlFile.name}`);
-                const xhtmlContent = await xhtmlFile.async('string');
+                let xhtmlContent = await xhtmlFile.async('string');
                 
-                // Parse XHTML to extract title
-                const xhtmlDom = new JSDOM(xhtmlContent, { contentType: 'application/xhtml+xml' });
-                const xhtmlDoc = xhtmlDom.window.document;
+                // Sanitize XHTML before parsing to fix malformed DOCTYPEs and entities
+                xhtmlContent = EpubService.sanitizeXhtml(xhtmlContent);
+                
+                // Parse XHTML to extract title - try XHTML first, fallback to HTML if it fails
+                let xhtmlDom, xhtmlDoc;
+                try {
+                  xhtmlDom = new JSDOM(xhtmlContent, { contentType: 'application/xhtml+xml' });
+                  xhtmlDoc = xhtmlDom.window.document;
+                } catch (parseError) {
+                  console.warn(`[EPUB Service] XHTML parsing failed for ${xhtmlFile.name}, trying HTML fallback:`, parseError.message);
+                  // Fallback to HTML parsing (more lenient)
+                  try {
+                    xhtmlDom = new JSDOM(xhtmlContent, { contentType: 'text/html' });
+                    xhtmlDoc = xhtmlDom.window.document;
+                  } catch (htmlError) {
+                    console.error(`[EPUB Service] Both XHTML and HTML parsing failed for ${xhtmlFile.name}:`, htmlError.message);
+                    throw htmlError;
+                  }
+                }
                 
                 // Try to find title from various sources
                 let title = `Chapter ${sectionIndex}`;
@@ -223,9 +332,27 @@ export class EpubService {
           try {
             const xhtmlFile = zip.file(fileName);
             if (xhtmlFile) {
-              const xhtmlContent = await xhtmlFile.async('string');
-              const xhtmlDom = new JSDOM(xhtmlContent, { contentType: 'application/xhtml+xml' });
-              const xhtmlDoc = xhtmlDom.window.document;
+              let xhtmlContent = await xhtmlFile.async('string');
+              
+              // Sanitize XHTML before parsing to fix malformed DOCTYPEs and entities
+              xhtmlContent = EpubService.sanitizeXhtml(xhtmlContent);
+              
+              // Parse XHTML - try XHTML first, fallback to HTML if it fails
+              let xhtmlDom, xhtmlDoc;
+              try {
+                xhtmlDom = new JSDOM(xhtmlContent, { contentType: 'application/xhtml+xml' });
+                xhtmlDoc = xhtmlDom.window.document;
+              } catch (parseError) {
+                console.warn(`[EPUB Service] XHTML parsing failed for ${fileName}, trying HTML fallback:`, parseError.message);
+                // Fallback to HTML parsing (more lenient)
+                try {
+                  xhtmlDom = new JSDOM(xhtmlContent, { contentType: 'text/html' });
+                  xhtmlDoc = xhtmlDom.window.document;
+                } catch (htmlError) {
+                  console.error(`[EPUB Service] Both XHTML and HTML parsing failed for ${fileName}:`, htmlError.message);
+                  throw htmlError;
+                }
+              }
               
               let title = `Chapter ${i + 1}`;
               const titleElement = xhtmlDoc.querySelector('title');
@@ -273,9 +400,19 @@ export class EpubService {
     const sections = await this.getEpubSections(jobId);
     
     return sections.map(section => {
-      // Extract plain text from XHTML
-      const dom = new JSDOM(section.xhtml, { contentType: 'application/xhtml+xml' });
-      const doc = dom.window.document;
+      // Sanitize XHTML before parsing (in case it wasn't sanitized earlier)
+      const sanitizedXhtml = EpubService.sanitizeXhtml(section.xhtml);
+      
+      // Extract plain text from XHTML - try XHTML first, fallback to HTML if it fails
+      let dom, doc;
+      try {
+        dom = new JSDOM(sanitizedXhtml, { contentType: 'application/xhtml+xml' });
+        doc = dom.window.document;
+      } catch (parseError) {
+        // Fallback to HTML parsing (more lenient)
+        dom = new JSDOM(sanitizedXhtml, { contentType: 'text/html' });
+        doc = dom.window.document;
+      }
       const body = doc.body;
       
       // Remove script and style elements

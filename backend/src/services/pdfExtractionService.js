@@ -253,11 +253,41 @@ export class PdfExtractionService {
         
         if (sameBlock) {
           currentBlock.items.push(item);
-          if (sameLine && horizontalDistance > width * 0.5) {
-            currentBlock.text += ' ';
-          } else if (!sameLine && verticalDistance > maxLineGap) {
-            // Add line break for multi-line blocks
-            currentBlock.text += ' ';
+          
+          // Improved spacing logic: Add space between text items more intelligently
+          if (sameLine) {
+            // On same line: check if we need a space
+            // PDF.js sometimes extracts words separately, so we need to add spaces
+            const lastText = currentBlock.text.trim();
+            const currentText = item.str.trim();
+            
+            // Always add space if there's a horizontal gap (unless it's very small, like kerning)
+            // Use a threshold based on font size or a minimum gap
+            const fontSize = item.transform[0] || 12;
+            const minGapForSpace = Math.max(1, fontSize * 0.15); // ~15% of font size as minimum gap
+            
+            if (horizontalDistance > minGapForSpace) {
+              // Clear gap - definitely add space
+              currentBlock.text += ' ';
+            } else if (horizontalDistance > 0) {
+              // Small gap - add space unless:
+              // 1. Last char is punctuation that shouldn't have space after (.,;:!?)
+              // 2. Current char is punctuation that shouldn't have space before (.,;:!?)
+              const lastChar = lastText.slice(-1);
+              const firstChar = currentText[0];
+              const noSpaceAfter = /[.,;:!?]/.test(lastChar);
+              const noSpaceBefore = /[.,;:!?)]/.test(firstChar);
+              
+              if (!noSpaceAfter && !noSpaceBefore) {
+                currentBlock.text += ' ';
+              }
+            }
+            // If horizontalDistance <= 0, items overlap or are adjacent (no space needed)
+          } else {
+            // Different line: add space for line breaks within same block
+            if (verticalDistance > maxLineGap) {
+              currentBlock.text += ' ';
+            }
           }
           currentBlock.text += item.str;
           currentBlock.minX = Math.min(currentBlock.minX, x);
