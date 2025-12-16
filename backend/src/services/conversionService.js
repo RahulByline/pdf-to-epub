@@ -51,6 +51,15 @@ export class ConversionService {
       progressPercentage: steps[2].progress
     });
 
+    // Fixed-layout flag and page dimensions from rendered images
+    const useFixedLayout = (process.env.USE_FIXED_LAYOUT_EPUB || 'false').toLowerCase() === 'true';
+    // Get page dimensions from rendered images (use first page as reference, or max dimensions)
+    const firstPageImage = pageImages[0];
+    const pageWidthPoints = firstPageImage?.pageWidth || renderResult?.maxWidth || 612;
+    const pageHeightPoints = firstPageImage?.pageHeight || renderResult?.maxHeight || 792;
+    const renderedWidth = firstPageImage?.width || renderResult?.renderedWidth || Math.ceil(pageWidthPoints * (200 / 72));
+    const renderedHeight = firstPageImage?.height || renderResult?.renderedHeight || Math.ceil(pageHeightPoints * (200 / 72));
+    
     const xhtmlPages = [];
     
     for (let i = 0; i < pageImages.length; i++) {
@@ -66,13 +75,52 @@ export class ConversionService {
       
       const xhtmlResult = await GeminiService.convertPngToXhtml(pageImage.path, pageImage.pageNumber);
       
-      if (xhtmlResult && xhtmlResult.xhtml && xhtmlResult.css) {
+      if (xhtmlResult && xhtmlResult.xhtml && (xhtmlResult.css !== undefined)) {
         // Save XHTML file
         const xhtmlFileName = `page_${pageImage.pageNumber}.xhtml`;
         const xhtmlFilePath = path.join(jobHtmlDir, xhtmlFileName);
         
-        // Embed CSS in the XHTML if not already present
+        // Get page-specific dimensions
+        const currentPageWidth = pageImage.pageWidth || pageWidthPoints;
+        const currentPageHeight = pageImage.pageHeight || pageHeightPoints;
+        const currentRenderedWidth = pageImage.width || renderedWidth;
+        const currentRenderedHeight = pageImage.height || renderedHeight;
+        
+        // Embed CSS in the XHTML if not already present and sanitize common XML issues
         let xhtmlContent = xhtmlResult.xhtml;
+        
+        // First, unescape any escaped characters that might have come from JSON parsing
+        // Handle double-escaped backslashes (\\\\ -> \)
+        xhtmlContent = xhtmlContent.replace(/\\\\/g, '\\');
+        // Unescape quotes and control characters
+        xhtmlContent = xhtmlContent.replace(/\\"/g, '"');
+        xhtmlContent = xhtmlContent.replace(/\\'/g, "'");
+        xhtmlContent = xhtmlContent.replace(/\\n/g, '\n');
+        xhtmlContent = xhtmlContent.replace(/\\r/g, '\r');
+        xhtmlContent = xhtmlContent.replace(/\\t/g, '\t');
+        
+        // Normalize DOCTYPE declaration - fix malformed quotes and ensure proper format
+        // Replace any DOCTYPE with properly formatted one using straight double quotes
+        const correctDoctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+        xhtmlContent = xhtmlContent.replace(
+          /<!DOCTYPE\s+html[^>]*>/i,
+          correctDoctype
+        );
+        
+        // Fix common DOCTYPE URL typo from Gemini (in case it's in the content elsewhere)
+        xhtmlContent = xhtmlContent.replace(
+          /http:\/\/www\.w3\.org\/TR\/xhtml\/DTD\/xhtml1-strict\.dtd/gi,
+          'http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd'
+        );
+        
+        // Escape bare ampersands that are not part of an entity, to avoid xmlParseEntityRef errors
+        xhtmlContent = xhtmlContent.replace(/&(?!#?[a-zA-Z0-9]+;)/g, '&amp;');
+        
+        // Add viewport meta tag for fixed-layout (must be before other meta tags)
+        const viewportMeta = useFixedLayout
+          ? `<meta name="viewport" content="width=${currentPageWidth},height=${currentPageHeight}"/>`
+          : `<meta name="viewport" content="width=device-width, initial-scale=1.0"/>`;
+        
         if (!xhtmlContent.includes('<style') && !xhtmlContent.includes('<link')) {
           // Insert CSS before </head> or at the beginning of <body>
           if (xhtmlContent.includes('</head>')) {
@@ -85,6 +133,7 @@ export class ConversionService {
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+${viewportMeta}
 <title>Page ${pageImage.pageNumber}</title>
 <style type="text/css">
 ${xhtmlResult.css}
@@ -97,13 +146,54 @@ ${xhtmlContent}
           }
         }
         
+        // Add viewport meta tag if not present
+        if (!xhtmlContent.includes('name="viewport"')) {
+          if (xhtmlContent.includes('<head>')) {
+            xhtmlContent = xhtmlContent.replace('<head>', `<head>\n${viewportMeta}`);
+          } else if (xhtmlContent.includes('</head>')) {
+            xhtmlContent = xhtmlContent.replace('</head>', `${viewportMeta}\n</head>`);
+          }
+        } else {
+          // Replace existing viewport if fixed-layout
+          if (useFixedLayout) {
+            xhtmlContent = xhtmlContent.replace(
+              /<meta\s+name="viewport"[^>]*\/?>/i,
+              viewportMeta
+            );
+          }
+        }
+
+        // Add full-page layout normalization CSS
+        const fullPageCss = useFixedLayout
+          ? [
+              `html, body { margin: 0; padding: 0; width: ${currentPageWidth}px; height: ${currentPageHeight}px; overflow: hidden; }`,
+              'body { background-color: #ffffff; position: relative; }',
+              '.container, .page { width: 100%; height: 100%; margin: 0; padding: 0; box-sizing: border-box; position: relative; }'
+            ].join('\n')
+          : [
+              'html, body { margin: 0; padding: 0; height: 100%; }',
+              'body { background-color: #ffffff; }',
+              '.container, .page { width: 100%; max-width: none; margin: 0 auto; box-sizing: border-box; }'
+            ].join('\n');
+        
+        if (xhtmlContent.includes('</head>')) {
+          xhtmlContent = xhtmlContent.replace(
+            '</head>',
+            `<style type="text/css">\n${fullPageCss}\n</style>\n</head>`
+          );
+        }
+        
         await fs.writeFile(xhtmlFilePath, xhtmlContent, 'utf8');
         
         xhtmlPages.push({
           pageNumber: pageImage.pageNumber,
           xhtmlPath: xhtmlFilePath,
           xhtmlFileName: xhtmlFileName,
-          css: xhtmlResult.css
+          css: xhtmlResult.css,
+          pageWidth: currentPageWidth,
+          pageHeight: currentPageHeight,
+          renderedWidth: currentRenderedWidth,
+          renderedHeight: currentRenderedHeight
         });
         
         console.log(`[Job ${jobId}] Page ${pageImage.pageNumber} converted to XHTML successfully`);
@@ -129,7 +219,12 @@ ${xhtmlContent}
       epubOutputDir,
       jobId,
       {
-        title: `Converted PDF - Job ${jobId}`
+        title: `Converted PDF - Job ${jobId}`,
+        fixedLayout: useFixedLayout,
+        pageWidth: pageWidthPoints,
+        pageHeight: pageHeightPoints,
+        renderedWidth: renderedWidth,
+        renderedHeight: renderedHeight
       }
     );
 
@@ -138,13 +233,16 @@ ${xhtmlContent}
 
   /**
    * Generate EPUB file from XHTML pages
-   * @param {Array} xhtmlPages - Array of {pageNumber, xhtmlPath, xhtmlFileName, css}
+   * @param {Array} xhtmlPages - Array of {pageNumber, xhtmlPath, xhtmlFileName, css, pageWidth, pageHeight, renderedWidth, renderedHeight}
    * @param {string} outputDir - Output directory
    * @param {string} jobId - Job ID
-   * @param {Object} options - Options {title}
+   * @param {Object} options - Options {title, fixedLayout, pageWidth, pageHeight, renderedWidth, renderedHeight}
    * @returns {Promise<string>} Path to generated EPUB file
    */
   static async generateEpubFromXhtmlPages(xhtmlPages, outputDir, jobId, options = {}) {
+    const useFixedLayout = options.fixedLayout || false;
+    const pageWidth = options.pageWidth || 612;
+    const pageHeight = options.pageHeight || 792;
     const tempEpubDir = path.join(outputDir, `temp_${jobId}`);
     const oebpsDir = path.join(tempEpubDir, 'OEBPS');
     const metaInfDir = path.join(tempEpubDir, 'META-INF');
@@ -165,20 +263,28 @@ ${xhtmlContent}
       });
     }
     
-    // Generate OPF file
+    // Generate OPF file with fixed-layout support
+    const fixedLayoutMeta = useFixedLayout
+      ? `    <meta property="rendition:layout">pre-paginated</meta>
+    <meta property="rendition:orientation">auto</meta>
+    <meta property="rendition:spread">landscape</meta>
+    <meta property="rendition:viewport">width=${pageWidth},height=${pageHeight}</meta>`
+      : '';
+    
     const opfContent = `<?xml version="1.0" encoding="UTF-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id"${useFixedLayout ? ' xmlns:rendition="http://www.idpf.org/2013/rendition"' : ''}>
   <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
     <dc:identifier id="book-id">urn:uuid:${jobId}</dc:identifier>
     <dc:title>${this.escapeXml(options.title || 'Converted PDF')}</dc:title>
     <dc:language>en</dc:language>
     <meta property="dcterms:modified">${new Date().toISOString()}</meta>
+${fixedLayoutMeta}
   </metadata>
   <manifest>
     <item id="nav" href="OEBPS/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
 ${xhtmlFiles.map(f => `    <item id="${f.id}" href="${f.href}" media-type="${f.mediaType}"/>`).join('\n')}
   </manifest>
-  <spine toc="nav">
+  <spine toc="nav"${useFixedLayout ? ' page-progression-direction="ltr"' : ''}>
 ${xhtmlFiles.map(f => `    <itemref idref="${f.id}"/>`).join('\n')}
   </spine>
 </package>`;
@@ -236,8 +342,25 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
         if (entry.isDirectory()) {
           await addDirectoryToZip(fullPath, zipEntryPath);
         } else {
-          const content = await fs.readFile(fullPath);
-          zip.file(zipEntryPath, content);
+          // For XHTML files, read as text and sanitize before adding to ZIP
+          if (entry.name.endsWith('.xhtml')) {
+            let content = await fs.readFile(fullPath, 'utf8');
+            // Sanitize XHTML to fix any escaped characters or malformed DOCTYPEs
+            // Use the same sanitization logic as in epubService
+            content = content.replace(/\\\\/g, '\\');
+            content = content.replace(/\\"/g, '"');
+            content = content.replace(/\\'/g, "'");
+            content = content.replace(/\\n/g, '\n');
+            content = content.replace(/\\r/g, '\r');
+            content = content.replace(/\\t/g, '\t');
+            // Normalize DOCTYPE
+            const correctDoctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+            content = content.replace(/<!DOCTYPE\s+html[^>]*>/i, correctDoctype);
+            zip.file(zipEntryPath, content);
+          } else {
+            const content = await fs.readFile(fullPath);
+            zip.file(zipEntryPath, content);
+          }
         }
       }
     };

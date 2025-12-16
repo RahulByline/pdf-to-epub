@@ -36,6 +36,7 @@ const AudioSync = () => {
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [playingBlockId, setPlayingBlockId] = useState(null);
   const [blockAudioElements, setBlockAudioElements] = useState({});
+  const [clipTimings, setClipTimings] = useState({}); // Store CLIPBEGIN/CLIPEND timings for each block
 
   useEffect(() => {
     loadData();
@@ -129,6 +130,19 @@ const AudioSync = () => {
       if (audioData && audioData.length > 0) {
         // Don't set audioUrl - we'll use TTS instead
         setAudioSegments(audioData);
+        
+        // Initialize clipTimings from audio segments
+        const timings = {};
+        audioData.forEach(segment => {
+          if (segment.blockId) {
+            timings[segment.blockId] = {
+              clipBegin: segment.startTime || 0,
+              clipEnd: segment.endTime || 0
+            };
+          }
+        });
+        setClipTimings(timings);
+        
         const voiceMatch = audioData[0].notes?.match(/voice:\s*(\w+)/);
         if (voiceMatch) {
           setSelectedVoice(voiceMatch[1]);
@@ -139,6 +153,7 @@ const AudioSync = () => {
       } else {
         setChangesSaved(false);
         setHasUnsavedChanges(false);
+        setClipTimings({});
       }
     } catch (err) {
       console.error('Error loading data:', err);
@@ -205,6 +220,16 @@ const AudioSync = () => {
       if (audioData && audioData.length > 0) {
         setAudioSegments(audioData);
         // Update timings from reloaded data
+        const reloadedTimings = {};
+        audioData.forEach(segment => {
+          if (segment.blockId) {
+            reloadedTimings[segment.blockId] = {
+              clipBegin: segment.startTime || 0,
+              clipEnd: segment.endTime || 0
+            };
+          }
+        });
+        setClipTimings(prev => ({ ...prev, ...reloadedTimings }));
         const updatedTimings = {};
         audioData.forEach(segment => {
           if (segment.blockId) {
@@ -466,7 +491,8 @@ const AudioSync = () => {
   const handlePlayBlockAudio = async (blockId, segment) => {
     // Stop any currently playing audio
     Object.values(blockAudioElements).forEach(audio => {
-      if (audio && !audio.paused) {
+      // Check if audio is an HTMLAudioElement before calling pause
+      if (audio && audio instanceof HTMLAudioElement && !audio.paused) {
         audio.pause();
         audio.currentTime = 0;
       }
@@ -480,7 +506,8 @@ const AudioSync = () => {
     // If this block is already playing, stop it
     if (playingBlockId === blockId) {
       const audio = blockAudioElements[blockId];
-      if (audio) {
+      // Check if audio is an HTMLAudioElement before calling pause
+      if (audio && audio instanceof HTMLAudioElement) {
         audio.pause();
         audio.currentTime = 0;
       }

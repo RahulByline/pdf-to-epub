@@ -195,32 +195,46 @@ export class GeminiService {
 
         const prompt = `Analyze the provided image of the worksheet page(s).
 
-Two-step task:
-1) Layout decision: if the content shows two distinct columns/pages (dashed divider, separate activities, separate page numbers), use a CSS two-column layout; otherwise use a single-column layout.
-2) Generate full XHTML 1.0 Strict with embedded CSS.
-
-Strict XHTML constraints:
-- DOCTYPE: XHTML 1.0 Strict.
-- All tags lowercase, properly nested; self-closing tags end with />.
-- No deprecated presentational tags/attributes (no center, font, align, border, bgcolor, etc.).
-- All styling (layout, colors, borders) must be in the <style> block; no inline presentational attributes.
-- Represent every image/graphic as a structured <div> placeholder with descriptive classes (e.g., activity-column-left, face-angry-placeholder, word-box).
-
-Output format: return pure JSON (no markdown):
-{
-  "xhtml": "<!DOCTYPE html PUBLIC \\"-//W3C//DTD XHTML 1.0 Strict//EN\\" \\"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\\">\\n<html xmlns=\\"http://www.w3.org/1999/xhtml\\" lang=\\"en\\" xml:lang=\\"en\\">\\n<head>\\n<meta http-equiv=\\"Content-Type\\" content=\\"text/html; charset=utf-8\\"/>\\n<title>Page ${pageNumber}</title>\\n<style type=\\"text/css\\">/* CSS styles here */</style>\\n</head>\\n<body>\\n<!-- XHTML content here -->\\n</body>\\n</html>",
-  "css": "" // keep CSS in the style block above; this can be empty or omitted
-}
-
-Layout/style guidance:
-- Use a top-level container. If two logical columns/pages: .container with two .page children; else one .page.
-- Common sections: .header (label <p> and <h1>), .activity-area, optional columns (.faces-column, .words-column, .activity-column-left/right), story blocks (.story-block), instructions (.instruction), footer (.footer with .page-number).
-- Placeholders: <div class="face-placeholder ..."></div>, <div class="word-box ...">WORD</div>, <div class="placeholder ..."></div>, etc. Do not embed images.
-- Preserve all visible text and hierarchy: use h1/h2/h3 for headings; <p> for body/instructions; avoid spans unless necessary.
-- CSS: include layout (flex/widths), spacing, borders (solid/dashed), colors, and sizing to approximate the image; keep it readable and minimal.
-`;
-
-        console.log(`[Page ${pageNumber}] Calling Gemini API for XHTML conversion...`);
+        Two-step task:
+        1) Layout Decision: Determine the page structure based on visual evidence:
+           - **TWO-COLUMN (Multi-Page Split):** Use this structure ONLY if the image explicitly shows a divider (e.g., a dashed or solid line) down the center, or if there are two distinct, separate page numbers visible, indicating two original pages have been merged into this single PNG image. The CSS must use a .container element with two .page children, styled with flexbox/grid.
+           - **SINGLE-COLUMN (Default):** If the page appears as a standard, single worksheet without a clear central division, use a single-column layout. The CSS must use a .page element directly under the <body>.
+        2) Generate full XHTML 1.0 Strict with embedded CSS.
+        
+        ***CRITICAL REFLOWABLE EPUB 3 CONSTRAINTS (MANDATORY):***
+        - **FIXED UNIT VETO:** You MUST NOT use the unit 'px' (pixels) to define the width, min-width, height, or min-height of any major structural container or column element (e.g., .container, .page, .page-left, .page-right). This is NON-NEGOTIABLE.
+        - **SCALABLE UNITS ONLY:** All dimensions for major layout elements must be defined using relative and scalable units: em, rem, vw, vh, or %.
+        
+        Strict XHTML constraints:
+        - DOCTYPE: XHTML 1.0 Strict.
+        - All tags lowercase, properly nested; self-closing tags end with />.
+        - No deprecated presentational tags/attributes (no center, font, align, border, bgcolor, etc.).
+        - All styling (layout, colors, borders) must be in the <style> block; no inline presentational attributes.
+        - Represent every image/graphic as a structured <div> placeholder with descriptive classes (e.g., activity-column-left, face-angry-placeholder, word-box).
+        
+        **OUTPUT FORMAT - CRITICAL: You MUST return ONLY valid JSON, nothing else. No markdown, no code blocks, no explanations.**
+        
+        Return a JSON object with exactly these two fields:
+        {
+          "xhtml": "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Strict//EN\" \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd\">\\n<html xmlns=\"http://www.w3.org/1999/xhtml\">\\n<head>\\n<title>Page ${pageNumber}</title>\\n<style type=\"text/css\">/* CSS here */</style>\\n</head>\\n<body>\\n<!-- content -->\\n</body>\\n</html>",
+          "css": ""
+        }
+        
+        **IMPORTANT:** 
+        - The xhtml field must contain the COMPLETE XHTML document as a single string
+        - Use \\n for newlines within the JSON string
+        - Use \\" for quotes within the JSON string
+        - The css field can be empty string "" since CSS is embedded in the <style> tag
+        - Return ONLY the JSON object, no other text before or after
+        
+        Layout/style guidance:
+        - Use a top-level container. If two logical columns/pages: .container with two .page children; else one .page.
+        - Common sections: .header (label <p> and <h1>), .activity-area, optional columns (.faces-column, .words-column, .activity-column-left/right), story blocks (.story-block), instructions (.instruction), footer (.footer with .page-number).
+        - Placeholders: <div class="face-placeholder ..."></div>, <div class="word-box ...">WORD</div>, <div class="placeholder ..."></div>, etc. Do not embed images.
+        - Preserve all visible text and hierarchy: use h1/h2/h3 for headings; <p> for body/instructions; avoid spans unless necessary.
+        - CSS: include layout (flex/widths), spacing, borders (solid/dashed), colors, and sizing to approximate the image; keep it readable and minimal.
+        `;
+                console.log(`[Page ${pageNumber}] Calling Gemini API for XHTML conversion...`);
         
         const maxApiAttempts = 2;
         let attempt = 0;
@@ -265,33 +279,81 @@ Layout/style guidance:
         // Record success
         CircuitBreakerService.recordSuccess('Gemini');
         
-        // Try to parse JSON from response
+        // Try to parse JSON from response; fallback to extracting XHTML if JSON missing
         try {
+          // Log first 500 chars for debugging
+          console.log(`[Page ${pageNumber}] Raw response preview (first 500 chars):`, rawResponse.substring(0, 500));
+          
           // Extract JSON from markdown code blocks if present
           let jsonStr = rawResponse.trim();
-          const jsonMatch = jsonStr.match(/```json\n([\s\S]*?)\n```/) || 
-                           jsonStr.match(/```\n([\s\S]*?)\n```/) ||
-                           jsonStr.match(/\{[\s\S]*\}/);
+          
+          // Try to find JSON in various formats
+          let jsonMatch = jsonStr.match(/```json\s*\n([\s\S]*?)\n```/) || 
+                         jsonStr.match(/```json\s*([\s\S]*?)```/) ||
+                         jsonStr.match(/```\s*\n([\s\S]*?)\n```/) ||
+                         jsonStr.match(/```\s*([\s\S]*?)```/);
           
           if (jsonMatch) {
             jsonStr = jsonMatch[1] || jsonMatch[0];
+          } else {
+            // Try to find JSON object directly
+            const jsonObjectMatch = jsonStr.match(/\{[\s\S]*\}/);
+            if (jsonObjectMatch) {
+              jsonStr = jsonObjectMatch[0];
+            }
           }
           
-          const parsed = JSON.parse(jsonStr);
+          // Clean up the JSON string
+          jsonStr = jsonStr.trim();
           
-          if (parsed.xhtml && parsed.css) {
-            console.log(`[Page ${pageNumber}] Successfully converted to XHTML (${parsed.xhtml.length} chars XHTML, ${parsed.css.length} chars CSS)`);
+          let parsed = null;
+          try {
+            parsed = JSON.parse(jsonStr);
+          } catch (jsonErr) {
+            console.warn(`[Page ${pageNumber}] JSON parse error:`, jsonErr.message);
+            console.warn(`[Page ${pageNumber}] Attempted to parse:`, jsonStr.substring(0, 200));
+            parsed = null;
+          }
+          
+          if (parsed && parsed.xhtml && (parsed.css !== undefined)) {
+            console.log(`[Page ${pageNumber}] Successfully converted to XHTML (${parsed.xhtml.length} chars XHTML, ${(parsed.css || '').length} chars CSS)`);
             return {
               xhtml: parsed.xhtml,
-              css: parsed.css,
+              css: parsed.css || '',
               pageNumber: pageNumber
             };
-          } else {
-            console.warn(`[Page ${pageNumber}] Response missing xhtml or css fields`);
-            return null;
           }
+          
+          // Fallback: try to extract XHTML directly from the raw response
+          const xhtmlMatch = rawResponse.match(/<!DOCTYPE\s+html[\s\S]*?<\/html>/i);
+          if (xhtmlMatch && xhtmlMatch[0]) {
+            let xhtml = xhtmlMatch[0].trim();
+            
+            // Sanitize the extracted XHTML
+            // Unescape any escaped characters
+            xhtml = xhtml.replace(/\\\\/g, '\\');
+            xhtml = xhtml.replace(/\\"/g, '"');
+            xhtml = xhtml.replace(/\\'/g, "'");
+            xhtml = xhtml.replace(/\\n/g, '\n');
+            xhtml = xhtml.replace(/\\r/g, '\r');
+            xhtml = xhtml.replace(/\\t/g, '\t');
+            
+            // Normalize DOCTYPE
+            const correctDoctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+            xhtml = xhtml.replace(/<!DOCTYPE\s+html[^>]*>/i, correctDoctype);
+            
+            console.warn(`[Page ${pageNumber}] Fallback used: extracted XHTML from raw response (no JSON fields). XHTML length: ${xhtml.length}`);
+            return {
+              xhtml,
+              css: '',
+              pageNumber
+            };
+          }
+          
+          console.warn(`[Page ${pageNumber}] Response missing xhtml/css and no XHTML detected. Raw (first 500 chars): ${rawResponse.substring(0, 500)}`);
+          return null;
         } catch (parseError) {
-          console.error(`[Page ${pageNumber}] Failed to parse JSON response:`, parseError.message);
+          console.error(`[Page ${pageNumber}] Failed to parse response:`, parseError.message);
           console.debug(`[Page ${pageNumber}] Raw response (first 500 chars):`, rawResponse.substring(0, 500));
           return null;
         }
