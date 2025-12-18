@@ -30,10 +30,39 @@ const AudioSyncCards = () => {
   const [allSyncCards, setAllSyncCards] = useState([]); // Store all cards before filtering
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   
+  // State for granularity toggle - MUST be declared before useMemo that uses it
+  const [granularity, setGranularity] = useState('sentence'); // 'word', 'sentence', 'paragraph'
+  
+  /**
+   * Filter cards based on current granularity level
+   * CRITICAL FIX: Must be defined before useMemo that uses it
+   */
+  const filterCardsByGranularity = useCallback((cards, level) => {
+    if (!cards || cards.length === 0) return [];
+
+    return cards.filter(card => {
+      const id = card.originalId || card.id || '';
+      
+      switch (level) {
+        case 'word':
+          // Words: IDs containing '_w' (e.g., p1_s1_w1)
+          return id.includes('_w');
+        case 'sentence':
+          // Sentences: IDs containing '_s' but not '_w' (e.g., p1_s1)
+          return id.includes('_s') && !id.includes('_w');
+        case 'paragraph':
+          // Paragraphs: IDs without '_s' or '_w' (e.g., p1, p2)
+          return !id.includes('_s') && !id.includes('_w');
+        default:
+          return true;
+      }
+    });
+  }, []);
+  
   // ISSUE #5 FIX: Memoized filtered cards - no separate state needed
   const syncCards = useMemo(() => {
     return filterCardsByGranularity(allSyncCards, granularity);
-  }, [allSyncCards, granularity]);
+  }, [allSyncCards, granularity, filterCardsByGranularity]);
   
   // ISSUE #3 FIX: Animation frame ref for high-precision timing
   const animationFrameRef = useRef(null);
@@ -43,9 +72,6 @@ const AudioSyncCards = () => {
   
   // ISSUE #6 FIX: Undo stack for Tap-to-Sync
   const undoStackRef = useRef([]);
-  
-  // State for granularity toggle
-  const [granularity, setGranularity] = useState('sentence'); // 'word', 'sentence', 'paragraph'
   
   // State for real-time preview
   const [activeBlockId, setActiveBlockId] = useState(null);
@@ -100,6 +126,39 @@ const AudioSyncCards = () => {
         const text = element.textContent?.trim() || '';
         const tagName = element.tagName.toLowerCase();
         
+        // CRITICAL FIX: Filter out unspoken content (TOC, nav, headers, etc.)
+        // These patterns match common unspoken structural elements
+        const unspokenPatterns = [
+          /toc/i,                    // Table of Contents
+          /table-of-contents/i,      // Table of Contents (hyphenated)
+          /contents/i,               // Contents page
+          /chapter-index/i,          // Chapter index
+          /chapter-idx/i,            // Chapter index (abbreviated)
+          /^nav/i,                   // Navigation elements
+          /^header/i,                // Headers
+          /^footer/i,                // Footers
+          /^sidebar/i,               // Sidebars
+          /^menu/i,                  // Menus
+          /page-number/i,           // Page numbers
+          /page-num/i,               // Page numbers (abbreviated)
+          /^skip/i,                  // Skip links
+          /^metadata/i               // Metadata
+        ];
+        
+        // Check if this element should be excluded
+        const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+        
+        // Also check for explicit exclusion attributes
+        const shouldSync = element.getAttribute('data-should-sync') !== 'false';
+        const readAloudAttr = element.getAttribute('data-read-aloud');
+        const isExplicitlyExcluded = readAloudAttr === 'false';
+        
+        // Skip unspoken content entirely (don't create cards for them)
+        if (isUnspoken || isExplicitlyExcluded || !shouldSync) {
+          console.log(`[AudioSyncCards] Excluding unspoken content: ${id} (${text.substring(0, 30)}...)`);
+          return; // Skip this element
+        }
+        
         // Determine type based on tag
         let type = 'sentence';
         if (tagName === 'p') {
@@ -117,7 +176,7 @@ const AudioSyncCards = () => {
           id: id,
           text: text,
           type: type,
-          shouldRead: true, // Default to enabled
+          shouldRead: true, // Default to enabled (only spoken content reaches here)
           startTime: 0,
           endTime: 0,
           elementId: id, // For SMIL reference
@@ -267,31 +326,6 @@ const AudioSyncCards = () => {
   };
 
   /**
-   * Filter cards based on current granularity level
-   */
-  const filterCardsByGranularity = (cards, level) => {
-    if (!cards || cards.length === 0) return [];
-
-    return cards.filter(card => {
-      const id = card.originalId || card.id || '';
-      
-      switch (level) {
-        case 'word':
-          // Words: IDs containing '_w' (e.g., p1_s1_w1)
-          return id.includes('_w');
-        case 'sentence':
-          // Sentences: IDs containing '_s' but not '_w' (e.g., p1_s1)
-          return id.includes('_s') && !id.includes('_w');
-        case 'paragraph':
-          // Paragraphs: IDs without '_s' or '_w' (e.g., p1, p2)
-          return !id.includes('_s') && !id.includes('_w');
-        default:
-          return true;
-      }
-    });
-  };
-
-  /**
    * Propagate timings from higher level to lower level
    * (e.g., sentence -> word)
    */
@@ -438,11 +472,8 @@ const AudioSyncCards = () => {
           });
           
           // Store all cards before filtering
+          // CRITICAL FIX: syncCards is now memoized from allSyncCards, so we only need to update allSyncCards
           setAllSyncCards(allCards);
-          
-          // Apply initial granularity filter
-          const filteredCards = filterCardsByGranularity(allCards, granularity);
-          setSyncCards(filteredCards.length > 0 ? filteredCards : allCards);
           
           // Check if there's existing generated audio
           try {
@@ -462,7 +493,8 @@ const AudioSyncCards = () => {
                   card.shouldRead = true;
                 }
               });
-              setSyncCards([...allCards]);
+              // CRITICAL FIX: syncCards is now memoized from allSyncCards, so we only need to update allSyncCards
+              setAllSyncCards([...allCards]);
               
               // Get the audio file URL
               if (audioData[0]?.audioFilePath) {
@@ -500,10 +532,37 @@ const AudioSyncCards = () => {
       return;
     }
 
-    // Filter only enabled cards
-    const enabledCards = syncCards.filter(card => card.shouldRead && card.text.trim());
+    // CRITICAL FIX: Filter only enabled cards AND exclude unspoken content
+    // This prevents TOC/nav elements from "stealing" timeline space
+    const enabledCards = syncCards.filter(card => {
+      // Must be enabled and have text
+      if (!card.shouldRead || !card.text.trim()) {
+        return false;
+      }
+      
+      // CRITICAL FIX: Additional filtering for unspoken content patterns
+      const id = card.id || card.elementId || '';
+      const text = card.text || '';
+      
+      const unspokenPatterns = [
+        /toc/i, /table-of-contents/i, /contents/i,
+        /chapter-index/i, /chapter-idx/i,
+        /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
+        /page-number/i, /page-num/i, /^skip/i, /^metadata/i
+      ];
+      
+      const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+      
+      if (isUnspoken) {
+        console.log(`[autoSyncAudio] Excluding unspoken content: ${id}`);
+        return false;
+      }
+      
+      return true;
+    });
     
     if (enabledCards.length === 0) {
+      console.warn('[autoSyncAudio] No enabled cards after filtering unspoken content');
       return;
     }
 
@@ -614,9 +673,36 @@ const AudioSyncCards = () => {
       setGenerating(true);
       setError('');
 
-      // Prepare text blocks from sync cards
+      // CRITICAL FIX: Prepare text blocks from sync cards
+      // Filter out unspoken content (TOC, nav, headers, etc.) to prevent sync drift
       const textBlocks = syncCards
-        .filter(card => card.shouldRead && card.text.trim())
+        .filter(card => {
+          // Must be enabled and have text
+          if (!card.shouldRead || !card.text.trim()) {
+            return false;
+          }
+          
+          // CRITICAL FIX: Additional filtering for unspoken content patterns
+          // Even if shouldRead is true, check ID patterns to catch any missed TOC/nav elements
+          const id = card.id || card.elementId || '';
+          const text = card.text || '';
+          
+          const unspokenPatterns = [
+            /toc/i, /table-of-contents/i, /contents/i,
+            /chapter-index/i, /chapter-idx/i,
+            /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
+            /page-number/i, /page-num/i, /^skip/i, /^metadata/i
+          ];
+          
+          const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+          
+          if (isUnspoken) {
+            console.log(`[handleGenerateAudio] Excluding unspoken content: ${id}`);
+            return false;
+          }
+          
+          return true;
+        })
         .map(card => ({
           id: card.id,
           pageNumber: card.pageNumber || 1, // Use numeric page number
@@ -991,10 +1077,34 @@ const AudioSyncCards = () => {
         return;
       }
 
-      // Filter only cards with shouldRead === true and valid timings
-      const activeCards = syncCards.filter(card => 
-        card.shouldRead && card.endTime > card.startTime
-      );
+      // CRITICAL FIX: Filter only cards with shouldRead === true and valid timings
+      // Also exclude unspoken content (TOC, nav, headers, etc.) to prevent sync drift
+      const activeCards = syncCards.filter(card => {
+        // Must be enabled and have valid timings
+        if (!card.shouldRead || card.endTime <= card.startTime) {
+          return false;
+        }
+        
+        // CRITICAL FIX: Additional filtering for unspoken content patterns
+        const id = card.id || card.elementId || '';
+        const text = card.text || '';
+        
+        const unspokenPatterns = [
+          /toc/i, /table-of-contents/i, /contents/i,
+          /chapter-index/i, /chapter-idx/i,
+          /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
+          /page-number/i, /page-num/i, /^skip/i, /^metadata/i
+        ];
+        
+        const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+        
+        if (isUnspoken) {
+          console.log(`[handleSave] Excluding unspoken content from save: ${id}`);
+          return false;
+        }
+        
+        return true;
+      });
 
       if (activeCards.length === 0) {
         setError('Please enable at least one sync card with valid timings');

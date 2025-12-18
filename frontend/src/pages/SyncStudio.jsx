@@ -12,7 +12,7 @@ import './SyncStudio.css';
  * 
  * Features:
  * - Multi-track waveform visualization (wavesurfer.js)
- * - Sentence and Word level tracks
+ * - Sentence and Word level tracksimage.png
  * - Magnetic snap to silence (zero-crossing detection)
  * - Audio scrubbing during drag
  * - Spacebar tap-in/tap-out for marking
@@ -30,6 +30,7 @@ const SyncStudio = () => {
   const viewerRef = useRef(null);
   const isSpaceDownRef = useRef(false);
   const spaceDownTimeRef = useRef(0);
+  const lastSyncTimeRef = useRef(0); // Track last sync time to prevent rapid syncing
 
   // State for content
   const [xhtmlContent, setXhtmlContent] = useState('');
@@ -95,6 +96,39 @@ const SyncStudio = () => {
         const tagName = el.tagName.toLowerCase();
         const classList = el.className || '';
 
+        // CRITICAL FIX: Filter out unspoken content (TOC, nav, headers, etc.)
+        // These patterns match common unspoken structural elements
+        const unspokenPatterns = [
+          /toc/i,                    // Table of Contents
+          /table-of-contents/i,      // Table of Contents (hyphenated)
+          /contents/i,               // Contents page
+          /chapter-index/i,          // Chapter index
+          /chapter-idx/i,            // Chapter index (abbreviated)
+          /^nav/i,                   // Navigation elements
+          /^header/i,                // Headers
+          /^footer/i,                // Footers
+          /^sidebar/i,               // Sidebars
+          /^menu/i,                  // Menus
+          /page-number/i,            // Page numbers
+          /page-num/i,               // Page numbers (abbreviated)
+          /^skip/i,                  // Skip links
+          /^metadata/i               // Metadata
+        ];
+        
+        // Check if this element should be excluded
+        const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+        
+        // Also check for explicit exclusion attributes
+        const shouldSync = el.getAttribute('data-should-sync') !== 'false';
+        const readAloudAttr = el.getAttribute('data-read-aloud');
+        const isExplicitlyExcluded = readAloudAttr === 'false';
+        
+        // Skip unspoken content entirely (don't create elements for them)
+        if (isUnspoken || isExplicitlyExcluded || !shouldSync) {
+          console.log(`[SyncStudio] Excluding unspoken content: ${id} (${text.substring(0, 30)}...)`);
+          return; // Skip this element
+        }
+
         let type = 'paragraph';
         if (classList.includes('sync-word') || tagName === 'span' && id.includes('_w')) {
           type = 'word';
@@ -108,6 +142,7 @@ const SyncStudio = () => {
           type,
           tagName,
           sectionId,
+          sectionIndex: sectionId, // Store section index for page filtering
           pageNumber: sectionId + 1
         });
       });
@@ -288,7 +323,13 @@ const SyncStudio = () => {
       ...prev,
       sentences: {
         ...prev.sentences,
-        [sentenceId]: { start, end, text, pageNumber: currentSectionIndex + 1 }
+        [sentenceId]: { 
+          id: sentenceId, // CRITICAL: Ensure id is stored in the data object
+          start, 
+          end, 
+          text, 
+          pageNumber: currentSectionIndex + 1 
+        }
       }
     }));
 
@@ -297,11 +338,16 @@ const SyncStudio = () => {
       const words = calculateWordTimings(sentenceId, start, end);
       
       // Remove old word regions for this sentence
+      // CRITICAL FIX: Find words by parentId match, not by ID prefix
       if (regionsPluginRef.current) {
         const regions = regionsPluginRef.current.getRegions();
         regions.forEach(r => {
-          if (r.id.startsWith(sentenceId + '_w')) {
-            r.remove();
+          // Check if this region is a word whose parent matches sentenceId
+          if (r.id.includes('_w')) {
+            const wordData = syncData.words[r.id];
+            if (wordData && wordData.parentId === sentenceId) {
+              r.remove();
+            }
           }
         });
       }
@@ -340,13 +386,17 @@ const SyncStudio = () => {
 
     if (id.includes('_w')) {
       // WORD: Constrain within parent sentence
-      const parentId = id.replace(/_w\d+$/, '');
-      const parent = syncData.sentences[parentId];
-
-      if (parent) {
-        start = Math.max(start, parent.start);
-        end = Math.min(end, parent.end);
-        region.setOptions({ start, end });
+      // CRITICAL FIX: Find parent by matching parentId in words data
+      const wordData = syncData.words[id];
+      if (wordData && wordData.parentId) {
+        // Find sentence that matches this parentId
+        const parent = Object.values(syncData.sentences).find(s => s.id === wordData.parentId);
+        
+        if (parent) {
+          start = Math.max(start, parent.start);
+          end = Math.min(end, parent.end);
+          region.setOptions({ start, end });
+        }
       }
 
       setSyncData(prev => ({
@@ -490,24 +540,108 @@ const SyncStudio = () => {
         
         const endTime = wavesurferRef.current?.getCurrentTime() || 0;
         const startTime = spaceDownTimeRef.current;
+        
+        // CRITICAL FIX: Require minimum hold duration (0.15 seconds) to prevent accidental fast syncing
+        const holdDuration = endTime - startTime;
+        const MIN_HOLD_DURATION = 0.15; // Minimum 150ms hold time
+        
+        if (holdDuration < MIN_HOLD_DURATION) {
+          console.log(`[TapOut] Hold too short (${(holdDuration * 1000).toFixed(0)}ms), ignoring. Minimum: ${(MIN_HOLD_DURATION * 1000).toFixed(0)}ms`);
+          return; // Ignore very quick taps
+        }
 
-        if (endTime > startTime && currentSentenceIndex < parsedElements.length) {
-          const element = parsedElements.filter(el => 
-            el.type === 'sentence' || el.type === 'paragraph'
-          )[currentSentenceIndex];
+        // CRITICAL FIX: Filter elements to only current page
+        const currentPageElements = parsedElements.filter(el => {
+          // Validate element has required properties
+          if (!el || !el.id) {
+            console.warn(`[TapOut] Element missing ID:`, el);
+            return false;
+          }
+          
+          // Extract page number from element ID (e.g., "page4_p1_s1" -> 4)
+          const pageMatch = el.id.match(/page(\d+)/);
+          const elementPageNum = pageMatch ? parseInt(pageMatch[1]) : null;
+          
+          // If element has page number, match it to current section
+          if (elementPageNum !== null) {
+            return elementPageNum === (currentSectionIndex + 1);
+          }
+          
+          // Fallback: if element was parsed from current section, include it
+          // This handles legacy IDs without page prefix
+          return el.sectionIndex === currentSectionIndex;
+        }).filter(el => 
+          el.type === 'sentence' || el.type === 'paragraph'
+        );
+        
+        console.log(`[TapOut] Current page elements (Page ${currentSectionIndex + 1}): ${currentPageElements.length} found`, 
+          currentPageElements.map(el => ({ id: el.id, type: el.type, text: el.text?.substring(0, 30) }))
+        );
+
+        // CRITICAL FIX: Debounce - prevent syncing too fast (minimum 0.3 seconds between syncs)
+        const timeSinceLastSync = Date.now() - lastSyncTimeRef.current;
+        const MIN_SYNC_INTERVAL = 300; // 300ms minimum between syncs
+        
+        if (timeSinceLastSync < MIN_SYNC_INTERVAL) {
+          console.log(`[TapOut] Too fast! Wait ${((MIN_SYNC_INTERVAL - timeSinceLastSync) / 1000).toFixed(2)}s before next sync`);
+          return; // Ignore if syncing too fast
+        }
+
+        // Debug logging
+        console.log(`[TapOut] Debug info:`, {
+          endTime,
+          startTime,
+          holdDuration: (holdDuration * 1000).toFixed(0) + 'ms',
+          currentSentenceIndex,
+          currentPageElementsLength: currentPageElements.length,
+          currentPage: currentSectionIndex + 1,
+          availableElements: currentPageElements.map(el => ({ id: el.id, text: el.text?.substring(0, 30) }))
+        });
+
+        if (endTime > startTime && currentSentenceIndex < currentPageElements.length) {
+          const element = currentPageElements[currentSentenceIndex];
 
           if (element) {
+            // CRITICAL FIX: Validate element has an ID
+            if (!element.id) {
+              console.error(`[TapOut] ERROR: Element at index ${currentSentenceIndex} has no ID!`, element);
+              return; // Skip this element
+            }
+
             // Apply snap to silence
             const snappedStart = findNearestSilence(startTime);
             const snappedEnd = findNearestSilence(endTime);
+
+            console.log(`[TapOut] Syncing element:`, {
+              id: element.id,
+              text: element.text?.substring(0, 50),
+              type: element.type,
+              startTime: snappedStart.toFixed(3),
+              endTime: snappedEnd.toFixed(3)
+            });
 
             // Create region
             createRegion(element.id, snappedStart, snappedEnd, 'sentence');
             updateSentenceWithWords(element.id, snappedStart, snappedEnd, element.text);
 
-            console.log(`[TapOut] ${element.id}: ${snappedStart.toFixed(3)}s - ${snappedEnd.toFixed(3)}s`);
+            console.log(`[TapOut] ✅ Page ${currentSectionIndex + 1} - ${element.id}: ${snappedStart.toFixed(3)}s - ${snappedEnd.toFixed(3)}s (held for ${(holdDuration * 1000).toFixed(0)}ms)`);
+            
+            // Update last sync time
+            lastSyncTimeRef.current = Date.now();
+            
             setCurrentSentenceIndex(prev => prev + 1);
+          } else {
+            console.warn(`[TapOut] Element at index ${currentSentenceIndex} is null/undefined`);
           }
+        } else if (currentSentenceIndex >= currentPageElements.length) {
+          console.log(`[TapOut] All sentences on page ${currentSectionIndex + 1} synced (${currentPageElements.length} total)`);
+        } else {
+          console.warn(`[TapOut] Invalid sync attempt:`, {
+            endTime,
+            startTime,
+            endTimeGreater: endTime > startTime,
+            indexInRange: currentSentenceIndex < currentPageElements.length
+          });
         }
       }
     };
@@ -560,8 +694,12 @@ const SyncStudio = () => {
           const allElements = [];
           sectionsData.forEach((section, idx) => {
             const elements = parseXhtmlElements(section.xhtml, idx);
+            console.log(`[SyncStudio] Parsed ${elements.length} elements from section ${idx + 1}:`, 
+              elements.map(el => ({ id: el.id, type: el.type, text: el.text?.substring(0, 30) }))
+            );
             allElements.push(...elements);
           });
+          console.log(`[SyncStudio] Total parsed elements: ${allElements.length}`);
           setParsedElements(allElements);
 
           // Check for existing audio syncs
@@ -589,37 +727,43 @@ const SyncStudio = () => {
               console.log('[Load] Built ID to page map with', Object.keys(idToPageMap).length, 'entries');
 
               // Load existing sync data
-              // IMPORTANT: Database sync.id is unique, so use that + block_id combo
+              // CRITICAL FIX: Use original XHTML ID as key (not unique DB key)
+              // This ensures consistency with createRegion, handleRegionUpdate, etc.
               const sentences = {};
               const words = {};
               audioData.forEach(sync => {
                 const blockId = sync.block_id || sync.blockId;
-                const syncDbId = sync.id; // Unique database row ID
                 if (blockId) {
                   // Use database page_number as it's the authoritative source
                   const pageNumber = sync.page_number || sync.pageNumber || 1;
                   
-                  // Use database ID as unique key to prevent collisions
-                  // (same block_id can exist on multiple pages)
-                  const uniqueKey = `sync_${syncDbId}`;
+                  // CRITICAL FIX: Use original XHTML ID as key for consistency
+                  // This matches how handleAutoSync and handleLinearSpread store data
+                  const key = blockId;
+                  
+                  // Preserve status from backend (SKIPPED or SYNCED)
+                  // Check notes field for "SKIPPED" or "Magic Sync" to determine status
+                  const status = sync.notes?.includes('SKIPPED') || sync.status === 'SKIPPED' ? 'SKIPPED' : 'SYNCED';
                   
                   if (blockId.includes('_w')) {
                     const parentId = blockId.replace(/_w\d+$/, '');
-                    words[uniqueKey] = {
+                    words[key] = {
                       id: blockId, // Original XHTML ID for SMIL reference
                       parentId: parentId,
                       start: sync.start_time || sync.startTime || 0,
                       end: sync.end_time || sync.endTime || 0,
                       text: sync.custom_text || sync.customText || '',
-                      pageNumber: pageNumber
+                      pageNumber: pageNumber,
+                      status: status
                     };
                   } else {
-                    sentences[uniqueKey] = {
-                      id: blockId, // Original XHTML ID for SMIL reference
-                      start: sync.start_time || sync.startTime || 0,
-                      end: sync.end_time || sync.endTime || 0,
+                    sentences[key] = {
+                      id: blockId, // CRITICAL: Ensure id is stored in the data object
+                      start: Number(sync.start_time || sync.startTime || 0),
+                      end: Number(sync.end_time || sync.endTime || 0),
                       text: sync.custom_text || sync.customText || '',
-                      pageNumber: pageNumber
+                      pageNumber: pageNumber,
+                      status: status
                     };
                   }
                 }
@@ -668,17 +812,26 @@ const SyncStudio = () => {
     regionsPluginRef.current.clearRegions();
 
     // Create sentence regions
-    Object.entries(syncData.sentences).forEach(([id, data]) => {
+    // CRITICAL FIX: Skip SKIPPED blocks (they don't have timestamps and shouldn't create regions)
+    Object.entries(syncData.sentences).forEach(([key, data]) => {
+      // Skip if status is SKIPPED or if timestamps are invalid
+      if (data.status === 'SKIPPED') {
+        return; // Don't create region for skipped blocks
+      }
       if (data.start >= 0 && data.end > data.start) {
-        createRegion(id, data.start, data.end, 'sentence');
+        createRegion(data.id || key, data.start, data.end, 'sentence');
       }
     });
 
     // Create word regions
+    // CRITICAL FIX: Skip SKIPPED blocks
     if (showWordTrack) {
-      Object.entries(syncData.words).forEach(([id, data]) => {
+      Object.entries(syncData.words).forEach(([key, data]) => {
+        if (data.status === 'SKIPPED') {
+          return; // Don't create region for skipped blocks
+        }
         if (data.start >= 0 && data.end > data.start) {
-          createRegion(id, data.start, data.end, 'word');
+          createRegion(data.id || key, data.start, data.end, 'word');
         }
       });
     }
@@ -710,8 +863,35 @@ const SyncStudio = () => {
       setGenerating(true);
       setError('');
 
+      // CRITICAL FIX: Filter out unspoken content (TOC, nav, headers, etc.)
+      // This prevents TOC from being sent to TTS, which would cause sync drift
       const textBlocks = parsedElements
-        .filter(el => el.type === 'sentence' || el.type === 'paragraph')
+        .filter(el => {
+          // Must be sentence or paragraph type
+          if (el.type !== 'sentence' && el.type !== 'paragraph') {
+            return false;
+          }
+          
+          // CRITICAL FIX: Additional filtering for unspoken content patterns
+          const id = el.id || '';
+          const text = el.text || '';
+          
+          const unspokenPatterns = [
+            /toc/i, /table-of-contents/i, /contents/i,
+            /chapter-index/i, /chapter-idx/i,
+            /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
+            /page-number/i, /page-num/i, /^skip/i, /^metadata/i
+          ];
+          
+          const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+          
+          if (isUnspoken) {
+            console.log(`[handleGenerateAudio] Excluding unspoken content: ${id}`);
+            return false;
+          }
+          
+          return true;
+        })
         .map(el => ({
           id: el.id,
           pageNumber: el.pageNumber,
@@ -877,6 +1057,8 @@ const SyncStudio = () => {
         regionsPluginRef.current.clearRegions();
 
         Object.entries(newSentences).forEach(([id, data]) => {
+          // Skip SKIPPED blocks - don't create regions for them
+          if (data.status === 'SKIPPED') return;
           if (data.start >= 0 && data.end > data.start) {
             createRegion(id, data.start, data.end, 'sentence');
           }
@@ -897,6 +1079,163 @@ const SyncStudio = () => {
     } catch (err) {
       console.error('[AutoSync] Error:', err);
       setError('Auto-sync failed: ' + err.message);
+      setAutoSyncProgress(null);
+    } finally {
+      setAutoSyncing(false);
+    }
+  };
+
+  /**
+   * Hybrid Gemini Alignment (Magic Sync)
+   * Uses Gemini AI to intelligently match book blocks to audio transcript
+   * This solves the TOC blocking and 45s offset issues
+   */
+  const handleMagicSync = async () => {
+    if (!audioUrl) {
+      setError('Please upload or generate audio first');
+      return;
+    }
+
+    try {
+      setAutoSyncing(true);
+      setError('');
+
+      // If we have a local audio file (blob URL), upload it first
+      if (audioFile || audioUrl.startsWith('blob:')) {
+        setAutoSyncProgress('Uploading audio to server...');
+        console.log('[MagicSync] Audio is local, uploading first...');
+        
+        let fileToUpload = audioFile;
+        
+        if (!fileToUpload && audioUrl.startsWith('blob:')) {
+          try {
+            const response = await fetch(audioUrl);
+            const blob = await response.blob();
+            fileToUpload = new File([blob], `audio_${jobId}.mp3`, { type: 'audio/mpeg' });
+          } catch (fetchErr) {
+            console.error('[MagicSync] Failed to fetch blob:', fetchErr);
+            setError('Failed to process audio file. Please upload a file directly.');
+            setAutoSyncing(false);
+            return;
+          }
+        }
+        
+        if (fileToUpload) {
+          try {
+            const uploadResult = await audioSyncService.uploadAudioFile(parseInt(jobId), fileToUpload);
+            console.log('[MagicSync] Audio uploaded:', uploadResult);
+          } catch (uploadErr) {
+            console.error('[MagicSync] Upload failed:', uploadErr);
+            setError('Failed to upload audio: ' + uploadErr.message);
+            setAutoSyncing(false);
+            return;
+          }
+        }
+      }
+
+      setAutoSyncProgress('Phase 1: Getting transcript from audio...');
+      console.log('[MagicSync] Starting hybrid alignment...');
+
+      const result = await audioSyncService.magicSync(parseInt(jobId), {
+        language: autoSyncLanguage,
+        granularity: granularity
+      });
+
+      console.log('[MagicSync] Result:', result);
+      setAutoSyncProgress(`Aligned ${result.sentences?.length || 0} sentences (${result.stats?.skipped || 0} skipped)`);
+
+      // Update local sync data
+      const newSentences = {};
+      const newWords = {};
+
+      if (result.sentences) {
+        result.sentences.forEach(s => {
+          const pageNum = s.pageNumber || 1;
+          const key = s.id;
+          
+          newSentences[key] = {
+            id: s.id,
+            start: s.startTime,
+            end: s.endTime,
+            text: s.text,
+            pageNumber: pageNum,
+            status: 'SYNCED' // All returned sentences are SYNCED
+          };
+        });
+      }
+
+      if (result.words) {
+        result.words.forEach(w => {
+          const pageNum = w.pageNumber || 1;
+          const key = w.id;
+          
+          newWords[key] = {
+            id: w.id,
+            parentId: w.parentId,
+            start: w.startTime,
+            end: w.endTime,
+            text: w.text,
+            pageNumber: pageNum,
+            status: 'SYNCED' // All returned words are SYNCED
+          };
+        });
+      }
+      
+      // Add SKIPPED blocks to syncData so they appear in the UI
+      // We need to get the text from parsedElements
+      if (result.skippedIds && result.skippedIds.length > 0) {
+        result.skippedIds.forEach(skippedId => {
+          // Find the element in parsedElements to get its text and page number
+          const element = parsedElements.find(el => el.id === skippedId);
+          if (element) {
+            // Extract page number from ID (e.g., page3_p1_s1 -> page 3)
+            const pageMatch = skippedId.match(/page(\d+)/);
+            const pageNum = pageMatch ? parseInt(pageMatch[1]) : currentSectionIndex + 1;
+            
+            newSentences[skippedId] = {
+              id: skippedId,
+              start: undefined,
+              end: undefined,
+              text: element.text || '',
+              pageNumber: pageNum,
+              status: 'SKIPPED'
+            };
+          }
+        });
+      }
+
+      setSyncData({ sentences: newSentences, words: newWords });
+
+      // Clear and recreate regions
+      if (regionsPluginRef.current) {
+        regionsPluginRef.current.clearRegions();
+
+        Object.entries(newSentences).forEach(([id, data]) => {
+          // Skip SKIPPED blocks - don't create regions for them
+          if (data.status === 'SKIPPED') return;
+          if (data.start >= 0 && data.end > data.start) {
+            createRegion(id, data.start, data.end, 'sentence');
+          }
+        });
+
+        if (showWordTrack) {
+          Object.entries(newWords).forEach(([id, data]) => {
+            if (data.start >= 0 && data.end > data.start) {
+              createRegion(id, data.start, data.end, 'word');
+            }
+          });
+        }
+      }
+
+      setAutoSyncProgress(null);
+      const skippedMsg = result.skippedIds?.length > 0 
+        ? `\n\nSkipped (not in audio): ${result.skippedIds.length} blocks (TOC, headers, etc.)`
+        : '';
+      alert(`✨ Magic Sync complete!\n\nMethod: Hybrid Gemini + Aeneas\nSentences: ${result.sentences?.length || 0}\nWords: ${result.words?.length || 0}${skippedMsg}\n\nTOC and unspoken content automatically skipped!`);
+
+    } catch (err) {
+      console.error('[MagicSync] Error:', err);
+      setError('Magic Sync failed: ' + err.message);
       setAutoSyncProgress(null);
     } finally {
       setAutoSyncing(false);
@@ -980,6 +1319,8 @@ const SyncStudio = () => {
         regionsPluginRef.current.clearRegions();
 
         Object.entries(newSentences).forEach(([id, data]) => {
+          // Skip SKIPPED blocks - don't create regions for them
+          if (data.status === 'SKIPPED') return;
           if (data.start >= 0 && data.end > data.start) {
             createRegion(id, data.start, data.end, 'sentence');
           }
@@ -1038,11 +1379,33 @@ const SyncStudio = () => {
         audioFileName = audioData?.[0]?.audioFilePath?.split('/').pop() || `audio_${jobId}.mp3`;
       }
 
-      // Prepare sync blocks
+      // CRITICAL FIX: Prepare sync blocks, filtering out unspoken content
       const syncBlocks = [];
+      
+      // Helper function to check if content is unspoken
+      const isUnspoken = (id, text) => {
+        const unspokenPatterns = [
+          /toc/i, /table-of-contents/i, /contents/i,
+          /chapter-index/i, /chapter-idx/i,
+          /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
+          /page-number/i, /page-num/i, /^skip/i, /^metadata/i
+        ];
+        return unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+      };
 
-      // Add sentences
+      // Add sentences (filter out unspoken content and SKIPPED blocks)
       Object.entries(syncData.sentences).forEach(([id, data]) => {
+        // Skip SKIPPED blocks - they shouldn't be saved
+        if (data.status === 'SKIPPED') {
+          console.log(`[handleSave] Skipping SKIPPED sentence: ${id}`);
+          return;
+        }
+        
+        if (isUnspoken(id, data.text || '')) {
+          console.log(`[handleSave] Excluding unspoken sentence from save: ${id}`);
+          return; // Skip unspoken content
+        }
+        
         syncBlocks.push({
           id,
           text: data.text,
@@ -1055,8 +1418,23 @@ const SyncStudio = () => {
         });
       });
 
-      // Add words
+      // Add words (filter out unspoken content and SKIPPED blocks)
       Object.entries(syncData.words).forEach(([id, data]) => {
+        // Skip SKIPPED blocks - they shouldn't be saved
+        if (data.status === 'SKIPPED') {
+          console.log(`[handleSave] Skipping SKIPPED word: ${id}`);
+          return;
+        }
+        
+        if (isUnspoken(id, data.text || '')) {
+          console.log(`[handleSave] Excluding unspoken word from save: ${id}`);
+          return; // Skip unspoken content
+        }
+        
+        // CRITICAL FIX: Find parent sentence by matching parentId to sentence.id
+        const parentSentence = Object.values(syncData.sentences).find(s => s.id === data.parentId);
+        const pageNumber = parentSentence?.pageNumber || data.pageNumber || 1;
+        
         syncBlocks.push({
           id,
           text: data.text,
@@ -1064,7 +1442,7 @@ const SyncStudio = () => {
           shouldRead: true,
           start: data.start,
           end: data.end,
-          pageNumber: syncData.sentences[data.parentId]?.pageNumber || 1,
+          pageNumber: pageNumber,
           granularity: 'word'
         });
       });
@@ -1098,6 +1476,8 @@ const SyncStudio = () => {
    */
   const handleSectionChange = (index) => {
     setCurrentSectionIndex(index);
+    // Reset sentence index when changing pages
+    setCurrentSentenceIndex(0);
     if (sections[index]) {
       setXhtmlContent(sections[index].xhtml || '');
     }
@@ -1289,8 +1669,29 @@ const SyncStudio = () => {
                 onClick={handleAutoSync}
                 disabled={!isReady || autoSyncing}
                 className="btn-auto-sync"
+                title="Standard Aeneas forced alignment"
               >
                 {autoSyncing ? '⏳ Syncing...' : '🚀 Auto-Sync'}
+              </button>
+
+              <button 
+                onClick={handleMagicSync}
+                disabled={!isReady || autoSyncing}
+                className="btn-magic-sync"
+                title="Hybrid Gemini Alignment - Intelligently skips TOC and unspoken content"
+                style={{
+                  background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+                  color: 'white',
+                  border: 'none',
+                  padding: '10px 20px',
+                  borderRadius: '6px',
+                  cursor: autoSyncing || !isReady ? 'not-allowed' : 'pointer',
+                  opacity: autoSyncing || !isReady ? 0.6 : 1,
+                  fontWeight: 'bold',
+                  marginLeft: '10px'
+                }}
+              >
+                {autoSyncing ? '⏳ Syncing...' : '✨ Magic Sync'}
               </button>
 
               <button 
@@ -1334,7 +1735,7 @@ const SyncStudio = () => {
 
             <p className="auto-sync-hint">
               {aeneasAvailable 
-                ? '🎯 Aeneas will analyze audio phonemes for precise alignment'
+                ? '🎯 Aeneas analyzes audio phonemes | ✨ Magic Sync uses AI to skip TOC/unspoken content'
                 : '📐 Linear spread calculates timings based on character count'}
             </p>
           </div>
@@ -1356,7 +1757,11 @@ const SyncStudio = () => {
               {isRecording && (
                 <div className="recording-status">
                   <span className="recording-indicator">●</span>
-                  <span>Hold SPACEBAR to mark sentences</span>
+                  <span>Hold SPACEBAR to mark sentences {currentSentenceIndex + 1} / {parsedElements.filter(el => {
+                    const pageMatch = el.id?.match(/page(\d+)/);
+                    const elementPageNum = pageMatch ? parseInt(pageMatch[1]) : null;
+                    return (elementPageNum === (currentSectionIndex + 1)) || (el.sectionIndex === currentSectionIndex);
+                  }).filter(el => el.type === 'sentence' || el.type === 'paragraph').length} (Page {currentSectionIndex + 1})</span>
                   <span className="counter">
                     {currentSentenceIndex} / {parsedElements.filter(e => e.type !== 'word').length}
                   </span>
@@ -1449,24 +1854,36 @@ const SyncStudio = () => {
           <div className="sync-list">
             {Object.entries(syncData.sentences)
               .filter(([id, data]) => data.pageNumber === currentSectionIndex + 1)
-              .sort((a, b) => a[1].start - b[1].start)
-              .map(([id, data]) => (
+              .sort((a, b) => {
+                // Sort SKIPPED blocks to the end, then by start time
+                if (a[1].status === 'SKIPPED' && b[1].status !== 'SKIPPED') return 1;
+                if (a[1].status !== 'SKIPPED' && b[1].status === 'SKIPPED') return -1;
+                return (a[1].start || 0) - (b[1].start || 0);
+              })
+              .map(([id, data]) => {
+                const isSkipped = data.status === 'SKIPPED';
+                return (
               <div 
                 key={id}
-                className={`sync-item ${activeRegionId === id ? 'active' : ''}`}
+                className={`sync-item ${activeRegionId === id ? 'active' : ''} ${isSkipped ? 'skipped' : ''}`}
                 onClick={() => {
+                  if (isSkipped) return; // Don't allow interaction with skipped blocks
                   setActiveRegionId(id);
                   highlightElement(data.id); // Use original XHTML ID
-                  if (wavesurferRef.current) {
+                  if (wavesurferRef.current && data.start !== undefined) {
                     wavesurferRef.current.setTime(data.start);
                   }
                 }}
               >
                 <div className="sync-item-header">
-                  <span className="sync-id">{data.id}</span>
-                  <span className="sync-time">
-                    {formatTime(data.start)} - {formatTime(data.end)}
-                  </span>
+                  <span className="sync-id" title={data.id || id}>{data.id || id || 'No ID'}</span>
+                  {isSkipped ? (
+                    <span className="badge-skipped">Not in Audio</span>
+                  ) : (
+                    <span className="sync-time">
+                      {formatTime(data.start)} - {formatTime(data.end)}
+                    </span>
+                  )}
                 </div>
                 <div className="sync-text">{data.text?.substring(0, 50)}{data.text?.length > 50 ? '...' : ''}</div>
                 
@@ -1501,7 +1918,8 @@ const SyncStudio = () => {
                   </div>
                 )}
               </div>
-            ))}
+            );
+            })}
 
             {Object.entries(syncData.sentences).filter(([id, data]) => data.pageNumber === currentSectionIndex + 1).length === 0 && (
               <div className="empty-state">

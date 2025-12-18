@@ -9,6 +9,7 @@ import { successResponse, errorResponse, notFoundResponse, badRequestResponse } 
 import { getUploadDir } from '../config/fileStorage.js';
 import { aeneasService } from '../services/aeneasService.js';
 import { EpubService } from '../services/epubService.js';
+import { GeminiService } from '../services/geminiService.js';
 
 // Configure multer for audio file uploads
 const audioUpload = multer({
@@ -714,6 +715,310 @@ router.post('/auto-sync', async (req, res) => {
 
   } catch (error) {
     console.error('[AutoSync] Error:', error);
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// POST /api/audio-sync/magic-align - Hybrid Gemini Alignment (Semantic + Aeneas)
+router.post('/magic-align', async (req, res) => {
+  try {
+    const { jobId, audioPath, language = 'eng', granularity = 'sentence' } = req.body;
+    
+    if (!jobId) {
+      return badRequestResponse(res, 'Job ID is required');
+    }
+
+    console.log(`[MagicAlign] Starting Magic Sync (Gemini-only timestamps) for job ${jobId}`);
+    console.log(`[MagicAlign] Language: ${language}, Granularity: ${granularity}`);
+
+    // Get job info
+    const job = await ConversionJobModel.findById(jobId);
+    if (!job) {
+      return notFoundResponse(res, 'Conversion job not found');
+    }
+
+    // Get XHTML content from EPUB
+    let sections;
+    try {
+      sections = await EpubService.getEpubSections(jobId);
+      console.log(`[MagicAlign] Got ${sections?.length || 0} sections`);
+    } catch (epubErr) {
+      return badRequestResponse(res, `Failed to get EPUB sections: ${epubErr.message}`);
+    }
+    
+    if (!sections || sections.length === 0) {
+      return badRequestResponse(res, 'No EPUB sections found for this job');
+    }
+
+    // Resolve audio path (same logic as auto-sync)
+    let resolvedAudioPath = audioPath;
+    if (!resolvedAudioPath) {
+      const existingSyncs = await AudioSyncModel.findByJobId(jobId);
+      if (existingSyncs.length > 0 && existingSyncs[0].audio_file_path) {
+        resolvedAudioPath = existingSyncs[0].audio_file_path;
+        if (!path.isAbsolute(resolvedAudioPath)) {
+          resolvedAudioPath = path.join(getUploadDir(), resolvedAudioPath);
+        }
+      }
+    }
+
+    if (!resolvedAudioPath) {
+      const { getTtsOutputDir } = await import('../config/fileStorage.js');
+      const ttsDir = getTtsOutputDir();
+      const audioDir = path.join(getUploadDir(), 'audio');
+      
+      const possiblePaths = [
+        path.join(ttsDir, `combined_audio_${jobId}.mp3`),
+        path.join(audioDir, `combined_audio_${jobId}.mp3`),
+        path.join(getUploadDir(), 'tts_audio', `combined_audio_${jobId}.mp3`),
+      ];
+      
+      for (const p of possiblePaths) {
+        try {
+          await fs.access(p);
+          resolvedAudioPath = p;
+          break;
+        } catch (e) {
+          // Not found, try next
+        }
+      }
+    }
+
+    if (!resolvedAudioPath) {
+      return badRequestResponse(res, 'No audio file found. Please generate TTS audio or upload an audio file first.');
+    }
+
+    // STEP 1: Get audio duration (for Gemini to estimate timestamps)
+    console.log('[MagicAlign] Phase 1: Getting audio duration...');
+    const { exec } = await import('child_process');
+    const { promisify } = await import('util');
+    const execAsync = promisify(exec);
+    
+    let audioDuration = 0;
+    try {
+      // Use ffprobe to get audio duration
+      const { stdout } = await execAsync(
+        `ffprobe -i "${resolvedAudioPath}" -show_entries format=duration -v quiet -of csv="p=0"`
+      );
+      audioDuration = parseFloat(stdout.trim()) || 0;
+      console.log(`[MagicAlign] Audio duration: ${audioDuration.toFixed(2)}s`);
+    } catch (error) {
+      console.warn(`[MagicAlign] Could not get audio duration from ffprobe: ${error.message}`);
+      // Fallback: estimate based on file size (rough approximation)
+      const stats = await fs.stat(resolvedAudioPath);
+      // Rough estimate: 1MB ≈ 1 minute for MP3
+      audioDuration = (stats.size / (1024 * 1024)) * 60;
+      console.log(`[MagicAlign] Estimated audio duration: ${audioDuration.toFixed(2)}s`);
+    }
+
+    // STEP 2: Process XHTML pages one by one with Gemini
+    console.log('[MagicAlign] Phase 2: Processing XHTML pages with Gemini (one by one)...');
+    
+    const allSyncedBlocks = [];
+    const allSkippedBlocks = [];
+    let cumulativeTime = 0; // Track cumulative time across pages
+    
+    for (let pageIndex = 0; pageIndex < sections.length; pageIndex++) {
+      const section = sections[pageIndex];
+      const pageXhtml = section.xhtml || section.content || '';
+      const pageNumber = section.pageNumber || (pageIndex + 1);
+      
+      if (!pageXhtml || pageXhtml.trim().length === 0) {
+        console.log(`[MagicAlign] Skipping empty page ${pageNumber}`);
+        continue;
+      }
+      
+      console.log(`[MagicAlign] Processing page ${pageNumber} (${pageIndex + 1}/${sections.length})...`);
+      
+      // Extract book blocks from this page
+      const { extractTextFragments } = aeneasService;
+      const { idMap } = extractTextFragments(pageXhtml, granularity, {
+        excludeIds: [],
+        excludePatterns: []
+      });
+      
+      const bookBlocks = idMap.map(m => ({ id: m.id, text: m.text }));
+      
+      if (bookBlocks.length === 0) {
+        console.log(`[MagicAlign] No syncable blocks found on page ${pageNumber}`);
+        continue;
+      }
+      
+      // Calculate estimated time for this page based on text length
+      const pageTextLength = bookBlocks.reduce((sum, b) => sum + b.text.length, 0);
+      const totalTextLength = sections.reduce((sum, s) => {
+        const { idMap: allIdMap } = extractTextFragments(s.xhtml || s.content || '', granularity, {
+          excludeIds: [],
+          excludePatterns: []
+        });
+        return sum + allIdMap.reduce((s, m) => s + m.text.length, 0);
+      }, 0);
+      
+      const estimatedPageDuration = (pageTextLength / totalTextLength) * audioDuration;
+      const pageStartTime = cumulativeTime;
+      const pageEndTime = cumulativeTime + estimatedPageDuration;
+      
+      console.log(`[MagicAlign] Page ${pageNumber}: ${bookBlocks.length} blocks, estimated duration: ${estimatedPageDuration.toFixed(2)}s (${pageStartTime.toFixed(2)}s - ${pageEndTime.toFixed(2)}s)`);
+      
+      // Call Gemini with this page's XHTML blocks and audio file
+      const alignmentMap = await GeminiService.reconcileAlignmentFromXhtml(
+        bookBlocks,
+        pageStartTime,
+        pageEndTime,
+        audioDuration,
+        resolvedAudioPath // Pass audio file path to Gemini
+      );
+      
+      // Process results
+      const synced = alignmentMap.filter(a => a.status === 'SYNCED');
+      const skipped = alignmentMap.filter(a => a.status === 'SKIPPED');
+      
+      allSyncedBlocks.push(...synced);
+      allSkippedBlocks.push(...skipped);
+      
+      cumulativeTime = pageEndTime; // Update cumulative time for next page
+      
+      console.log(`[MagicAlign] Page ${pageNumber}: ${synced.length} synced, ${skipped.length} skipped`);
+    }
+    
+    console.log(`[MagicAlign] Total: ${allSyncedBlocks.length} synced, ${allSkippedBlocks.length} skipped across ${sections.length} pages`);
+    
+    // STEP 3: Process results (Phase 3: Final)
+    console.log('[MagicAlign] Phase 3: Processing Gemini results...');
+    const syncedBlocks = allSyncedBlocks;
+    const skippedBlocks = allSkippedBlocks;
+
+    console.log(`[MagicAlign] Gemini marked ${syncedBlocks.length} as SYNCED, ${skippedBlocks.length} as SKIPPED`);
+
+    // Build final results from synced blocks
+    const finalResults = {
+      sentences: [],
+      words: [],
+      stats: {
+        total: syncedBlocks.length + skippedBlocks.length,
+        synced: syncedBlocks.length,
+        skipped: skippedBlocks.length
+      }
+    };
+
+    let geminiTimestampCount = 0;
+    let missingTimestampCount = 0;
+    
+    for (const aligned of syncedBlocks) {
+      // Find the original block from all sections
+      let block = null;
+      for (const section of sections) {
+        const { idMap } = aeneasService.extractTextFragments(section.xhtml || section.content || '', granularity, {
+          excludeIds: [],
+          excludePatterns: []
+        });
+        block = idMap.find(b => b.id === aligned.id);
+        if (block) break;
+      }
+      
+      if (!block) {
+        console.warn(`[MagicAlign] Block not found for ID: ${aligned.id}`);
+        continue;
+      }
+      
+      // Track "If You Were a Horse" specifically
+      const isHorseBlock = block.text.toLowerCase().includes('if you were a horse');
+      
+      // Use ONLY Gemini's timestamps (semantic understanding handles duplicates better)
+      if (aligned.start !== undefined && aligned.end !== undefined) {
+        const startTime = Number(aligned.start);
+        const endTime = Number(aligned.end);
+        
+        geminiTimestampCount++;
+        
+        if (isHorseBlock) {
+          console.log(`[MagicAlign] 🐴 "If You Were a Horse" - Using Gemini timestamps:`);
+          console.log(`  Block ID: ${aligned.id}`);
+          console.log(`  Block text: "${block.text.substring(0, 60)}..."`);
+          console.log(`  Gemini timestamps: ${startTime}s - ${endTime}s`);
+        }
+        
+        // Add to results with Gemini timestamps
+        finalResults.sentences.push({
+          id: aligned.id,
+          text: block.text,
+          type: 'sentence',
+          startTime,
+          endTime,
+          pageNumber: parseInt(aligned.id.match(/page(\d+)/)?.[1]) || 1
+        });
+      } else {
+        // Gemini didn't provide timestamps - skip this block
+        missingTimestampCount++;
+        console.warn(`[MagicAlign] No Gemini timestamps for block ${aligned.id}: "${block.text.substring(0, 50)}..."`);
+        
+        if (isHorseBlock) {
+          console.warn(`[MagicAlign] ⚠️ "If You Were a Horse" missing timestamps from Gemini!`);
+        }
+      }
+    }
+    
+    console.log(`[MagicAlign] Timestamp statistics:`);
+    console.log(`  Total synced blocks: ${syncedBlocks.length}`);
+    console.log(`  Blocks with Gemini timestamps: ${geminiTimestampCount} (${((geminiTimestampCount / syncedBlocks.length) * 100).toFixed(1)}%)`);
+    console.log(`  Blocks missing timestamps: ${missingTimestampCount} (${((missingTimestampCount / syncedBlocks.length) * 100).toFixed(1)}%)`);
+
+    // Save to database
+    const savedSegments = [];
+    for (const item of [...finalResults.sentences, ...finalResults.words]) {
+      // Validate required fields
+      if (!item.id || item.startTime === undefined || item.endTime === undefined) {
+        console.warn(`[MagicAlign] Skipping item with missing data:`, {
+          id: item.id,
+          hasStartTime: item.startTime !== undefined,
+          hasEndTime: item.endTime !== undefined
+        });
+        continue;
+      }
+
+      const pageNum = item.pageNumber || parseInt(item.id.match(/page(\d+)/)?.[1]) || 1;
+      
+      const existingSyncs = await AudioSyncModel.findByJobId(jobId);
+      const existing = existingSyncs.find(s => 
+        s.block_id === item.id && 
+        (s.page_number || 1) === pageNum
+      );
+
+      // CRITICAL: AudioSyncModel expects camelCase, not snake_case
+      // Ensure all values are defined (use null instead of undefined for optional fields)
+      const syncData = {
+        pdfDocumentId: job.pdf_document_id || job.pdf_id || null,
+        conversionJobId: jobId,
+        blockId: item.id || null,
+        pageNumber: pageNum,
+        startTime: Number(item.startTime) || 0,
+        endTime: Number(item.endTime) || 0,
+        audioFilePath: resolvedAudioPath || null,
+        notes: `Magic Sync (Hybrid Gemini + Aeneas). Type: ${item.type || 'sentence'}`
+      };
+
+      if (existing) {
+        await AudioSyncModel.update(existing.id, syncData);
+        savedSegments.push({ ...syncData, id: existing.id });
+      } else {
+        const newSync = await AudioSyncModel.create(syncData);
+        savedSegments.push(newSync);
+      }
+    }
+
+    console.log(`[MagicAlign] Saved ${savedSegments.length} segments`);
+
+    return successResponse(res, {
+      method: 'gemini_only',
+      sentences: finalResults.sentences,
+      words: finalResults.words,
+      stats: finalResults.stats,
+      savedCount: savedSegments.length,
+      skippedIds: skippedBlocks.map(b => b.id)
+    }, 201);
+
+  } catch (error) {
+    console.error('[MagicAlign] Error:', error);
     return errorResponse(res, error.message, 500);
   }
 });
