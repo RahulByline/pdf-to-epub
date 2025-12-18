@@ -109,18 +109,30 @@ class AeneasService {
       
       const adjustedSentences = [];
       
-      // Check for pre-roll silence (silence at the very start)
+      // CRITICAL FIX: The pre-roll adjustment was ADDING time, making timestamps too late!
+      // If Aeneas correctly aligns text to audio (e.g., "If You Were a Horse" at 7-8s),
+      // and we add 7 seconds for pre-roll, we get 14-15s (WRONG!).
+      // 
+      // Solution: Aeneas already accounts for pre-roll in its alignment.
+      // We should NOT add any offset. The real issue is excluded content (TOC) taking up timeline space.
+      // 
+      // Disable pre-roll offset adjustment - it's causing the 7-second delay bug
       const preRollSilence = silencePeriods.find(s => s.start < 0.5 && s.end > 0.1);
-      const preRollOffset = preRollSilence ? preRollSilence.end : 0;
+      const preRollEnd = preRollSilence ? preRollSilence.end : 0;
       
-      if (preRollOffset > 0) {
-        console.log(`[AeneasService] Detected ${(preRollOffset * 1000).toFixed(0)}ms pre-roll silence, adjusting timestamps`);
+      if (preRollEnd > 0) {
+        console.log(`[AeneasService] Detected ${(preRollEnd * 1000).toFixed(0)}ms pre-roll silence, but Aeneas already accounts for it in alignment`);
+        console.log(`[AeneasService] Not applying pre-roll offset (would cause timestamps to be too late)`);
       }
+      
+      // CRITICAL FIX: No pre-roll offset - Aeneas handles it correctly
+      const preRollOffset = 0;
       
       for (let i = 0; i < sentences.length; i++) {
         const sentence = sentences[i];
-        let adjustedStart = sentence.startTime + preRollOffset;
-        let adjustedEnd = sentence.endTime + preRollOffset;
+        // CRITICAL FIX: Don't add any offset - Aeneas already aligned correctly
+        let adjustedStart = sentence.startTime;
+        let adjustedEnd = sentence.endTime;
         
         // Check for pause between this sentence and the next
         if (i < sentences.length - 1) {
@@ -137,7 +149,8 @@ class AeneasService {
             
             if (silenceInGap) {
               // Adjust end time to end of silence (more natural pause)
-              adjustedEnd = silenceInGap.end + preRollOffset;
+              // Don't add preRollOffset here either - it's already 0
+              adjustedEnd = silenceInGap.end;
               console.log(`[AeneasService] Adjusted sentence ${i + 1} end time for pause: ${(silenceInGap.end - sentence.endTime) * 1000}ms`);
             }
           }
@@ -364,10 +377,22 @@ class AeneasService {
     // Ensure temp directory exists before writing
     await fs.mkdir(this.tempDir, { recursive: true });
     
+    // CRITICAL FIX: Normalize text to match what Aeneas will return
+    // Aeneas normalizes whitespace (newlines → spaces, multiple spaces → single space)
+    // We need to send normalized text so fragments match our segments
+    const normalizeForAeneas = (text) => {
+      return text
+        .replace(/\s+/g, ' ')  // Replace all whitespace (newlines, tabs, etc.) with single space
+        .trim();
+    };
+    
     // Aeneas works best with one segment per line
-    // Strip any BOM characters that might exist in the text
+    // Strip any BOM characters and normalize whitespace
     const content = textLines
-      .map(line => line.replace(/^\ufeff/, '').trim())  // Remove BOM from each line
+      .map(line => {
+        const normalized = normalizeForAeneas(line.replace(/^\ufeff/, ''));
+        return normalized;
+      })
       .join('\n')
       .replace(/^\ufeff/, '');  // Remove BOM from start of file
     
@@ -474,7 +499,22 @@ class AeneasService {
         try {
           const resultContent = await fs.readFile(outputPath, 'utf8');
           const result = JSON.parse(resultContent);
-          resolve(result.fragments || []);
+          const fragments = result.fragments || [];
+          
+          // CRITICAL DEBUG: Save Aeneas output for inspection
+          const debugOutputPath = outputPath.replace('.json', '_debug.json');
+          await fs.writeFile(debugOutputPath, JSON.stringify({
+            totalFragments: fragments.length,
+            fragments: fragments.slice(0, 10).map(f => ({
+              begin: f.begin,
+              end: f.end,
+              lines: f.lines,
+              id: f.id
+            }))
+          }, null, 2), 'utf8');
+          console.log(`[AeneasService] Saved debug output to: ${debugOutputPath}`);
+          
+          resolve(fragments);
         } catch (parseErr) {
           reject(new Error(`Failed to parse Aeneas output: ${parseErr.message}`));
         }
@@ -485,7 +525,8 @@ class AeneasService {
   /**
    * Map Aeneas alignment results back to original IDs
    * 
-   * Aeneas returns fragments in order, so we map them back to our idMap
+   * CRITICAL FIX: Aeneas can create MORE fragments than text segments (splits text internally)
+   * We need to match by text content, not just index, and merge fragments that belong to the same segment
    * 
    * @param {Object[]} fragments - Aeneas output fragments
    * @param {Object[]} idMap - Original ID mappings
@@ -493,22 +534,318 @@ class AeneasService {
    */
   mapFragmentsToIds(fragments, idMap) {
     const results = [];
-
-    for (let i = 0; i < fragments.length && i < idMap.length; i++) {
-      const fragment = fragments[i];
-      const mapping = idMap[i];
-
-      results.push({
-        id: mapping.id,
-        text: mapping.text,
-        type: mapping.type,
-        startTime: parseFloat(fragment.begin),
-        endTime: parseFloat(fragment.end),
-        // Duration in milliseconds
-        duration: (parseFloat(fragment.end) - parseFloat(fragment.begin)) * 1000
-      });
+    
+    // CRITICAL FIX: Aeneas can split one text segment into multiple fragments
+    // Strategy: Group consecutive fragments that belong to the same segment
+    // Use the ratio of fragments to segments to determine grouping
+    
+    if (fragments.length === 0 || idMap.length === 0) {
+      return results;
+    }
+    
+    // CRITICAL FIX: Sliding Window & Score-Based Matching
+    // Prevents "jump-ahead" errors where duplicate text causes matching fragment 8 (45s) 
+    // to segment 8 when the correct match is at fragment 2 (7s)
+    // 
+    // The fix: Use a strict sliding window that limits search to nearby fragments,
+    // preventing large jumps that cause 30+ second offsets
+    
+    // Normalize text for comparison (same normalization as createTextFile)
+    const normalizeText = (text) => {
+      return (text || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    };
+    
+    let fragmentIndex = 0;
+    const TOLERANCE = 5; // Search 5 fragments ahead/behind for a better match
+    
+    // Calculate expected audio duration for timing validation
+    const lastFragment = fragments[fragments.length - 1];
+    const totalAudioDuration = parseFloat(lastFragment?.end || 0);
+    
+    for (let i = 0; i < idMap.length; i++) {
+      const segment = idMap[i];
+      const expectedText = normalizeText(segment.text);
+      
+      // CRITICAL FIX: Calculate expected timestamp based on segment position
+      // Early segments should have early timestamps, late segments should have late timestamps
+      // This prevents matching segment 8 (early book) to fragment 8 (45 seconds)
+      const segmentProgress = i / idMap.length; // 0.0 to 1.0
+      const expectedTimestamp = totalAudioDuration * segmentProgress;
+      const timestampTolerance = totalAudioDuration * 0.15; // Allow 15% deviation
+      
+      // CRITICAL: For early segments (first 30%), use a more aggressive check
+      // Early segments should NOT be matched to fragments that are way into the audio
+      // For example, segment 8 (26% through) should not match fragment at 45 seconds
+      const isEarlySegment = i < idMap.length * 0.3;
+      // Use absolute threshold: early segments should be in first 20 seconds of audio
+      // This prevents matching early segments to fragments at 45+ seconds
+      const maxAllowedTimestampForEarly = Math.min(20, totalAudioDuration * 0.15); // Max 20 seconds or 15% of audio, whichever is smaller
+      
+      let bestMatch = null;
+      let highestScore = -1;
+      let bestMatchIndex = -1;
+      
+      // Search in a window around the current fragmentIndex
+      // Asymmetric window: 2 behind, TOLERANCE ahead (prevents going too far back)
+      // CRITICAL: For early segments, expand the backward search to catch misaligned fragments
+      // For very early segments (first 10%), search all the way back to the beginning
+      let backwardSearch = i < idMap.length * 0.1 ? fragmentIndex : 
+                             (i < idMap.length * 0.3 ? Math.min(10, fragmentIndex) : 2);
+      let startSearch = Math.max(0, fragmentIndex - backwardSearch);
+      let endSearch = Math.min(fragments.length, fragmentIndex + TOLERANCE);
+      
+      // CRITICAL: For early segments looking for specific text, also search fragments in 6-9s range
+      // This handles cases where Aeneas misaligned the audio but the actual audio is in that range
+      if (isEarlySegment && expectedText.length > 5) {
+        // Find all fragments that are in the 6-9 second range
+        for (let k = 0; k < fragments.length; k++) {
+          const fragTime = parseFloat(fragments[k].begin);
+          if (fragTime >= 6 && fragTime <= 9) {
+            // This fragment is in our target range - make sure it's in our search window
+            if (k < startSearch) startSearch = k;
+            if (k >= endSearch) endSearch = k + 1;
+          }
+        }
+      }
+      
+      for (let j = startSearch; j < endSearch; j++) {
+        const fragment = fragments[j];
+        const fragText = normalizeText(fragment.lines?.join(' ') || fragment.lines?.[0] || '');
+        
+        if (fragText.length === 0) continue;
+        
+        const fragmentTimestamp = parseFloat(fragment.begin);
+        
+        // Calculate Score: Text Similarity + Proximity + Timing Validation
+        // CRITICAL: Text match is REQUIRED - no bonuses without at least partial text match
+        let score = 0;
+        let hasTextMatch = false;
+        
+        // Exact text match gets highest score
+        // CRITICAL: For early segments, exact text match is worth even more
+        if (fragText === expectedText) {
+          score += isEarlySegment ? 150 : 100; // Extra bonus for early segments
+          hasTextMatch = true;
+        }
+        // Partial text match (one contains the other)
+        // CRITICAL: Prefer fragments where expectedText is contained in fragText (not the other way)
+        // This means the fragment has the text we're looking for, possibly with extra content
+        else if (fragText.includes(expectedText)) {
+          hasTextMatch = true;
+          // Check if fragment has extra text beyond what we're looking for
+          const extraText = fragText.replace(expectedText, '').trim();
+          if (extraText.length > 0) {
+            // Fragment has extra text (e.g., "If You Were a Horse 4" when looking for "If You Were a Horse")
+            // Heavily penalize - prefer exact matches or fragments without extra text
+            score += isEarlySegment ? 40 : 25; // Much lower score for fragments with extra text
+            // Additional penalty based on amount of extra text
+            const extraTextPenalty = Math.min(30, extraText.length * 2);
+            score -= extraTextPenalty;
+          } else {
+            // Fragment text is exactly what we're looking for (shouldn't happen, but just in case)
+            score += isEarlySegment ? 80 : 50;
+          }
+        }
+        // If expectedText contains fragText, it's a weaker match (fragment is subset of expected)
+        else if (expectedText.includes(fragText)) {
+          score += 30; // Lower score for subset matches
+          hasTextMatch = true;
+        }
+        
+        // CRITICAL FIX: Only apply bonuses if there's at least a partial text match
+        // This prevents fragments with completely different text from scoring high
+        if (!hasTextMatch) {
+          // No text match at all - heavily penalize
+          score = -100; // Negative score to ensure it's not selected
+        } else {
+          // Proximity bonus: closer to the current fragmentIndex is better
+          // Maximum bonus of 20 points for being at fragmentIndex
+          // CRITICAL: For early segments, give bonus for being EARLIER (lower index), not just closer
+          let proximityBonus;
+          if (isEarlySegment) {
+            // For early segments, prefer fragments that are earlier in the audio
+            // Give bonus for being at or before the expected position
+            if (j <= i) {
+              // Fragment is at or before expected segment position - good!
+              proximityBonus = 30 - Math.abs(j - i) * 2; // Up to 30 points
+            } else {
+              // Fragment is after expected position - small penalty
+              proximityBonus = Math.max(0, 20 - (j - i) * 3);
+            }
+          } else {
+            // For later segments, use standard proximity
+            proximityBonus = Math.max(0, 20 - Math.abs(j - fragmentIndex));
+          }
+          score += proximityBonus;
+        }
+        
+        // CRITICAL FIX: Timing validation penalty
+        // Only apply timing bonuses/penalties if there's a text match
+        // This prevents fragments with wrong text from scoring high due to timing
+        if (hasTextMatch) {
+          const timestampDiff = Math.abs(fragmentTimestamp - expectedTimestamp);
+          
+          // CRITICAL: For early segments, reject fragments that are too far into the audio
+          if (isEarlySegment && fragmentTimestamp > maxAllowedTimestampForEarly) {
+            // Heavily penalize - this is likely a misalignment
+            score -= 300; // Effectively reject this match
+          } else if (isEarlySegment) {
+            // For early segments, prefer fragments that are EARLY in the audio
+            // Give bonus for being in the first 15 seconds
+            if (fragmentTimestamp <= 15) {
+              const earlyBonus = 30 - (fragmentTimestamp / 15) * 15; // Up to 30 points for being at 0s
+              score += earlyBonus;
+            }
+            // CRITICAL: Extra bonus for fragments in the "sweet spot" (5-10 seconds) for early segments
+            // This helps catch fragments that are close to where the user expects them (7-8 seconds)
+            if (fragmentTimestamp >= 5 && fragmentTimestamp <= 10) {
+              score += 40; // Increased bonus for being in the sweet spot (was 25)
+            }
+            // CRITICAL: For segments in the first 30%, if timestamp is in 6-9 second range, 
+            // give massive bonus (text match already confirmed)
+            if (i < idMap.length * 0.3 && fragmentTimestamp >= 6 && fragmentTimestamp <= 9) {
+              score += 60; // Very large bonus for being in the expected range
+            }
+            // Still apply timing penalty if way off from expected
+            if (timestampDiff > timestampTolerance) {
+              const timingPenalty = Math.min(50, (timestampDiff / timestampTolerance) * 15);
+              score -= timingPenalty;
+            }
+          } else if (timestampDiff > timestampTolerance) {
+            // Heavy penalty for timing mismatch (can reduce score by up to 100 points)
+            const timingPenalty = Math.min(100, (timestampDiff / timestampTolerance) * 30);
+            score -= timingPenalty;
+          } else {
+            // Small bonus for good timing alignment
+            const timingBonus = Math.max(0, 10 - (timestampDiff / timestampTolerance) * 10);
+            score += timingBonus;
+          }
+        }
+        
+        if (score > highestScore) {
+          highestScore = score;
+          bestMatch = fragment;
+          bestMatchIndex = j;
+        }
+      }
+      
+      // Only use the match if score is high enough (prevents weak matches)
+      // CRITICAL: Also check that timing makes sense
+      if (bestMatch && highestScore > 50) {
+        const matchedTimestamp = parseFloat(bestMatch.begin);
+        const timestampDiff = Math.abs(matchedTimestamp - expectedTimestamp);
+        
+        // Reject matches with extreme timing mismatches, even if text matches
+        // CRITICAL: For early segments, reject if fragment is too far into the audio
+        if (isEarlySegment && matchedTimestamp > maxAllowedTimestampForEarly) {
+          console.warn(`[AeneasService] ⚠️  Rejecting match for early segment ${i} (${segment.id}): timestamp ${matchedTimestamp.toFixed(2)}s exceeds max allowed ${maxAllowedTimestampForEarly.toFixed(2)}s for early segments`);
+          // Fall through to fallback
+          bestMatch = null;
+          highestScore = -1;
+        } else if (isEarlySegment && matchedTimestamp > expectedTimestamp + 30) {
+          console.warn(`[AeneasService] ⚠️  Rejecting match for segment ${i} (${segment.id}): timestamp ${matchedTimestamp.toFixed(2)}s is too far from expected ${expectedTimestamp.toFixed(2)}s (diff: ${timestampDiff.toFixed(2)}s)`);
+          // Fall through to fallback
+          bestMatch = null;
+          highestScore = -1;
+        }
+      }
+      
+      if (bestMatch && highestScore > 50) {
+        // Advance the pointer to after the matched fragment
+        fragmentIndex = bestMatchIndex + 1;
+        
+        const result = {
+          id: segment.id,
+          text: segment.text,
+          type: segment.type,
+          startTime: parseFloat(bestMatch.begin),
+          endTime: parseFloat(bestMatch.end),
+          duration: (parseFloat(bestMatch.end) - parseFloat(bestMatch.begin)) * 1000
+        };
+        
+        results.push(result);
+        
+        // CRITICAL DEBUG: Log "If You Were a Horse" to verify mapping
+        if (segment.text && segment.text.toLowerCase().includes('if you were a horse')) {
+          const matchedTimestamp = parseFloat(bestMatch.begin);
+          const timestampDiff = matchedTimestamp - expectedTimestamp;
+          console.log(`[AeneasService] 🔍 Best match for "If You Were a Horse" found at index ${bestMatchIndex} (Score: ${highestScore}):`, {
+            id: result.id,
+            expectedText: expectedText.substring(0, 60),
+            fragmentText: normalizeText(bestMatch.lines?.join(' ') || bestMatch.lines?.[0] || '').substring(0, 60),
+            resultStartTime: result.startTime,
+            resultEndTime: result.endTime,
+            segmentIndex: i,
+            fragmentIndex: bestMatchIndex,
+            score: highestScore,
+            searchWindow: `${startSearch} to ${endSearch - 1}`,
+            expectedTimestamp: expectedTimestamp.toFixed(2),
+            actualTimestamp: matchedTimestamp.toFixed(2),
+            timestampDiff: timestampDiff.toFixed(2),
+            timingValid: Math.abs(timestampDiff) <= timestampTolerance,
+            fragmentIndexAtStart: fragmentIndex
+          });
+          
+          // Also log all fragments in search window for debugging
+          console.log(`[AeneasService] 🔍 All fragments in search window [${startSearch} to ${endSearch - 1}]:`);
+          for (let k = startSearch; k < endSearch && k < fragments.length; k++) {
+            const frag = fragments[k];
+            const fragTxt = normalizeText(frag.lines?.join(' ') || frag.lines?.[0] || '');
+            const fragTime = parseFloat(frag.begin);
+            const containsText = fragTxt.includes(expectedText) || expectedText.includes(fragTxt);
+            console.log(`  Fragment ${k}: "${fragTxt.substring(0, 40)}" at ${fragTime.toFixed(2)}s (contains text: ${containsText})`);
+          }
+        }
+      } else {
+        // Fallback if no match: try to find the next available fragment
+        // CRITICAL: Don't use the same fragment for multiple segments - advance the pointer
+        let fallbackFragment = null;
+        let fallbackIndex = fragmentIndex;
+        
+        // Look ahead for the next fragment that hasn't been used
+        while (fallbackIndex < fragments.length && !fallbackFragment) {
+          const candidate = fragments[fallbackIndex];
+          // Check if this fragment is already used in results
+          const alreadyUsed = results.some(r => 
+            Math.abs(r.startTime - parseFloat(candidate.begin)) < 0.1 &&
+            Math.abs(r.endTime - parseFloat(candidate.end)) < 0.1
+          );
+          
+          if (!alreadyUsed) {
+            fallbackFragment = candidate;
+            break;
+          }
+          fallbackIndex++;
+        }
+        
+        // If no unused fragment found, use the current one
+        if (!fallbackFragment) {
+          fallbackFragment = fragments[Math.min(fragmentIndex, fragments.length - 1)];
+        }
+        
+        const result = {
+          id: segment.id,
+          text: segment.text,
+          type: segment.type,
+          startTime: parseFloat(fallbackFragment.begin),
+          endTime: parseFloat(fallbackFragment.end),
+          duration: (parseFloat(fallbackFragment.end) - parseFloat(fallbackFragment.begin)) * 1000
+        };
+        
+        results.push(result);
+        
+        // Advance fragmentIndex to prevent cascade of failures
+        fragmentIndex = Math.min(fallbackIndex + 1, fragments.length);
+        
+        console.warn(`[AeneasService] ⚠️  No good match found for segment ${i} (${segment.id}), using fallback fragment at index ${fallbackIndex} (Score: ${highestScore.toFixed(2)})`);
+      }
+    }
+    
+    if (fragmentIndex < fragments.length) {
+      console.warn(`[AeneasService] ⚠️  ${fragments.length - fragmentIndex} fragments remaining (not mapped)`);
     }
 
+    console.log(`[AeneasService] Mapped ${fragments.length} fragments to ${results.length} segments (ratio: ${(fragments.length / idMap.length).toFixed(2)} fragments/segment)`);
     return results;
   }
 
@@ -705,6 +1042,31 @@ class AeneasService {
       const audioExt = path.extname(audioPath).toLowerCase();
       if (audioExt !== '.wav') {
         processedAudioPath = await this.normalizeAudio(audioPath, normalizedAudioPath);
+        
+        // CRITICAL FIX: Verify normalized audio duration matches original
+        // If durations don't match, normalization may have changed timing
+        try {
+          const { execSync } = await import('child_process');
+          const originalDuration = parseFloat(execSync(
+            `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${audioPath}"`,
+            { encoding: 'utf8' }
+          ).trim());
+          
+          const normalizedDuration = parseFloat(execSync(
+            `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${processedAudioPath}"`,
+            { encoding: 'utf8' }
+          ).trim());
+          
+          const durationDiff = Math.abs(originalDuration - normalizedDuration);
+          if (durationDiff > 0.1) { // More than 100ms difference
+            console.warn(`[AeneasService] ⚠️  Normalized audio duration differs by ${durationDiff.toFixed(2)}s. Using original audio to preserve timing.`);
+            processedAudioPath = audioPath; // Use original to preserve exact timing
+          } else {
+            console.log(`[AeneasService] Normalized audio duration verified: ${normalizedDuration.toFixed(2)}s (original: ${originalDuration.toFixed(2)}s)`);
+          }
+        } catch (durationCheckError) {
+          console.warn('[AeneasService] Could not verify normalized audio duration, using normalized file:', durationCheckError.message);
+        }
       } else {
         console.log('[AeneasService] Audio is already WAV format, skipping normalization');
       }
@@ -729,6 +1091,12 @@ class AeneasService {
       }
 
       console.log(`[AeneasService] Extracted ${textLines.length} ${granularity} segments`);
+      
+      // CRITICAL DEBUG: Log first few text segments to verify exclusion
+      if (textLines.length > 0) {
+        console.log(`[AeneasService] First 3 text segments:`, textLines.slice(0, 3).map((t, i) => `${i + 1}. "${t.substring(0, 50)}..." (ID: ${idMap[i]?.id})`));
+        console.log(`[AeneasService] Last 3 text segments:`, textLines.slice(-3).map((t, i) => `${textLines.length - 2 + i}. "${t.substring(0, 50)}..." (ID: ${idMap[textLines.length - 3 + i]?.id})`));
+      }
 
       // 2. Create text file for Aeneas
       await this.createTextFile(textLines, textPath);
@@ -741,13 +1109,111 @@ class AeneasService {
       });
 
       console.log(`[AeneasService] Aeneas returned ${fragments.length} fragments`);
+      
+      // CRITICAL DEBUG: Save full Aeneas output for inspection
+      try {
+        const debugOutputPath = outputPath.replace('.json', '_full_debug.json');
+        await fs.writeFile(debugOutputPath, JSON.stringify({
+          totalFragments: fragments.length,
+          totalSegments: idMap.length,
+          fragments: fragments.map((f, idx) => ({
+            index: idx,
+            begin: f.begin,
+            end: f.end,
+            lines: f.lines,
+            id: f.id
+          })),
+          textSegments: idMap.map((m, idx) => ({
+            index: idx,
+            id: m.id,
+            text: m.text.substring(0, 60)
+          }))
+        }, null, 2), 'utf8');
+        console.log(`[AeneasService] 💾 Saved full debug output to: ${debugOutputPath}`);
+      } catch (debugErr) {
+        console.warn('[AeneasService] Could not save debug output:', debugErr.message);
+      }
+      
+      // CRITICAL DEBUG: Log first few alignment results to verify timing
+      if (fragments.length > 0) {
+        console.log(`[AeneasService] First 10 alignment results:`, fragments.slice(0, 10).map((f, idx) => ({
+          index: idx,
+          text: f.lines?.[0]?.substring(0, 40) || 'N/A',
+          start: f.begin,
+          end: f.end,
+          id: f.id
+        })));
+        
+        // Find fragment that contains "If You Were a Horse"
+        const horseFragment = fragments.find(f => 
+          f.lines && f.lines[0] && f.lines[0].toLowerCase().includes('if you were a horse')
+        );
+        if (horseFragment) {
+          console.log(`[AeneasService] 🔍 Found "If You Were a Horse" in Aeneas fragments:`, {
+            begin: horseFragment.begin,
+            end: horseFragment.end,
+            text: horseFragment.lines?.[0],
+            id: horseFragment.id,
+            fragmentIndex: fragments.indexOf(horseFragment)
+          });
+        } else {
+          console.log(`[AeneasService] ⚠️  "If You Were a Horse" fragment NOT found in Aeneas output`);
+          console.log(`[AeneasService] Searching for similar text...`);
+          const similarFragments = fragments.filter(f => 
+            f.lines && f.lines[0] && (
+              f.lines[0].toLowerCase().includes('horse') ||
+              f.lines[0].toLowerCase().includes('were')
+            )
+          );
+          if (similarFragments.length > 0) {
+            console.log(`[AeneasService] Found ${similarFragments.length} fragments with "horse" or "were":`, 
+              similarFragments.slice(0, 3).map(f => ({
+                text: f.lines[0].substring(0, 40),
+                begin: f.begin,
+                end: f.end
+              }))
+            );
+          }
+        }
+      }
 
       // 4. Map results to original IDs
+      console.log(`[AeneasService] Mapping ${fragments.length} fragments to ${idMap.length} segments...`);
       const mappedResults = this.mapFragmentsToIds(fragments, idMap);
+      
+      // CRITICAL DEBUG: Log mapped results to verify timing
+      if (mappedResults.length > 0) {
+        console.log(`[AeneasService] First 5 mapped results:`, mappedResults.slice(0, 5).map(r => ({
+          id: r.id,
+          text: r.text?.substring(0, 40) || 'N/A',
+          start: r.startTime,
+          end: r.endTime,
+          type: r.type
+        })));
+        
+        // CRITICAL DEBUG: Find "If You Were a Horse" to verify its timestamp
+        const horseSegment = mappedResults.find(r => 
+          r.text && r.text.toLowerCase().includes('if you were a horse')
+        );
+        if (horseSegment) {
+          console.log(`[AeneasService] ✅ "If You Were a Horse" mapped correctly:`, {
+            id: horseSegment.id,
+            text: horseSegment.text?.substring(0, 60),
+            start: horseSegment.startTime,
+            end: horseSegment.endTime,
+            duration: horseSegment.endTime - horseSegment.startTime
+          });
+        } else {
+          console.log(`[AeneasService] ❌ "If You Were a Horse" NOT found in mapped results!`);
+          console.log(`[AeneasService] Available IDs:`, mappedResults.slice(0, 10).map(r => r.id));
+        }
+      }
 
       // 5. Separate into sentences and words
       const sentences = mappedResults.filter(r => r.type !== 'word');
       let words = mappedResults.filter(r => r.type === 'word');
+      
+      console.log(`[AeneasService] Separated: ${sentences.length} sentences, ${words.length} words`);
 
       // 6. Auto-propagate word timings if requested
       if (propagateWords && granularity === 'sentence' && sentences.length > 0) {

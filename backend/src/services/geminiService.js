@@ -1580,5 +1580,283 @@ Return ONLY valid JSON array, no markdown, no explanations:
 
     return toc;
   }
+
+  /**
+   * HYBRID ALIGNMENT: Reconcile book blocks with audio transcript using semantic matching
+   * This is the "brain" of the hybrid sync - it identifies which book segments are actually in the audio
+   * 
+   * @param {Array} bookBlocks - Array of {id: string, text: string} objects from XHTML
+   * @param {Object} whisperData - Transcript data with segments: [{start: number, end: number, text: string}]
+   * @returns {Promise<Array>} Array of {id: string, status: 'SYNCED'|'SKIPPED', start?: number, end?: number}
+   */
+  static async reconcileAlignment(bookBlocks, whisperData) {
+    try {
+      const client = this.getClient();
+      // Use the same model as the rest of the codebase
+      const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+      const model = client.getGenerativeModel({ model: modelName });
+
+      // Format transcript segments for Gemini (with Aeneas timestamps as reference)
+      const transcriptSegments = whisperData.segments?.map(s => ({
+        text: s.text || s,
+        start: s.start,
+        end: s.end
+      })) || [];
+
+      // Create full transcript text for context
+      const fullTranscript = whisperData.text || transcriptSegments.map(s => s.text || s).join(' ');
+
+      // Add segment indices to help with matching (with Aeneas timestamps for reference)
+      const transcriptSegmentsWithIndex = transcriptSegments.map((seg, idx) => ({
+        index: idx,
+        text: (seg.text || seg).trim(),
+        start: seg.start, // Aeneas timestamp (for reference)
+        end: seg.end      // Aeneas timestamp (for reference)
+      }));
+
+      // Add position indices to book blocks for positional matching
+      const bookBlocksWithPosition = bookBlocks.map((b, idx) => ({
+        position: idx,
+        id: b.id,
+        text: b.text.trim()
+      }));
+
+      const prompt = `
+I am an AI audio-sync specialist. 
+
+INPUT:
+1. BOOK BLOCKS: A list of IDs and text from the EPUB file (in reading order, with position indices).
+2. TRANSCRIPT SEGMENTS: A timestamped transcript of what was actually spoken (in chronological order, with index numbers). Each segment has Aeneas timestamps (start/end) showing where it appears in the audio.
+
+CRITICAL MATCHING RULES:
+1. POSITIONAL MATCHING IS PRIMARY: Book block at position N should match transcript segment at index N (accounting for skipped blocks).
+2. For duplicate text (e.g., "If You Were a Horse" appears in TOC at position 2 and Chapter at position 8):
+   - The TOC version (position 2) should match transcript segment with index ~2 (early in audio, ~12s)
+   - The Chapter version (position 8) should match transcript segment with index ~8 (later in audio, ~45s)
+   - Use the position index to determine which occurrence is correct
+3. USE AENEAS TIMESTAMPS: Each transcript segment has Aeneas timestamps (start/end) showing where it appears in the audio.
+   - When you match a book block to a transcript segment, USE THE EXACT Aeneas timestamps from that segment
+   - Do NOT estimate or approximate - use the exact start/end times from the matched transcript segment
+4. If a block's text appears in multiple transcript segments, choose the one closest to the expected position.
+5. Status "SYNCED" = block is spoken and timestamps are provided.
+6. Status "SKIPPED" = block is NOT in transcript at all (TOC, page numbers, headers, footers, navigation).
+
+MATCHING ALGORITHM:
+For each book block at position P:
+1. Find all transcript segments that contain the block's text (normalized: lowercase, trimmed)
+2. If multiple matches exist, choose the segment whose index is closest to P (the block's position)
+3. Use the EXACT start/end timestamps from the matched transcript segment (from Aeneas)
+4. Track which segments have been used to avoid double-matching
+
+EXAMPLE:
+- Book block at position 2: "If You Were a Horse" (from TOC) → Match to transcript segment at index 2 with Aeneas timestamps [11.96s-18.00s] → Use 11.96s-18.00s
+- Book block at position 8: "If You Were a Horse" (from Chapter) → Match to transcript segment at index 8 with Aeneas timestamps [45.00s-48.84s] → Use 45.00s-48.84s
+
+REQUIRED OUTPUT FORMAT:
+- EVERY block must have either:
+  - {"id": "...", "status": "SYNCED", "start": X.XX, "end": Y.YY} (if found in transcript)
+  - {"id": "...", "status": "SKIPPED"} (if NOT found in transcript at all)
+
+BOOK BLOCKS (in reading order with positions): ${JSON.stringify(bookBlocksWithPosition, null, 2)}
+
+TRANSCRIPT SEGMENTS (chronological, with Aeneas timestamps and indices): ${JSON.stringify(transcriptSegmentsWithIndex, null, 2)}
+
+CRITICAL: Each transcript segment has Aeneas timestamps (start/end) showing where it appears in the audio.
+When you match a book block to a transcript segment, USE THE EXACT Aeneas timestamps from that segment.
+Do NOT estimate - use the exact start/end times from the matched transcript segment.
+
+OUTPUT ONLY VALID JSON ARRAY (no markdown, no explanation):
+[
+  {"id": "toc_1", "status": "SKIPPED"},
+  {"id": "page3_p1_s1", "status": "SYNCED", "start": 0.0, "end": 4.5},
+  {"id": "page4_p1_s1", "status": "SYNCED", "start": 7.2, "end": 10.8}
+]
+`;
+
+      console.log('[GeminiService] Starting semantic alignment reconciliation...');
+      const result = await this.generateWithBackoff(model, prompt, 1);
+      
+      if (!result) {
+        throw new Error('Gemini API call failed or was rate limited');
+      }
+
+      const response = await result.response;
+      const responseText = response.text();
+      
+      // DEBUG: Log the raw response
+      console.log('[GeminiService] Raw Gemini response (first 500 chars):', responseText.substring(0, 500));
+      console.log('[GeminiService] Raw Gemini response length:', responseText.length);
+      
+      // Extract JSON from response (handle markdown code blocks)
+      let jsonString = responseText;
+      const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/) || 
+                       responseText.match(/```\n([\s\S]*?)\n```/) ||
+                       responseText.match(/\[[\s\S]*\]/);
+      
+      if (jsonMatch) {
+        jsonString = jsonMatch[1] || jsonMatch[0];
+        console.log('[GeminiService] Extracted JSON (first 500 chars):', jsonString.substring(0, 500));
+      } else {
+        console.warn('[GeminiService] No JSON pattern found in response, using full response text');
+      }
+
+      let alignmentMap;
+      try {
+        alignmentMap = JSON.parse(jsonString.trim());
+        console.log('[GeminiService] Successfully parsed JSON, items:', alignmentMap.length);
+        console.log('[GeminiService] First 3 items:', alignmentMap.slice(0, 3));
+      } catch (parseError) {
+        console.error('[GeminiService] JSON parse error:', parseError.message);
+        console.error('[GeminiService] JSON string that failed:', jsonString.substring(0, 1000));
+        throw new Error(`Failed to parse Gemini response as JSON: ${parseError.message}`);
+      }
+      
+      // Validate alignment map structure
+      if (!Array.isArray(alignmentMap)) {
+        console.error('[GeminiService] Alignment map is not an array:', typeof alignmentMap);
+        throw new Error('Gemini returned invalid format: expected array, got ' + typeof alignmentMap);
+      }
+      
+      const syncedCount = alignmentMap.filter(a => a.status === 'SYNCED').length;
+      const skippedCount = alignmentMap.filter(a => a.status === 'SKIPPED').length;
+      console.log(`[GeminiService] Semantic alignment complete: ${syncedCount} synced, ${skippedCount} skipped`);
+      
+      // Log items with timestamps
+      const itemsWithTimestamps = alignmentMap.filter(a => a.status === 'SYNCED' && a.start !== undefined && a.end !== undefined);
+      console.log(`[GeminiService] Items with timestamps: ${itemsWithTimestamps.length}`);
+      if (itemsWithTimestamps.length > 0) {
+        console.log('[GeminiService] First 3 items with timestamps:', itemsWithTimestamps.slice(0, 3));
+      }
+      
+      return alignmentMap;
+    } catch (error) {
+      console.error('[GeminiService] Error in reconcileAlignment:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Reconcile alignment from XHTML blocks directly (no transcript needed)
+   * Gemini analyzes the audio file directly and matches XHTML blocks to timestamps
+   * 
+   * @param {Array} bookBlocks - Array of {id: string, text: string}
+   * @param {number} pageStartTime - Estimated start time for this page (in seconds)
+   * @param {number} pageEndTime - Estimated end time for this page (in seconds)
+   * @param {number} totalAudioDuration - Total audio duration (in seconds)
+   * @param {string} audioFilePath - Path to the audio file to attach to Gemini
+   * @returns {Promise<Array>} Array of {id: string, status: 'SYNCED'|'SKIPPED', start?: number, end?: number}
+   */
+  static async reconcileAlignmentFromXhtml(bookBlocks, pageStartTime, pageEndTime, totalAudioDuration, audioFilePath) {
+    try {
+      const client = this.getClient();
+      const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+      const model = client.getGenerativeModel({ model: modelName });
+
+      // Add position indices to book blocks
+      const bookBlocksWithPosition = bookBlocks.map((b, idx) => ({
+        position: idx,
+        id: b.id,
+        text: b.text.trim()
+      }));
+
+      // Calculate total text length for this page
+      const totalTextLength = bookBlocks.reduce((sum, b) => sum + b.text.length, 0);
+      const pageDuration = pageEndTime - pageStartTime;
+
+      const prompt = `
+I am an AI audio-sync specialist. 
+
+INPUT:
+1. BOOK BLOCKS: A list of IDs and text from one page of the EPUB file (in reading order, with position indices).
+2. AUDIO TIME RANGE: This page's content appears between ${pageStartTime.toFixed(2)}s and ${pageEndTime.toFixed(2)}s in the audio (duration: ${pageDuration.toFixed(2)}s).
+3. TOTAL AUDIO DURATION: ${totalAudioDuration.toFixed(2)}s
+
+CRITICAL RULES:
+1. LISTEN TO THE AUDIO: The audio file is attached. Listen to it and identify where each text block is actually spoken.
+   - Match the text blocks to what you hear in the audio
+   - Provide EXACT timestamps based on when you hear each block spoken
+   - Do NOT estimate - use the actual audio timestamps
+2. If you cannot find a block in the audio (e.g., TOC, page numbers, headers), mark it as SKIPPED.
+
+3. For duplicate text (e.g., "If You Were a Horse" appears multiple times):
+   - Listen to the audio and match based on position and context
+   - Earlier position = earlier timestamp in the audio
+   - Use the actual audio timestamps, not estimates
+
+4. Status "SYNCED" = block is spoken and timestamps are provided.
+5. Status "SKIPPED" = block is NOT spoken (TOC, page numbers, headers, footers, navigation).
+
+TIMESTAMP MATCHING:
+For each book block:
+1. Listen to the attached audio file
+2. Find where the block's text is spoken in the audio
+3. Use the EXACT start and end timestamps from the audio
+4. If the text is not found in the audio, mark as SKIPPED
+
+EXAMPLE:
+- Block: "If You Were a Horse" → Listen to audio → Found at 11.96s - 18.00s → Use 11.96s - 18.00s
+- Block: "Table of Contents" → Listen to audio → Not found → Mark as SKIPPED
+
+REQUIRED OUTPUT FORMAT:
+- EVERY block must have either:
+  - {"id": "...", "status": "SYNCED", "start": X.XX, "end": Y.YY} (if spoken)
+  - {"id": "...", "status": "SKIPPED"} (if NOT spoken)
+
+BOOK BLOCKS (in reading order with positions): ${JSON.stringify(bookBlocksWithPosition, null, 2)}
+
+AUDIO TIME RANGE FOR THIS PAGE: ${pageStartTime.toFixed(2)}s - ${pageEndTime.toFixed(2)}s (${pageDuration.toFixed(2)}s duration)
+TOTAL TEXT LENGTH: ${totalTextLength} characters
+ESTIMATED READING PACE: ~150 words/minute (~2.5 words/second)
+
+OUTPUT ONLY VALID JSON ARRAY (no markdown, no explanation):
+[
+  {"id": "page3_p1_s1", "status": "SYNCED", "start": ${pageStartTime.toFixed(2)}, "end": ${(pageStartTime + 2.5).toFixed(2)}},
+  {"id": "page3_p2_s1", "status": "SYNCED", "start": ${(pageStartTime + 2.5).toFixed(2)}, "end": ${(pageStartTime + 5.0).toFixed(2)}}
+]
+`;
+
+      console.log(`[GeminiService] Starting XHTML-based alignment for page (${pageStartTime.toFixed(2)}s - ${pageEndTime.toFixed(2)}s)...`);
+      const result = await this.generateWithBackoff(model, prompt, 1);
+      
+      if (!result) {
+        throw new Error('Gemini API call failed or was rate limited');
+      }
+
+      const response = await result.response;
+      const responseText = response.text();
+      
+      // Extract JSON from response
+      let jsonString = responseText;
+      const jsonMatch = responseText.match(/```json\n([\s\S]*?)\n```/) || 
+                       responseText.match(/```\n([\s\S]*?)\n```/) ||
+                       responseText.match(/\[[\s\S]*\]/);
+      
+      if (jsonMatch) {
+        jsonString = jsonMatch[1] || jsonMatch[0];
+      }
+
+      let alignmentMap;
+      try {
+        alignmentMap = JSON.parse(jsonString.trim());
+        console.log(`[GeminiService] Successfully parsed JSON, items: ${alignmentMap.length}`);
+      } catch (parseError) {
+        console.error('[GeminiService] JSON parse error:', parseError.message);
+        throw new Error(`Failed to parse Gemini response as JSON: ${parseError.message}`);
+      }
+      
+      if (!Array.isArray(alignmentMap)) {
+        throw new Error('Gemini returned invalid format: expected array, got ' + typeof alignmentMap);
+      }
+      
+      const syncedCount = alignmentMap.filter(a => a.status === 'SYNCED').length;
+      const skippedCount = alignmentMap.filter(a => a.status === 'SKIPPED').length;
+      console.log(`[GeminiService] XHTML alignment complete: ${syncedCount} synced, ${skippedCount} skipped`);
+      
+      return alignmentMap;
+    } catch (error) {
+      console.error('[GeminiService] Error in reconcileAlignmentFromXhtml:', error);
+      throw error;
+    }
+  }
 }
 

@@ -78,6 +78,15 @@ export const audioSyncService = {
       endTime,
       granularity: options.granularity || 'sentence',
       propagateWords: options.propagateWords !== false
+    }).then(res => res.data.data),
+
+  // Hybrid Gemini Alignment (Magic Sync)
+  magicSync: (jobId, options = {}) =>
+    api.post('/audio-sync/magic-align', {
+      jobId,
+      language: options.language || 'eng',
+      granularity: options.granularity || 'sentence',
+      audioPath: options.audioPath
     }).then(res => res.data.data)
 };
 

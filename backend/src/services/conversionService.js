@@ -3888,7 +3888,28 @@ body > p {
     }
     
     // ISSUE #4 FIX: Data Type Consistency - Ensure numeric types
+    // CRITICAL FIX: Sort by hierarchy level first, then by start time
+    // Hierarchy: words (most specific) -> sentences -> paragraphs (least specific)
+    const getHierarchyLevel = (blockId) => {
+      if (!blockId) return 3; // Unknown = lowest priority
+      if (blockId.includes('_w')) return 1; // Words = highest priority (most specific)
+      if (blockId.includes('_s')) return 2; // Sentences = medium priority
+      return 3; // Paragraphs = lowest priority (least specific)
+    };
+    
     const sortedSyncs = [...filteredSyncs].sort((a, b) => {
+      const blockIdA = a.blockId || a.block_id || '';
+      const blockIdB = b.blockId || b.block_id || '';
+      
+      // First, sort by hierarchy level (words first, then sentences, then paragraphs)
+      const levelA = getHierarchyLevel(blockIdA);
+      const levelB = getHierarchyLevel(blockIdB);
+      
+      if (levelA !== levelB) {
+        return levelA - levelB; // Lower level number = higher priority
+      }
+      
+      // If same hierarchy level, sort by start time
       const startA = Number(a.start_time ?? a.startTime ?? a.clipBegin ?? 0);
       const startB = Number(b.start_time ?? b.startTime ?? b.clipBegin ?? 0);
       return startA - startB;
@@ -3919,23 +3940,51 @@ body > p {
       }
       
       // ISSUE #4 FIX: Ensure numeric types for timestamps
-      const startTime = Number(sync.start_time ?? sync.startTime ?? sync.clipBegin ?? 0);
-      const endTime = Number(sync.end_time ?? sync.endTime ?? sync.clipEnd ?? (startTime + 5));
+      let startTime = Number(sync.start_time ?? sync.startTime ?? sync.clipBegin ?? 0);
+      let endTime = Number(sync.end_time ?? sync.endTime ?? sync.clipEnd ?? (startTime + 5));
       
-      // Validate timestamps
-      if (isNaN(startTime) || isNaN(endTime) || endTime <= startTime) {
-        console.error(`[SMIL Page ${pageNumber}] Invalid timestamps for sync ${i}: start=${startTime}, end=${endTime}`);
-        skippedCount++;
-        continue;
-      }
-      
-      // FIXED: Map sync blockId to actual XHTML ID
+      // FIXED: Map sync blockId to actual XHTML ID (needed for logging)
       // For granular IDs (p1_s1), the block_id should match the XHTML element ID directly
       let blockId = sync.blockId || sync.block_id || sync.id;
       
       // If blockId is not set, try mapping
       if (!blockId) {
         blockId = this.mapSyncIdToXhtmlId(sync, pageNumber, textBlocks, idMapping);
+      }
+      
+      // CRITICAL FIX: Ensure minimum duration for natural reading pace
+      // Very short durations cause "reading too fast" issue in EPUB players
+      // Calculate minimum duration based on text length (natural reading pace: ~150 words/min = ~2.5 words/sec)
+      const text = sync.customText || sync.custom_text || sync.text || '';
+      const wordCount = text.trim().split(/\s+/).filter(w => w.length > 0).length;
+      const charCount = text.trim().length;
+      
+      // Minimum duration: 0.3s base + 0.1s per word (or 0.05s per character, whichever is longer)
+      const minDurationByWords = 0.3 + (wordCount * 0.1);
+      const minDurationByChars = 0.3 + (charCount * 0.05);
+      const MIN_DURATION = Math.max(0.3, Math.max(minDurationByWords, minDurationByChars));
+      
+      const currentDuration = endTime - startTime;
+      
+      if (currentDuration < MIN_DURATION) {
+        // Extend endTime to meet minimum duration (but don't exceed next sync's start time)
+        const nextSync = sortedSyncs[i + 1];
+        const nextStartTime = nextSync ? Number(nextSync.start_time ?? nextSync.startTime ?? nextSync.clipBegin ?? Infinity) : Infinity;
+        const maxEndTime = Math.min(startTime + MIN_DURATION, nextStartTime - 0.05); // Leave 50ms gap
+        
+        if (maxEndTime > startTime) {
+          endTime = maxEndTime;
+          console.log(`[SMIL Page ${pageNumber}] Extended duration for ${blockId || 'unknown'}: ${currentDuration.toFixed(3)}s -> ${(endTime - startTime).toFixed(3)}s (text: "${text.substring(0, 30)}...", ${wordCount} words)`);
+        } else {
+          console.warn(`[SMIL Page ${pageNumber}] Cannot extend duration for ${blockId || 'unknown'}: would overlap with next sync`);
+        }
+      }
+      
+      // Validate timestamps
+      if (isNaN(startTime) || isNaN(endTime) || endTime <= startTime) {
+        console.error(`[SMIL Page ${pageNumber}] Invalid timestamps for sync ${i}: start=${startTime}, end=${endTime}`);
+        skippedCount++;
+        continue;
       }
       
       // ISSUE #3 FIX: Silent Highlight Failure - Strict fallback logic
