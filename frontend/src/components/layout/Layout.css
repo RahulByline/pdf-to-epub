@@ -7,6 +7,19 @@
   background-color: #ffffff;
 }
 
+/* Full-screen layout (no sidebar/navbar) */
+.layout-fullscreen {
+  background-color: #0d1117;
+}
+
+.main-content-fullscreen {
+  margin: 0 !important;
+  padding: 0 !important;
+  width: 100% !important;
+  min-height: 100vh;
+  background-color: #0d1117;
+}
+
 /* Navbar Styles - Top Bar */
 .navbar {
   width: 100%;

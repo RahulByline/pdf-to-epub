@@ -288,16 +288,74 @@ export class AudioSyncService {
       }
     }
     
-    // TODO: Concatenate all individual audio files into one combined file
-    // For now, create a minimal combined file
+    // Concatenate all individual audio files into one combined file
     if (individualAudioFiles.length > 0) {
       try {
-        // Create a minimal combined MP3 file
-        const mp3Header = Buffer.from([0xFF, 0xFB, 0x90, 0x00]);
-        await fs.writeFile(combinedAudioFilePath, mp3Header);
-        console.log(`[Audio] Created combined audio file: ${combinedAudioFilePath}`);
+        // Use ffmpeg to concatenate audio files
+        const fluentFfmpeg = await import('fluent-ffmpeg');
+        const ffmpeg = fluentFfmpeg.default;
+        const ffmpegStatic = await import('ffmpeg-static');
+        
+        if (ffmpegStatic.default) {
+          ffmpeg.setFfmpegPath(ffmpegStatic.default);
+        }
+        
+        // Create a temporary file list for ffmpeg concat
+        const concatListPath = path.join(path.dirname(combinedAudioFilePath), `concat_list_${jobId}.txt`);
+        const concatListContent = individualAudioFiles
+          .map(filePath => `file '${filePath.replace(/'/g, "'\\''")}'`)
+          .join('\n');
+        
+        await fs.writeFile(concatListPath, concatListContent, 'utf8');
+        
+        // Concatenate using ffmpeg
+        await new Promise((resolve, reject) => {
+          ffmpeg(concatListPath)
+            .inputOptions(['-f', 'concat', '-safe', '0'])
+            .outputOptions(['-c', 'copy']) // Copy audio codec to avoid re-encoding
+            .output(combinedAudioFilePath)
+            .on('end', async () => {
+              console.log(`[Audio] Successfully created combined audio file: ${combinedAudioFilePath}`);
+              // Clean up concat list file
+              await fs.unlink(concatListPath).catch(() => {});
+              // Optionally clean up individual files after concatenation
+              // Uncomment if you want to delete individual files:
+              // for (const filePath of individualAudioFiles) {
+              //   await fs.unlink(filePath).catch(() => {});
+              // }
+              resolve();
+            })
+            .on('error', async (err) => {
+              console.error(`[Audio] FFmpeg concatenation error:`, err);
+              // Fallback: copy first file as combined file
+              if (individualAudioFiles.length > 0) {
+                try {
+                  await fs.copyFile(individualAudioFiles[0], combinedAudioFilePath);
+                  console.log(`[Audio] Fallback: Copied first audio file as combined file`);
+                  await fs.unlink(concatListPath).catch(() => {});
+                  resolve();
+                } catch (copyError) {
+                  await fs.unlink(concatListPath).catch(() => {});
+                  reject(copyError);
+                }
+              } else {
+                await fs.unlink(concatListPath).catch(() => {});
+                reject(err);
+              }
+            })
+            .run();
+        });
       } catch (error) {
         console.error(`[Audio] Error creating combined audio file:`, error);
+        // Fallback: copy first file if available
+        if (individualAudioFiles.length > 0) {
+          try {
+            await fs.copyFile(individualAudioFiles[0], combinedAudioFilePath);
+            console.log(`[Audio] Fallback: Copied first audio file as combined file`);
+          } catch (copyError) {
+            console.error(`[Audio] Fallback copy also failed:`, copyError);
+          }
+        }
       }
     }
 

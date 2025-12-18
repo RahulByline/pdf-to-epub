@@ -246,6 +246,8 @@ router.get('/:jobId/download', async (req, res) => {
 router.post('/:jobId/regenerate', async (req, res) => {
   try {
     const jobId = parseInt(req.params.jobId);
+    const { granularity } = req.body || {}; // Optional: 'word', 'sentence', 'paragraph'
+    
     const job = await ConversionService.getConversionJob(jobId);
     
     if (!job) {
@@ -256,8 +258,10 @@ router.post('/:jobId/regenerate', async (req, res) => {
       return badRequestResponse(res, 'Can only regenerate EPUB for completed conversions');
     }
     
-    // Regenerate EPUB with updated sync files
-    const result = await ConversionService.regenerateEpub(jobId);
+    console.log(`[API] Regenerating EPUB for job ${jobId}${granularity ? ` with ${granularity}-level audio` : ''}`);
+    
+    // Regenerate EPUB with updated sync files and granularity option
+    const result = await ConversionService.regenerateEpub(jobId, { granularity });
     return successResponse(res, result);
   } catch (error) {
     console.error('Error regenerating EPUB:', error);
@@ -287,16 +291,38 @@ router.get('/:jobId', async (req, res) => {
 // GET /api/conversions/:jobId/epub-sections - Get EPUB sections
 router.get('/:jobId/epub-sections', async (req, res) => {
   try {
-    const job = await ConversionService.getConversionJob(parseInt(req.params.jobId));
+    const jobId = parseInt(req.params.jobId);
+    const job = await ConversionService.getConversionJob(jobId);
     
-    if (job.status !== 'COMPLETED' || !job.epubFilePath) {
-      return badRequestResponse(res, 'EPUB file not available. Conversion must be completed first.');
+    if (!job) {
+      return notFoundResponse(res, 'Conversion job not found');
+    }
+
+    // Check if EPUB file exists (even if status isn't COMPLETED, the file might exist)
+    const { getEpubOutputDir } = await import('../config/fileStorage.js');
+    const epubOutputDir = getEpubOutputDir();
+    const epubFileName = `converted_${jobId}.epub`;
+    const epubFilePath = job.epubFilePath || path.join(epubOutputDir, epubFileName);
+    
+    // Check if file actually exists
+    let epubExists = false;
+    try {
+      await fs.access(epubFilePath);
+      epubExists = true;
+    } catch (err) {
+      // File doesn't exist at the specified path
+      epubExists = false;
+    }
+    
+    if (!epubExists) {
+      return badRequestResponse(res, `EPUB file not available. Status: ${job.status || 'UNKNOWN'}. Please ensure the conversion is complete.`);
     }
 
     const { EpubService } = await import('../services/epubService.js');
-    const sections = await EpubService.getEpubSections(parseInt(req.params.jobId));
+    const sections = await EpubService.getEpubSections(jobId);
     return successResponse(res, sections);
   } catch (error) {
+    console.error('Error getting EPUB sections:', error);
     return errorResponse(res, error.message, 500);
   }
 });

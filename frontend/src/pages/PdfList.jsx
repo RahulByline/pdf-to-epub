@@ -53,7 +53,7 @@ const PdfList = () => {
       // Redirect to audio-sync/preview page
       // Wait a moment for conversion to initialize, then redirect
       setTimeout(() => {
-        navigate(`/audio-sync/${job.id}`);
+        navigate(`/audio-sync-cards/${job.id}`);
       }, 500);
     } catch (err) {
       setError(err.message || 'Failed to start conversion');

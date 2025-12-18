@@ -121,7 +121,12 @@ export class ConversionService {
           ? `<meta name="viewport" content="width=${currentPageWidth},height=${currentPageHeight}"/>`
           : `<meta name="viewport" content="width=device-width, initial-scale=1.0"/>`;
         
-        if (!xhtmlContent.includes('<style') && !xhtmlContent.includes('<link')) {
+        // Check if XHTML already has a <style> tag with CSS
+        const hasStyleTag = xhtmlContent.includes('<style');
+        const hasLinkTag = xhtmlContent.includes('<link');
+        
+        // Only inject CSS if there's no style tag AND there's actual CSS content to inject
+        if (!hasStyleTag && !hasLinkTag && xhtmlResult.css && xhtmlResult.css.trim()) {
           // Insert CSS before </head> or at the beginning of <body>
           if (xhtmlContent.includes('</head>')) {
             xhtmlContent = xhtmlContent.replace('</head>', `<style type="text/css">\n${xhtmlResult.css}\n</style>\n</head>`);
@@ -143,6 +148,17 @@ ${xhtmlResult.css}
 ${xhtmlContent}
 </body>
 </html>`;
+          }
+        } else if (!hasStyleTag && !hasLinkTag) {
+          // No style tag and no CSS from Gemini - add minimal style block for proper EPUB rendering
+          const minimalCss = `/* Minimal styles for EPUB rendering */
+body { margin: 0; padding: 0; }
+.-epub-media-overlay-active { background-color: #ffff00; }`;
+          
+          if (xhtmlContent.includes('</head>')) {
+            xhtmlContent = xhtmlContent.replace('</head>', `<style type="text/css">\n${minimalCss}\n</style>\n</head>`);
+          } else if (xhtmlContent.includes('<body>')) {
+            xhtmlContent = xhtmlContent.replace('<body>', `<head><style type="text/css">\n${minimalCss}\n</style></head>\n<body>`);
           }
         }
         
@@ -176,11 +192,38 @@ ${xhtmlContent}
               '.container, .page { width: 100%; max-width: none; margin: 0 auto; box-sizing: border-box; }'
             ].join('\n');
         
+        // Add EPUB media overlay active class CSS (for read-aloud highlighting)
+        const mediaOverlayCss = `
+/* EPUB 3 Media Overlay Active Class - for read-aloud highlighting */
+.-epub-media-overlay-active,
+.epub-media-overlay-active,
+[class*="epub-media-overlay-active"] {
+  background-color: rgba(255, 255, 0, 0.5) !important;
+  transition: background-color 0.2s ease;
+}`;
+        
         if (xhtmlContent.includes('</head>')) {
-          xhtmlContent = xhtmlContent.replace(
-            '</head>',
-            `<style type="text/css">\n${fullPageCss}\n</style>\n</head>`
-          );
+          // Check if style tag exists, if so append to it, otherwise create new one
+          if (xhtmlContent.includes('<style')) {
+            // Append to existing style tag
+            xhtmlContent = xhtmlContent.replace(
+              '</style>',
+              `${mediaOverlayCss}\n</style>`
+            );
+            // Also add fullPageCss if not already present
+            if (!xhtmlContent.includes('html, body {')) {
+              xhtmlContent = xhtmlContent.replace(
+                '</style>',
+                `\n${fullPageCss}\n</style>`
+              );
+            }
+          } else {
+            // Create new style tag
+            xhtmlContent = xhtmlContent.replace(
+              '</head>',
+              `<style type="text/css">\n${fullPageCss}\n${mediaOverlayCss}\n</style>\n</head>`
+            );
+          }
         }
         
         await fs.writeFile(xhtmlFilePath, xhtmlContent, 'utf8');
@@ -867,7 +910,9 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
     }));
   }
 
-  static async regenerateEpub(jobId) {
+  static async regenerateEpub(jobId, options = {}) {
+    const { granularity = null } = options; // 'word', 'sentence', 'paragraph', or null for all
+    
     const job = await ConversionJobModel.findById(jobId);
     if (!job) {
       throw new Error('Conversion job not found');
@@ -882,85 +927,120 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       throw new Error('PDF document not found or file path missing');
     }
 
-    // Load existing text data and page images
+    console.log(`[Job ${jobId}] Regenerating EPUB${granularity ? ` with ${granularity}-level audio sync` : ''}`);
+
     const epubOutputDir = getEpubOutputDir();
-    const jobDir = path.join(epubOutputDir, `job_${jobId}`);
-    const textDataPath = path.join(jobDir, `text_data_${jobId}.json`);
+    const { getHtmlIntermediateDir } = await import('../config/fileStorage.js');
+    const htmlIntermediateDir = getHtmlIntermediateDir();
     
-    let textData, pageImagesData;
+    // Load XHTML files from the html_intermediate directory (same as initial generation)
+    const jobHtmlDir = path.join(htmlIntermediateDir, `job_${jobId}_html`);
+    
+    console.log(`[Job ${jobId}] Regenerating EPUB using XHTML files from: ${jobHtmlDir}`);
+    
+    // Check if XHTML files exist
+    let xhtmlFiles = [];
     try {
-      const textDataContent = await fs.readFile(textDataPath, 'utf8');
-      textData = JSON.parse(textDataContent);
-    } catch (error) {
-      throw new Error('Text data not found. Cannot regenerate EPUB without original text data.');
+      const files = await fs.readdir(jobHtmlDir);
+      xhtmlFiles = files
+        .filter(f => f.endsWith('.xhtml') && f.startsWith('page_'))
+        .map(f => {
+          const pageMatch = f.match(/page_(\d+)\.xhtml/);
+          return {
+            pageNumber: pageMatch ? parseInt(pageMatch[1]) : 0,
+            xhtmlPath: path.join(jobHtmlDir, f),
+            xhtmlFileName: f
+          };
+        })
+        .filter(f => f.pageNumber > 0)
+        .sort((a, b) => a.pageNumber - b.pageNumber);
+      
+      console.log(`[Job ${jobId}] Found ${xhtmlFiles.length} XHTML files in html directory`);
+    } catch (err) {
+      console.warn(`[Job ${jobId}] Could not read XHTML directory: ${err.message}`);
     }
+    
+    if (xhtmlFiles.length === 0) {
+      throw new Error(`No XHTML files found for job ${jobId}. Cannot regenerate EPUB.`);
+      }
 
-    // Migrate block IDs to stable IDs and update sync files
-    for (const page of textData.pages || []) {
-      if (page.textBlocks) {
-        page.textBlocks.forEach(block => {
-          const bbox = block.boundingBox || {};
-          if (!block.id || !block.id.startsWith('block_')) {
-            block.id = this.generateStableBlockId(
-              block.text || '',
-              bbox.x || 0,
-              bbox.y || 0,
-              page.pageNumber || 0
-            );
+    // Load audio sync data from database
+    const { AudioSyncModel } = await import('../models/AudioSync.js');
+    const audioSyncs = await AudioSyncModel.findByJobId(jobId).catch(() => []);
+    const activeSyncs = audioSyncs.filter(s => s.should_read !== false && s.should_read !== 0);
+    
+    console.log(`[Job ${jobId}] Loaded ${audioSyncs.length} total syncs, ${activeSyncs.length} active syncs`);
+    
+    // Debug: Log first sync to see its structure
+    if (audioSyncs.length > 0) {
+      const firstSync = audioSyncs[0];
+      console.log(`[Job ${jobId}] First sync audio_file_path: ${firstSync.audio_file_path || firstSync.audioFilePath || 'not set'}`);
+    }
+    
+    // Check for audio file - same logic as generateFixedLayoutEpub
+    let audioFilePath = null;
+    let audioFileName = null;
+    
+    // Method 1: Check if any sync has audioFilePath (same as generateFixedLayoutEpub)
+    if (audioSyncs.length > 0) {
+      const firstSync = audioSyncs[0];
+      const syncAudioPath = firstSync.audioFilePath || firstSync.audio_file_path;
+      
+      if (syncAudioPath) {
+        let actualAudioFilePath = syncAudioPath;
+        
+        // Handle relative paths that start with 'audio/' or 'uploads/'
+        if (!path.isAbsolute(syncAudioPath)) {
+          if (syncAudioPath.startsWith('audio/')) {
+            const { getUploadDir } = await import('../config/fileStorage.js');
+            const uploadDir = getUploadDir();
+            const audioFileNameOnly = path.basename(syncAudioPath);
+            actualAudioFilePath = path.join(uploadDir, 'audio', audioFileNameOnly);
+          } else if (syncAudioPath.startsWith('uploads/')) {
+            actualAudioFilePath = path.join(htmlIntermediateDir, '..', syncAudioPath);
+          } else {
+            actualAudioFilePath = path.join(htmlIntermediateDir, '..', syncAudioPath);
           }
-        });
-      }
-
-      // Migrate sync files for this page
-      const editorialSyncDir = path.join(jobDir, 'editorial_syncs');
-      const syncFilePath = path.join(editorialSyncDir, `manual_page_syncs_${page.pageNumber}.json`);
-      try {
-        const syncContent = await fs.readFile(syncFilePath, 'utf8');
-        const syncData = JSON.parse(syncContent);
-        const migratedSyncs = this.migrateSyncsToStableIds(page.textBlocks || [], syncData);
-        await fs.writeFile(syncFilePath, JSON.stringify(migratedSyncs, null, 2), 'utf8');
-      } catch (error) {
-        // No sync file for this page - that's OK
-      }
-    }
-
-    // Load page images from assets directory
-    const imagesDir = path.join(jobDir, 'assets', 'images');
-    const imageFiles = await fs.readdir(imagesDir).catch(() => []);
-    const pageImages = imageFiles
-      .filter(f => f.startsWith('page_') && f.endsWith('_render.png'))
-      .map(fileName => {
-        const pageNum = parseInt(fileName.match(/page_(\d+)_render\.png/)?.[1] || '0');
-        return {
-          pageNumber: pageNum,
-          path: path.join(imagesDir, fileName),
-          fileName: fileName,
-          width: 0,
-          height: 0
-        };
-      })
-      .sort((a, b) => a.pageNumber - b.pageNumber);
-
-    pageImagesData = {
-      images: pageImages,
-      renderedWidth: 0,
-      renderedHeight: 0,
-      maxWidth: textData.metadata?.width || 612,
-      maxHeight: textData.metadata?.height || 792
-    };
-
-    // Get structured content (if available)
-    let structuredContent = null;
+        }
+        
+        console.log(`[Job ${jobId}] Checking sync audio path: ${actualAudioFilePath}`);
     try {
-      structuredContent = await GeminiService.structureContent(textData.pages);
-    } catch (error) {
-      console.warn(`[Job ${jobId}] Could not regenerate structured content, using original`);
-      structuredContent = { pages: textData.pages, structured: null };
+          await fs.access(actualAudioFilePath);
+          audioFilePath = actualAudioFilePath;
+          audioFileName = path.basename(actualAudioFilePath);
+          console.log(`[Job ${jobId}] Found audio file from sync: ${audioFilePath}`);
+        } catch (e) {
+          console.log(`[Job ${jobId}] Audio file from sync not found: ${actualAudioFilePath}`);
+        }
+      }
     }
-
-    // Regenerate EPUB with updated sync files
-    const epubFileName = `converted_${jobId}.epub`;
-    const epubFilePath = path.join(epubOutputDir, epubFileName);
+    
+    // Method 2: Check standard locations if not found in sync
+    if (!audioFilePath) {
+      const possibleAudioFiles = [
+        path.join(htmlIntermediateDir, '..', 'uploads', 'tts_audio', `combined_audio_${jobId}.mp3`),
+        path.join(epubOutputDir, `job_${jobId}`, 'audio', `combined_audio_${jobId}.mp3`),
+        path.join(htmlIntermediateDir, '..', 'audio', `combined_audio_${jobId}.mp3`),
+        path.join(htmlIntermediateDir, '..', 'uploads', 'audio', `combined_audio_${jobId}.mp3`)
+      ];
+      
+      for (const audioPath of possibleAudioFiles) {
+        console.log(`[Job ${jobId}] Checking audio path: ${audioPath}`);
+        try {
+          await fs.access(audioPath);
+          audioFilePath = audioPath;
+          audioFileName = path.basename(audioPath);
+          console.log(`[Job ${jobId}] Found audio file at: ${audioFilePath}`);
+          break;
+        } catch (e) {
+          // Continue to next path
+        }
+      }
+    }
+    
+    if (!audioFilePath) {
+      console.log(`[Job ${jobId}] No audio file found - SMIL files will not be generated`);
+    }
     
     await ConversionJobModel.update(jobId, {
       status: 'IN_PROGRESS',
@@ -968,17 +1048,256 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       progressPercentage: 95
     });
 
-    const epubBuffer = await this.generateFixedLayoutEpub(
-      jobId,
-      textData,
-      structuredContent,
-      pageImagesData,
-      pdf.original_file_name || `Document ${jobId}`,
-      pdf.file_path
-    );
+    // Create temp directory structure (same as generateEpubFromXhtmlPages)
+    const tempEpubDir = path.join(epubOutputDir, `temp_regen_${jobId}`);
+    const oebpsDir = path.join(tempEpubDir, 'OEBPS');
+    const metaInfDir = path.join(tempEpubDir, 'META-INF');
+    
+    await fs.mkdir(oebpsDir, { recursive: true });
+    await fs.mkdir(metaInfDir, { recursive: true });
+    
+    // Copy XHTML files to OEBPS directory
+    const manifestItems = [];
+    const spineItems = [];
+    const smilFiles = [];
+    
+    // Group syncs by page number
+    const syncsByPage = {};
+    for (const sync of activeSyncs) {
+      // Ensure pageNum is always a number (handle legacy string data like "page-1")
+      let pageNum = 1;
+      if (sync.page_number) {
+        if (typeof sync.page_number === 'number') {
+          pageNum = sync.page_number;
+        } else {
+          // Extract number from string like "page-1", "page_2", or just "1"
+          const match = String(sync.page_number).match(/(\d+)/);
+          pageNum = match ? parseInt(match[1], 10) : 1;
+        }
+      }
+      if (!syncsByPage[pageNum]) {
+        syncsByPage[pageNum] = [];
+      }
+      syncsByPage[pageNum].push(sync);
+    }
+    
+    // Debug: log sync distribution
+    console.log(`[Job ${jobId}] Syncs by page:`, Object.entries(syncsByPage).map(([p, s]) => `Page ${p}: ${s.length} syncs`).join(', '));
+    
+    for (const page of xhtmlFiles) {
+      // Copy XHTML file
+      const destPath = path.join(oebpsDir, page.xhtmlFileName);
+      await fs.copyFile(page.xhtmlPath, destPath);
+      
+      const pageId = `page-${page.pageNumber}`;
+      const pageSyncs = syncsByPage[page.pageNumber] || [];
+      
+      // Check if this page has audio syncs
+      let smilRef = null;
+      if (pageSyncs.length > 0 && audioFileName) {
+        // Generate SMIL file for this page
+        const smilFileName = `page_${page.pageNumber}.smil`;
+        const smilContent = this.generateSMILContent(
+          page.pageNumber, 
+          pageSyncs, 
+          audioFileName, 
+          null, // textData not needed for simple SMIL
+          {}, // pageIdMapping
+          page.xhtmlFileName
+        );
+        
+        await fs.writeFile(path.join(oebpsDir, smilFileName), smilContent, 'utf8');
+        smilFiles.push({
+          id: `smil-${page.pageNumber}`,
+          href: smilFileName,
+          pageId: pageId
+        });
+        smilRef = `smil-${page.pageNumber}`;
+        
+        console.log(`[Job ${jobId}] Generated SMIL file: ${smilFileName} with ${pageSyncs.length} syncs`);
+      }
+      
+      manifestItems.push({
+        id: pageId,
+        href: page.xhtmlFileName,
+        mediaType: 'application/xhtml+xml',
+        mediaOverlay: smilRef
+      });
+      
+      spineItems.push({
+        idref: pageId,
+        mediaOverlay: smilRef
+      });
+    }
+    
+    // Add audio file to EPUB if exists (in audio/ subdirectory for SMIL compatibility)
+    if (audioFilePath && audioFileName) {
+      try {
+        const audioDir = path.join(oebpsDir, 'audio');
+        await fs.mkdir(audioDir, { recursive: true });
+        const audioBuffer = await fs.readFile(audioFilePath);
+        await fs.writeFile(path.join(audioDir, audioFileName), audioBuffer);
+        manifestItems.push({
+          id: 'audio-main',
+          href: `audio/${audioFileName}`,
+          mediaType: 'audio/mpeg'
+        });
+        console.log(`[Job ${jobId}] Added audio file to EPUB: audio/${audioFileName}`);
+      } catch (err) {
+        console.warn(`[Job ${jobId}] Could not add audio file: ${err.message}`);
+      }
+    }
+    
+    // Add SMIL files to manifest
+    for (const smil of smilFiles) {
+      manifestItems.push({
+        id: smil.id,
+        href: smil.href,
+        mediaType: 'application/smil+xml'
+      });
+    }
+    
+    // Generate OPF file
+    const title = pdf.original_file_name || `Converted PDF - Job ${jobId}`;
+    const manifestXml = manifestItems
+      .map(item => {
+        // Add OEBPS/ prefix to href since OPF is at root level
+        const href = `OEBPS/${item.href}`;
+        let attrs = `id="${item.id}" href="${href}" media-type="${item.mediaType}"`;
+        if (item.mediaOverlay) {
+          attrs += ` media-overlay="${item.mediaOverlay}"`;
+        }
+        return `    <item ${attrs}/>`;
+      })
+      .join('\n');
+    
+    const spineXml = spineItems
+      .map(item => `    <itemref idref="${item.idref}"/>`)
+      .join('\n');
+    
+    // Calculate total audio duration for media overlay metadata
+    let totalDuration = 0;
+    for (const sync of activeSyncs) {
+      if (sync.end_time) {
+        totalDuration = Math.max(totalDuration, parseFloat(sync.end_time) || 0);
+      }
+    }
+    
+    const mediaOverlayMeta = audioFileName && smilFiles.length > 0 
+      ? `\n    <meta property="media:duration">${totalDuration.toFixed(3)}s</meta>
+    <meta property="media:active-class">-epub-media-overlay-active</meta>`
+      : '';
+    
+    const opfContent = `<?xml version="1.0" encoding="UTF-8"?>
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
+  <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
+    <dc:identifier id="book-id">urn:uuid:${jobId}</dc:identifier>
+    <dc:title>${this.escapeXml(title)}</dc:title>
+    <dc:language>en</dc:language>
+    <meta property="dcterms:modified">${new Date().toISOString()}</meta>${mediaOverlayMeta}
+  </metadata>
+  <manifest>
+    <item id="nav" href="OEBPS/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
+${manifestXml}
+  </manifest>
+  <spine toc="nav">
+${spineXml}
+  </spine>
+</package>`;
+    
+    await fs.writeFile(path.join(tempEpubDir, 'content.opf'), opfContent, 'utf8');
+    
+    // Generate navigation XHTML
+    const navContent = `<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+<meta charset="utf-8"/>
+<title>Navigation</title>
+</head>
+<body>
+<nav epub:type="toc" id="toc">
+  <h1>Table of Contents</h1>
+  <ol>
+${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}</a></li>`).join('\n')}
+  </ol>
+</nav>
+</body>
+</html>`;
+    
+    await fs.writeFile(path.join(oebpsDir, 'nav.xhtml'), navContent, 'utf8');
+    
+    // Generate container.xml
+    const containerContent = `<?xml version="1.0" encoding="UTF-8"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+  <rootfiles>
+    <rootfile full-path="content.opf" media-type="application/oebps-package+xml"/>
+  </rootfiles>
+</container>`;
+    
+    await fs.writeFile(path.join(metaInfDir, 'container.xml'), containerContent, 'utf8');
+    
+    // Generate mimetype file
+    await fs.writeFile(path.join(tempEpubDir, 'mimetype'), 'application/epub+zip', 'utf8');
+    
+    // Create EPUB ZIP file
+    const epubFileName = `converted_${jobId}.epub`;
+    const epubFilePath = path.join(epubOutputDir, epubFileName);
+    
+    const zip = new JSZip();
+    
+    // Add mimetype first (must be uncompressed and first file)
+    zip.file('mimetype', 'application/epub+zip', { compression: 'STORE' });
+    
+    // Add all other files
+    const addDirectoryToZip = async (dirPath, zipPath = '') => {
+      const entries = await fs.readdir(dirPath, { withFileTypes: true });
+      for (const entry of entries) {
+        const fullPath = path.join(dirPath, entry.name);
+        const zipEntryPath = zipPath ? `${zipPath}/${entry.name}` : entry.name;
+        
+        if (entry.name === 'mimetype') continue; // Already added
+        
+        if (entry.isDirectory()) {
+          await addDirectoryToZip(fullPath, zipEntryPath);
+        } else {
+          // For XHTML files, read as text and sanitize
+          if (entry.name.endsWith('.xhtml')) {
+            let content = await fs.readFile(fullPath, 'utf8');
+            // Sanitize XHTML
+            content = content.replace(/\\\\/g, '\\');
+            content = content.replace(/\\"/g, '"');
+            content = content.replace(/\\'/g, "'");
+            content = content.replace(/\\n/g, '\n');
+            content = content.replace(/\\r/g, '\r');
+            content = content.replace(/\\t/g, '\t');
+            // Normalize DOCTYPE
+            const correctDoctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+            content = content.replace(/<!DOCTYPE\s+html[^>]*>/i, correctDoctype);
+            zip.file(zipEntryPath, content);
+          } else {
+            const content = await fs.readFile(fullPath);
+            zip.file(zipEntryPath, content);
+          }
+        }
+      }
+    };
+    
+    await addDirectoryToZip(tempEpubDir);
+    
+    // Generate EPUB file
+    const epubBuffer = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 9 }
+    });
 
     await fs.writeFile(epubFilePath, epubBuffer);
+    
+    // Cleanup temp directory
+    await fs.rm(tempEpubDir, { recursive: true, force: true }).catch(() => {});
+    
     console.log(`[Job ${jobId}] EPUB regenerated: ${epubFilePath} (${(epubBuffer.length / 1024 / 1024).toFixed(2)} MB)`);
+    console.log(`[Job ${jobId}] Summary: ${xhtmlFiles.length} pages, ${smilFiles.length} SMIL files, audio: ${audioFileName ? 'yes' : 'no'}`);
 
     await ConversionJobModel.update(jobId, {
       status: 'COMPLETED',
@@ -991,6 +1310,8 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
     return {
       jobId,
       epubFilePath,
+      smilFilesGenerated: smilFiles.length,
+      hasAudio: !!audioFileName,
       message: 'EPUB regenerated successfully with updated sync files'
     };
   }
@@ -1077,6 +1398,26 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
     // Track mapping from source block IDs to actual XHTML IDs per page (for SMIL/audio and TTS alignment)
     let pageIdMappings = {};
     
+    // If no page images, try to extract XHTML pages from existing EPUB
+    let epubXhtmlPages = [];
+    if (pageImages.length === 0 && textData.pages && textData.pages.length > 0) {
+      console.log(`[Job ${jobId}] No page images found, attempting to extract XHTML from existing EPUB...`);
+      try {
+        const { EpubService } = await import('./epubService.js');
+        const epubSections = await EpubService.getEpubSections(jobId);
+        if (epubSections && epubSections.length > 0) {
+          epubXhtmlPages = epubSections.map((section, idx) => ({
+            pageNumber: section.sectionId || idx + 1,
+            xhtml: section.xhtml,
+            title: section.title || `Page ${section.sectionId || idx + 1}`
+          }));
+          console.log(`[Job ${jobId}] Extracted ${epubXhtmlPages.length} XHTML pages from existing EPUB`);
+        }
+      } catch (epubExtractError) {
+        console.warn(`[Job ${jobId}] Could not extract XHTML from EPUB:`, epubExtractError.message);
+      }
+    }
+    
     // STEP 1: Add images to EPUB FIRST and track which ones succeeded
     // This ensures we know which pages have valid images before generating XHTML
     const successfullyAddedImages = new Map(); // Map<pageNumber, epubPath>
@@ -1085,8 +1426,9 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
         // Verify image file exists before trying to add it
         await fs.access(img.path);
         const imageData = await fs.readFile(img.path);
-        const imageFileName = img.fileName.replace(/^image\//, '');
-        const imagePath = `image/${imageFileName}`;
+        // Use 'images/' (plural) directory for EPUB standard
+        const imageFileName = img.fileName.replace(/^(image|images)\//, '');
+        const imagePath = `images/${imageFileName}`;
         zip.file(`OEBPS/${imagePath}`, imageData);
         
         // Copy image to assets directory for API access
@@ -1113,7 +1455,227 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       }
     }
     
-    // STEP 2: Generate XHTML pages ONLY for pages with successfully added images
+    // STEP 2: Generate XHTML pages
+    // If no page images, generate from XHTML sections or textData pages
+    if (pageImages.length === 0 && (epubXhtmlPages.length > 0 || textData.pages.length > 0)) {
+      console.log(`[Job ${jobId}] No page images found, generating pages from XHTML/textData...`);
+      const pagesToGenerate = epubXhtmlPages.length > 0 ? epubXhtmlPages : textData.pages.map((p, idx) => ({
+        pageNumber: p.pageNumber || idx + 1,
+        xhtml: null, // Will be generated from text
+        title: `Page ${p.pageNumber || idx + 1}`
+      }));
+      
+      for (let i = 0; i < pagesToGenerate.length; i++) {
+        const pageInfo = pagesToGenerate[i];
+        const actualPageNum = pageInfo.pageNumber || i + 1;
+        const fileName = `page_${actualPageNum}.xhtml`;
+        
+        // Check if we have an image for this page
+        const pageImage = successfullyAddedImages.has(actualPageNum) 
+          ? { 
+              pageNumber: actualPageNum, 
+              fileName: `page_${actualPageNum}_render.png`, 
+              epubPath: successfullyAddedImages.get(actualPageNum), 
+              path: pageImages.find(img => img.pageNumber === actualPageNum)?.path 
+            }
+          : null;
+        
+        let pageXhtml;
+        if (pageInfo.xhtml) {
+          // Use existing XHTML from EPUB, but update image paths if needed
+          pageXhtml = pageInfo.xhtml;
+          // If we have an image, ensure XHTML references it
+          if (pageImage && pageImage.epubPath && !pageXhtml.includes(pageImage.epubPath)) {
+            // Update image path in XHTML if it exists
+            pageXhtml = pageXhtml.replace(/src="[^"]*image[^"]*"/g, `src="${pageImage.epubPath}"`);
+            pageXhtml = pageXhtml.replace(/background-image:\s*url\([^)]*image[^)]*\)/g, `background-image: url(${pageImage.epubPath})`);
+          }
+        } else {
+          // Generate XHTML from text data
+          const page = textData.pages.find(p => p.pageNumber === actualPageNum) || textData.pages[i];
+          if (page) {
+            // Generate XHTML using generateHtmlBasedPageXHTML with actual image if available
+            const imageForGeneration = pageImage || { pageNumber: actualPageNum, fileName: '', path: '', epubPath: '' };
+            const { html } = this.generateHtmlBasedPageXHTML(
+              page,
+              imageForGeneration,
+              actualPageNum,
+              pageWidthPoints,
+              pageHeightPoints,
+              pageWidthPoints * (300/72),
+              pageHeightPoints * (300/72),
+              false
+            );
+            pageXhtml = html;
+          } else {
+            console.warn(`[Job ${jobId}] No text data for page ${actualPageNum}, creating empty page`);
+            const emptyPage = {
+              pageNumber: actualPageNum,
+              text: '',
+              textBlocks: [],
+              width: pageWidthPoints,
+              height: pageHeightPoints
+            };
+            const imageForGeneration = pageImage || { pageNumber: actualPageNum, fileName: '', path: '', epubPath: '' };
+            const { html } = this.generateHtmlBasedPageXHTML(
+              emptyPage,
+              imageForGeneration,
+              actualPageNum,
+              pageWidthPoints,
+              pageHeightPoints,
+              pageWidthPoints * (300/72),
+              pageHeightPoints * (300/72),
+              false
+            );
+            pageXhtml = html;
+          }
+        }
+        
+        // Sanitize XHTML before adding
+        const { EpubService } = await import('./epubService.js');
+        pageXhtml = EpubService.sanitizeXhtml(pageXhtml);
+        zip.file(`OEBPS/${fileName}`, pageXhtml);
+        
+        // Handle syncs and audio for this page (similar to the image-based flow)
+        let syncs = [];
+        let audioFileName = null;
+        let pageAudioFileExists = false;
+        
+        try {
+          const { AudioSyncModel } = await import('../models/AudioSync.js');
+          const dbSyncs = await AudioSyncModel.findByJobId(jobId);
+          
+          const pageSyncs = dbSyncs
+            .filter(sync => sync.page_number === actualPageNum)
+            .filter(sync => {
+              const notes = sync.notes || '';
+              return !notes.includes('Read-aloud: disabled');
+            })
+            .map(sync => ({
+              id: sync.block_id || sync.id,
+              blockId: sync.block_id,
+              clipBegin: sync.start_time,
+              clipEnd: sync.end_time,
+              startTime: sync.start_time,
+              endTime: sync.end_time,
+              shouldRead: !(sync.notes || '').includes('Read-aloud: disabled')
+            }));
+          
+          if (pageSyncs.length > 0) {
+            syncs = pageSyncs;
+            const firstSync = dbSyncs.find(s => s.page_number === actualPageNum);
+            if (firstSync && firstSync.audio_file_path) {
+              let audioPath = firstSync.audio_file_path;
+              if (path.isAbsolute(audioPath)) {
+                audioPath = path.basename(audioPath);
+              }
+              audioPath = audioPath.replace(/^audio\//, '');
+              
+              // Extract just the filename for EPUB path (avoid absolute path issues)
+              const audioFileNameOnly = path.basename(audioPath);
+              
+              if (audioFileNameOnly.includes('combined_audio')) {
+                audioFileName = `audio/combined_audio_${jobId}.mp3`;
+              } else {
+                audioFileName = `audio/${audioFileNameOnly}`;
+              }
+              
+              const { getTtsOutputDir, getUploadDir } = await import('../config/fileStorage.js');
+              let audioFilePath = null;
+              
+              // Check if original path is absolute and exists
+              const originalPath = firstSync.audio_file_path;
+              if (path.isAbsolute(originalPath)) {
+                try {
+                  await fs.access(originalPath);
+                  audioFilePath = originalPath;
+                } catch (err) {
+                  // Absolute path doesn't exist, try relative paths
+                  audioFilePath = null;
+                }
+              }
+              
+              // If absolute path didn't work, try relative paths
+              if (!audioFilePath) {
+                if (audioFileNameOnly.includes('combined_audio') || audioFileNameOnly.startsWith('combined_audio_')) {
+                  const ttsDir = getTtsOutputDir();
+                  audioFilePath = path.join(ttsDir, `combined_audio_${jobId}.mp3`);
+                } else {
+                  const uploadDir = getUploadDir();
+                  audioFilePath = path.join(uploadDir, 'audio', audioFileNameOnly);
+                }
+              }
+              
+              try {
+                await fs.access(audioFilePath);
+                const audioData = await fs.readFile(audioFilePath);
+                zip.file(`OEBPS/${audioFileName}`, audioData);
+                manifestItems.push(`<item id="audio-page-${actualPageNum}" href="${audioFileName}" media-type="audio/mpeg"/>`);
+                hasAudio = true;
+                pageAudioFileExists = true;
+              } catch (audioError) {
+                console.warn(`[Job ${jobId}] Audio file not found at ${audioFilePath} for page ${actualPageNum}`);
+                syncs = [];
+                audioFileName = null;
+                pageAudioFileExists = false;
+              }
+            }
+          }
+        } catch (dbError) {
+          // No syncs - that's OK
+        }
+        
+        // Generate SMIL if we have syncs
+        const activeSyncs = syncs.filter(sync => sync.shouldRead !== false);
+        let hasSmil = false;
+        const smilItemId = `smil-page${actualPageNum}`;
+        
+        // Debug logging for SMIL generation
+        console.log(`[Job ${jobId}] Page ${actualPageNum} SMIL check: syncs=${syncs.length}, activeSyncs=${activeSyncs.length}, audioFileName=${audioFileName}, pageAudioFileExists=${pageAudioFileExists}`);
+        
+        if (activeSyncs.length > 0 && audioFileName && pageAudioFileExists) {
+          hasSmil = true;
+          const smilFileName = `page_${actualPageNum}.smil`;
+          console.log(`[Job ${jobId}] Generating SMIL for page ${actualPageNum}: ${activeSyncs.length} active syncs, audio=${audioFileName}`);
+          const smilContent = this.generateSMILContent(
+            actualPageNum,
+            activeSyncs,
+            audioFileName,
+            textData,
+            {},
+            fileName
+          );
+          zip.file(`OEBPS/${smilFileName}`, smilContent);
+          smilFileNames.push(smilFileName);
+          manifestItems.push(`<item id="${smilItemId}" href="${smilFileName}" media-type="application/smil+xml"/>`);
+          console.log(`[Job ${jobId}] ✓ SMIL file generated: ${smilFileName}`);
+        } else {
+          if (activeSyncs.length === 0) {
+            console.warn(`[Job ${jobId}] Page ${actualPageNum}: No active syncs (total syncs: ${syncs.length})`);
+          }
+          if (!audioFileName) {
+            console.warn(`[Job ${jobId}] Page ${actualPageNum}: No audioFileName set`);
+          }
+          if (!pageAudioFileExists) {
+            console.warn(`[Job ${jobId}] Page ${actualPageNum}: Audio file does not exist (pageAudioFileExists=false)`);
+          }
+        }
+        
+        const itemId = `page${actualPageNum}`;
+        const pageProps = [];
+        pageProps.push('rendition:layout-fixed');
+        if (hasAudio) pageProps.push('rendition:page-spread-center');
+        if (hasSmil) pageProps.push('media-overlay');
+        const propsAttr = pageProps.length ? ` properties="${pageProps.join(' ')}"` : '';
+        const mediaOverlayAttr = hasSmil ? ` media-overlay="${smilItemId}"` : '';
+        manifestItems.push(`<item id="${itemId}" href="${fileName}" media-type="application/xhtml+xml"${propsAttr}${mediaOverlayAttr}/>`);
+        const spineMediaOverlay = hasSmil ? ` media-overlay="${smilItemId}"` : '';
+        spineItems.push(`<itemref idref="${itemId}"${spineMediaOverlay}/>`);
+        tocItems.push(`<li><a href="${fileName}">Page ${actualPageNum}</a></li>`);
+      }
+    }
+    
+    // STEP 2 (original): Generate XHTML pages ONLY for pages with successfully added images
     for (let i = 0; i < pageImages.length; i++) {
       const pageImage = pageImages[i];
       const epubPageNum = pageImage.pageNumber;
@@ -1295,29 +1857,147 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
           pageAudioFileExists = false;
         }
       } catch (e) {
-        // No editorial syncs found - TTS will be available via reader's built-in TTS
-        // We don't generate SMIL files for TTS to prevent auto-play in readers like Thorium
-        // The text content is accessible for TTS without needing media overlays
-        console.log(`[Job ${jobId}] No editorial syncs found. TTS will be available via reader's built-in TTS (no SMIL/auto-play).`);
-        console.log(`[Job ${jobId}] To add pre-recorded audio with sync: Upload human audio files via Media Overlay Sync Editor.`);
-        syncs = []; // Clear syncs so no SMIL is generated
+        // No editorial syncs found - check database for TTS-generated or user-uploaded audio syncs
+        try {
+          const { AudioSyncModel } = await import('../models/AudioSync.js');
+          const dbSyncs = await AudioSyncModel.findByJobId(jobId);
+          
+          // Filter syncs for this page and only those with shouldRead enabled
+          const pageSyncs = dbSyncs
+            .filter(sync => {
+              const syncPageNum = sync.page_number || sync.pageNumber;
+              return syncPageNum === actualPageNum;
+            })
+            .filter(sync => {
+              // Check notes field for "Read-aloud: disabled" - if present, exclude it
+              const notes = sync.notes || '';
+              return !notes.includes('Read-aloud: disabled');
+            })
+            .map(sync => ({
+              id: sync.block_id || sync.id,
+              blockId: sync.block_id, // This should be the granular ID (e.g., "p1_s1")
+              block_id: sync.block_id, // Keep both for compatibility
+              clipBegin: sync.start_time || sync.startTime,
+              clipEnd: sync.end_time || sync.endTime,
+              startTime: sync.start_time || sync.startTime,
+              endTime: sync.end_time || sync.endTime,
+              shouldRead: !(sync.notes || '').includes('Read-aloud: disabled')
+            }));
+          
+          console.log(`[Job ${jobId}] Page ${actualPageNum}: Found ${pageSyncs.length} syncs after filtering`);
+          
+          if (pageSyncs.length > 0) {
+            syncs = pageSyncs;
+            // Get audio file path from first sync
+            const firstSync = dbSyncs.find(s => s.page_number === actualPageNum);
+            if (firstSync && firstSync.audio_file_path) {
+              // Extract audio file name and ensure it's in the right format
+              const originalAudioPath = firstSync.audio_file_path;
+              let audioFilePath = null;
+              
+              // Check if original path is absolute and exists
+              if (path.isAbsolute(originalAudioPath)) {
+                try {
+                  await fs.access(originalAudioPath);
+                  audioFilePath = originalAudioPath;
+                  // Extract just the filename for EPUB path
+                  const audioFileNameOnly = path.basename(originalAudioPath);
+                  if (audioFileNameOnly.includes('combined_audio')) {
+                    audioFileName = `audio/combined_audio_${jobId}.mp3`;
+                  } else {
+                    audioFileName = `audio/${audioFileNameOnly}`;
+                  }
+                } catch (err) {
+                  // Absolute path doesn't exist, try relative paths
+                  audioFilePath = null;
+                }
+              }
+              
+              // If absolute path didn't work, try relative paths
+              if (!audioFilePath) {
+                let audioPath = originalAudioPath;
+                
+                // Remove any leading "audio/" prefix if present
+                audioPath = audioPath.replace(/^audio\//, '');
+                
+                // Remove absolute path prefix if somehow still present
+                if (path.isAbsolute(audioPath)) {
+                  audioPath = path.basename(audioPath);
+                }
+                
+                if (audioPath.includes('combined_audio')) {
+                  audioFileName = `audio/combined_audio_${jobId}.mp3`;
+                } else {
+                  audioFileName = `audio/${audioPath}`;
+                }
+                
+                // Check if audio file exists and add to EPUB
+                const { getTtsOutputDir, getUploadDir } = await import('../config/fileStorage.js');
+                
+                // Try TTS output dir first (for combined_audio files)
+                if (audioPath.includes('combined_audio') || audioPath.startsWith('combined_audio_')) {
+                  const ttsDir = getTtsOutputDir();
+                  audioFilePath = path.join(ttsDir, `combined_audio_${jobId}.mp3`);
+                } else {
+                  // Try uploads/audio dir
+                  const uploadDir = getUploadDir();
+                  audioFilePath = path.join(uploadDir, 'audio', audioPath);
+                }
+              }
+              
+              try {
+                // Check if file exists before trying to read
+                await fs.access(audioFilePath);
+                const audioData = await fs.readFile(audioFilePath);
+                zip.file(`OEBPS/${audioFileName}`, audioData);
+                manifestItems.push(`<item id="audio-page-${actualPageNum}" href="${audioFileName}" media-type="audio/mpeg"/>`);
+                hasAudio = true;
+                pageAudioFileExists = true;
+                console.log(`[Job ${jobId}] Loaded ${pageSyncs.length} database syncs for page ${actualPageNum} (${pageSyncs.filter(s => s.shouldRead).length} enabled).`);
+              } catch (audioError) {
+                console.warn(`[Job ${jobId}] Audio file not found at ${audioFilePath}. Skipping SMIL generation.`);
+                console.warn(`[Job ${jobId}] Original audio_file_path was: ${firstSync.audio_file_path}`);
+                syncs = [];
+                audioFileName = null;
+                pageAudioFileExists = false;
+              }
+            }
+          } else {
+            console.log(`[Job ${jobId}] Page ${actualPageNum}: No database syncs found for this page`);
+            syncs = [];
+          }
+        } catch (dbError) {
+          console.warn(`[Job ${jobId}] Page ${actualPageNum}: Error loading syncs from database:`, dbError.message);
+          syncs = [];
+        }
       }
 
-      // Generate SMIL ONLY for human-recorded audio (editorial syncs) AND only if audio file exists
-      // Do NOT generate SMIL for TTS - it causes auto-play in readers like Thorium
-      // Do NOT generate SMIL if audio file is missing - it causes auto-play without sound
-      // TTS works fine without SMIL files using the reader's built-in TTS
+      // Generate SMIL for audio syncs (both human-recorded and TTS-generated with granular control)
+      // Only generate if we have syncs AND audio file exists
+      // Filter syncs to only include those with shouldRead === true (or not explicitly disabled)
+      const activeSyncs = syncs.filter(sync => {
+        // Check shouldRead flag if present
+        if (sync.shouldRead !== undefined) {
+          return sync.shouldRead === true;
+        }
+        // Default to true if not specified (backward compatibility)
+        return true;
+      });
+      
       let hasSmil = false;
       const smilItemId = `smil-page${actualPageNum}`;
-      // Only generate SMIL if we have syncs AND it's human audio (not TTS) AND audio file exists
-      // We can tell it's human audio if audioFileName contains "_human"
-      // We check pageAudioFileExists to ensure THIS page's audio file was actually added to the EPUB
-      if (syncs.length > 0 && audioFileName && audioFileName.includes('_human') && pageAudioFileExists) {
+      
+      // Debug logging for SMIL generation
+      console.log(`[Job ${jobId}] Page ${actualPageNum} SMIL check: syncs=${syncs.length}, activeSyncs=${activeSyncs.length}, audioFileName=${audioFileName}, pageAudioFileExists=${pageAudioFileExists}`);
+      
+      // Generate SMIL if we have active syncs AND audio file exists
+      if (activeSyncs.length > 0 && audioFileName && pageAudioFileExists) {
         hasSmil = true;
         const smilFileName = `page_${actualPageNum}.smil`;
+        console.log(`[Job ${jobId}] Generating SMIL for page ${actualPageNum}: ${activeSyncs.length} active syncs, audio=${audioFileName}`);
         const smilContent = this.generateSMILContent(
           actualPageNum,
-          syncs,
+          activeSyncs, // Use filtered active syncs only (respects shouldRead flags)
           audioFileName,
           textData,
           pageIdMappings[actualPageNum],
@@ -1327,6 +2007,17 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
         smilFileNames.push(smilFileName);
         // SMIL manifest item - ID is what XHTML will reference
         manifestItems.push(`<item id="${smilItemId}" href="${smilFileName}" media-type="application/smil+xml"/>`);
+        console.log(`[Job ${jobId}] ✓ SMIL file generated: ${smilFileName}`);
+      } else {
+        if (activeSyncs.length === 0) {
+          console.warn(`[Job ${jobId}] Page ${actualPageNum}: No active syncs (total syncs: ${syncs.length})`);
+        }
+        if (!audioFileName) {
+          console.warn(`[Job ${jobId}] Page ${actualPageNum}: No audioFileName set`);
+        }
+        if (!pageAudioFileExists) {
+          console.warn(`[Job ${jobId}] Page ${actualPageNum}: Audio file does not exist (pageAudioFileExists=false)`);
+        }
       }
 
       const itemId = `page${actualPageNum}`;
@@ -1370,10 +2061,21 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       const audioFilePath = firstSync.audioFilePath || firstSync.audio_file_path;
       
       if (audioFilePath) {
+        // Fix audio file path - handle relative paths correctly
+        let actualAudioFilePath = audioFilePath;
+        
+        // If path is relative (starts with 'audio/'), try to find it in uploads directory
+        if (!path.isAbsolute(audioFilePath) && audioFilePath.startsWith('audio/')) {
+          const { getUploadDir } = await import('../config/fileStorage.js');
+          const uploadDir = getUploadDir();
+          const audioFileNameOnly = path.basename(audioFilePath);
+          actualAudioFilePath = path.join(uploadDir, 'audio', audioFileNameOnly);
+        }
+        
         try {
-          await fs.access(audioFilePath);
-          const audioData = await fs.readFile(audioFilePath);
-          const audioExt = path.extname(audioFilePath) || '.mp3';
+          await fs.access(actualAudioFilePath);
+          const audioData = await fs.readFile(actualAudioFilePath);
+          const audioExt = path.extname(actualAudioFilePath) || '.mp3';
           audioFileName = `audio/audio_${jobId}${audioExt}`;
           zip.file(`OEBPS/${audioFileName}`, audioData);
           
@@ -1399,7 +2101,8 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
             // Get ID mapping for this page
             const pageIdMapping = pageIdMappings?.[parseInt(pageNum)] || {};
             const pageXhtmlFileName = `page_${pageNum}.xhtml`;
-            const smilContent = this.generateSMILContent(parseInt(pageNum), pageSyncs, audioFileName, textData, pageIdMapping, pageXhtmlFileName);
+            // Pass granularity to filter syncs at the desired level (word/sentence/paragraph)
+            const smilContent = this.generateSMILContent(parseInt(pageNum), pageSyncs, audioFileName, textData, pageIdMapping, pageXhtmlFileName, granularity);
             zip.file(`OEBPS/${smilFileName}`, smilContent);
             smilFileNames.push(smilFileName);
             // Use page${pageNum} format to match spine itemref idref
@@ -1416,6 +2119,17 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       }
     } else {
       console.log(`[Job ${jobId}] No audio syncs found - EPUB will be generated without audio`);
+    }
+    
+    // Log SMIL generation summary
+    console.log(`[Job ${jobId}] 📊 SMIL Generation Summary: ${smilFileNames.length} SMIL files generated`);
+    if (smilFileNames.length > 0) {
+      console.log(`[Job ${jobId}] ✓ SMIL files: ${smilFileNames.join(', ')}`);
+    } else {
+      console.warn(`[Job ${jobId}] ⚠️ No SMIL files were generated. Possible reasons:`);
+      console.warn(`[Job ${jobId}]   - No syncs found in database`);
+      console.warn(`[Job ${jobId}]   - Audio files not found`);
+      console.warn(`[Job ${jobId}]   - All syncs have shouldRead=false`);
     }
     
     const sharedCss = this.generateFixedLayoutCSS(
@@ -2059,8 +2773,9 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       ? renderedHeight
       : Math.ceil((pageHeightPoints || 792) * (300 / 72));
 
+    // Use 'images/' (plural) directory for EPUB standard
     const imagePath = pageImage
-      ? (pageImage.epubPath || `image/${pageImage.fileName.replace(/^image\//, '')}`)
+      ? (pageImage.epubPath || `images/${pageImage.fileName.replace(/^(image|images)\//, '')}`)
       : '';
 
     // Default to invisible overlays (text present for TTS/search, hidden visually)
@@ -3004,13 +3719,20 @@ body > p {
    */
   static mapSyncIdToXhtmlId(sync, pageNumber, textBlocks, idMapping = {}) {
     // Get the sync's block ID (handle different field names)
-    // mapTimingsToBlocks returns { blockId, clipBegin, clipEnd, audioFileName }
-    // Editorial syncs return { id, clipBegin, clipEnd, audioFileName }
-    const syncBlockId = sync.id || sync.blockId || sync.textBlockId || sync.text_block_id;
+    // Granular IDs are saved as block_id (e.g., "page1_p1_s1" or legacy "p1_s1")
+    const syncBlockId = sync.id || sync.blockId || sync.block_id || sync.textBlockId || sync.text_block_id;
     
     if (!syncBlockId) {
       console.warn(`[SMIL] No block ID found in sync:`, sync);
       return null;
+    }
+    
+    // CRITICAL: For granular IDs, use them directly
+    // These IDs match the XHTML element IDs generated by Gemini
+    // Supports both new format (page1_p1_s1) and legacy format (p1_s1)
+    if (syncBlockId.match(/^(page\d+_)?p\d+(_s\d+)?(_w\d+)?$/)) {
+      // This is a granular ID (paragraph, sentence, or word level)
+      return syncBlockId;
     }
     
     // First, check if we have a direct mapping from XHTML generation
@@ -3041,19 +3763,20 @@ body > p {
       }
     }
     
-    // If syncBlockId looks like a valid ID, use it directly
-    // (XHTML generation uses block.id directly, so it should match)
-    if (syncBlockId && (syncBlockId.startsWith('block_') || syncBlockId.match(/^[a-zA-Z0-9_-]+$/))) {
+    // If syncBlockId looks like a valid XHTML ID, use it directly
+    // This handles IDs like "block_1_2", "p1", "p1_s1", "page1_p1_s1", etc.
+    if (syncBlockId && syncBlockId.match(/^[a-zA-Z0-9_-]+$/)) {
       return syncBlockId;
     }
     
-    // Fallback: try TTS flow text IDs (sequential)
-    // This is a last resort - ideally we should track which block maps to which paraIndex
-    const syncIndex = sync.index || 0;
-    return `tts-flow-${pageNumber}-${syncIndex}`;
+    // ISSUE #3 FIX: Do NOT use tts-flow- fallback IDs
+    // These IDs don't exist in XHTML and will cause silent highlight failures
+    // Return null instead, and let the caller handle the error appropriately
+    console.error(`[SMIL] Could not map syncBlockId "${syncBlockId}" to XHTML ID. No valid mapping found.`);
+    return null;
   }
 
-  static generateSMILContent(pageNumber, syncs, audioFileName, textData, idMapping = {}, xhtmlFileName = null) {
+  static generateSMILContent(pageNumber, syncs, audioFileName, textData, idMapping = {}, xhtmlFileName = null, targetGranularity = null) {
     // Get the page data to access textBlocks
     const page = textData?.pages?.find(p => p.pageNumber === pageNumber);
     const textBlocks = page?.textBlocks || [];
@@ -3061,18 +3784,122 @@ body > p {
     // Use provided XHTML filename or default
     const xhtmlFile = xhtmlFileName || `page_${pageNumber}.xhtml`;
     
-    const sortedSyncs = [...syncs].sort((a, b) => {
-      const startA = a.clipBegin ?? a.startTime ?? a.start_time ?? 0;
-      const startB = b.clipBegin ?? b.startTime ?? b.start_time ?? 0;
+    // Filter syncs by granularity if specified
+    let filteredSyncs = syncs;
+    if (targetGranularity) {
+      const originalCount = syncs.length;
+      filteredSyncs = syncs.filter(sync => {
+        const blockId = sync.blockId || sync.block_id || '';
+        switch (targetGranularity) {
+          case 'word':
+            // Words: IDs containing '_w' (e.g., page1_p1_s1_w1 or p1_s1_w1)
+            return blockId.includes('_w');
+          case 'sentence':
+            // Sentences: IDs containing '_s' but not '_w' (e.g., page1_p1_s1 or p1_s1)
+            return blockId.includes('_s') && !blockId.includes('_w');
+          case 'paragraph':
+            // Paragraphs: IDs without '_s' or '_w' (e.g., page1_p1 or p1)
+            return !blockId.includes('_s') && !blockId.includes('_w');
+          default:
+            return true;
+        }
+      });
+      
+      // ISSUE #1 FIX: Granularity Mismatch - Up-sampling logic
+      // If no matches found at requested granularity, try up-sampling from finer granularity
+      if (filteredSyncs.length === 0 && originalCount > 0) {
+        console.warn(`[SMIL Page ${pageNumber}] No ${targetGranularity}-level syncs found, attempting up-sampling...`);
+        
+        if (targetGranularity === 'paragraph') {
+          // Up-sample from sentence level: group sentences by paragraph
+          const paragraphMap = new Map();
+          syncs.forEach(sync => {
+            const blockId = sync.blockId || sync.block_id || '';
+            // Extract paragraph ID from sentence ID (e.g., page1_p1_s1 -> page1_p1)
+            const paraMatch = blockId.match(/^((?:page\d+_)?p\d+)(?:_s\d+)?(_w\d+)?$/);
+            if (paraMatch) {
+              const paraId = paraMatch[1];
+              if (!paragraphMap.has(paraId)) {
+                paragraphMap.set(paraId, { sentences: [], startTime: Infinity, endTime: -Infinity });
+              }
+              const paraData = paragraphMap.get(paraId);
+              paraData.sentences.push(sync);
+              const start = Number(sync.start_time ?? sync.startTime ?? sync.clipBegin ?? 0);
+              const end = Number(sync.end_time ?? sync.endTime ?? sync.clipEnd ?? start + 5);
+              paraData.startTime = Math.min(paraData.startTime, start);
+              paraData.endTime = Math.max(paraData.endTime, end);
+            }
+          });
+          
+          // Convert paragraph groups back to sync objects
+          filteredSyncs = Array.from(paragraphMap.entries()).map(([paraId, paraData]) => ({
+            blockId: paraId,
+            block_id: paraId,
+            start_time: paraData.startTime,
+            startTime: paraData.startTime,
+            end_time: paraData.endTime,
+            endTime: paraData.endTime,
+            customText: paraData.sentences.map(s => s.customText || s.custom_text || '').join(' ').trim()
+          }));
+          
+          console.log(`[SMIL Page ${pageNumber}] Up-sampled ${filteredSyncs.length} paragraph-level syncs from ${originalCount} sentence-level syncs`);
+        } else if (targetGranularity === 'sentence') {
+          // Up-sample from word level: group words by sentence
+          const sentenceMap = new Map();
+          syncs.forEach(sync => {
+            const blockId = sync.blockId || sync.block_id || '';
+            // Extract sentence ID from word ID (e.g., page1_p1_s1_w1 -> page1_p1_s1)
+            const sentMatch = blockId.match(/^((?:page\d+_)?p\d+_s\d+)(_w\d+)?$/);
+            if (sentMatch) {
+              const sentId = sentMatch[1];
+              if (!sentenceMap.has(sentId)) {
+                sentenceMap.set(sentId, { words: [], startTime: Infinity, endTime: -Infinity });
+              }
+              const sentData = sentenceMap.get(sentId);
+              sentData.words.push(sync);
+              const start = Number(sync.start_time ?? sync.startTime ?? sync.clipBegin ?? 0);
+              const end = Number(sync.end_time ?? sync.endTime ?? sync.clipEnd ?? start + 5);
+              sentData.startTime = Math.min(sentData.startTime, start);
+              sentData.endTime = Math.max(sentData.endTime, end);
+            }
+          });
+          
+          // Convert sentence groups back to sync objects
+          filteredSyncs = Array.from(sentenceMap.entries()).map(([sentId, sentData]) => ({
+            blockId: sentId,
+            block_id: sentId,
+            start_time: sentData.startTime,
+            startTime: sentData.startTime,
+            end_time: sentData.endTime,
+            endTime: sentData.endTime,
+            customText: sentData.words.map(w => w.customText || w.custom_text || '').join(' ').trim()
+          }));
+          
+          console.log(`[SMIL Page ${pageNumber}] Up-sampled ${filteredSyncs.length} sentence-level syncs from ${originalCount} word-level syncs`);
+        }
+        
+        // If still no matches after up-sampling, log critical error
+        if (filteredSyncs.length === 0) {
+          console.error(`[SMIL Page ${pageNumber}] CRITICAL: No syncs available for ${targetGranularity} granularity after up-sampling. SMIL file will be empty.`);
+        }
+      } else {
+        console.log(`[SMIL Page ${pageNumber}] Filtered to ${filteredSyncs.length} ${targetGranularity}-level syncs from ${originalCount} total`);
+      }
+    }
+    
+    // ISSUE #4 FIX: Data Type Consistency - Ensure numeric types
+    const sortedSyncs = [...filteredSyncs].sort((a, b) => {
+      const startA = Number(a.start_time ?? a.startTime ?? a.clipBegin ?? 0);
+      const startB = Number(b.start_time ?? b.startTime ?? b.clipBegin ?? 0);
       return startA - startB;
     });
     
     let bodyContent = '';
     let totalDuration = 0;
-    let paraIndex = 0; // Track paragraph index for TTS flow text fallback
+    let skippedCount = 0;
     
-    // Fix audio file path - ensure it's relative to SMIL file location
-    // SMIL files are in OEBPS/, audio files should be in OEBPS/audio/
+    // ISSUE #2: Audio Path - SMIL files are in OEBPS/, audio files are in OEBPS/audio/
+    // Path is correct: audio/filename.mp3 (same directory level)
     let audioPath = audioFileName;
     if (!audioPath.startsWith('../') && !audioPath.startsWith('/')) {
       // If audio is in OEBPS/audio/, SMIL in OEBPS/ needs audio/ (same directory level)
@@ -3085,17 +3912,53 @@ body > p {
     
     for (let i = 0; i < sortedSyncs.length; i++) {
       const sync = sortedSyncs[i];
-      const startTime = sync.clipBegin ?? sync.startTime ?? sync.start_time ?? 0;
-      const endTime = sync.clipEnd ?? sync.endTime ?? sync.end_time ?? (startTime + 5);
+      
+      // Skip blocks where shouldRead is false (if present in sync data)
+      if (sync.shouldRead === false) {
+        continue;
+      }
+      
+      // ISSUE #4 FIX: Ensure numeric types for timestamps
+      const startTime = Number(sync.start_time ?? sync.startTime ?? sync.clipBegin ?? 0);
+      const endTime = Number(sync.end_time ?? sync.endTime ?? sync.clipEnd ?? (startTime + 5));
+      
+      // Validate timestamps
+      if (isNaN(startTime) || isNaN(endTime) || endTime <= startTime) {
+        console.error(`[SMIL Page ${pageNumber}] Invalid timestamps for sync ${i}: start=${startTime}, end=${endTime}`);
+        skippedCount++;
+        continue;
+      }
       
       // FIXED: Map sync blockId to actual XHTML ID
-      let blockId = this.mapSyncIdToXhtmlId(sync, pageNumber, textBlocks, idMapping);
+      // For granular IDs (p1_s1), the block_id should match the XHTML element ID directly
+      let blockId = sync.blockId || sync.block_id || sync.id;
       
-      // If mapping failed, try sequential TTS flow text IDs
+      // If blockId is not set, try mapping
       if (!blockId) {
-        console.warn(`[SMIL Page ${pageNumber}] Could not map sync ID ${sync.id || sync.blockId}, using fallback`);
-        blockId = `tts-flow-${pageNumber}-${paraIndex}`;
-        paraIndex++;
+        blockId = this.mapSyncIdToXhtmlId(sync, pageNumber, textBlocks, idMapping);
+      }
+      
+      // ISSUE #3 FIX: Silent Highlight Failure - Strict fallback logic
+      // Instead of using tts-flow- IDs that don't exist in XHTML, skip the sync and log error
+      if (!blockId) {
+        console.error(`[SMIL Page ${pageNumber}] CRITICAL: Could not map sync ID ${sync.id || sync.blockId || sync.block_id} to XHTML element. Skipping sync to prevent silent highlight failure.`);
+        skippedCount++;
+        continue;
+      }
+      
+      // Validate blockId format (should be valid for XHTML fragment)
+      if (!blockId.match(/^[a-zA-Z0-9_-]+$/)) {
+        console.error(`[SMIL Page ${pageNumber}] CRITICAL: Invalid blockId format: ${blockId}. This will not match XHTML IDs. Skipping sync.`);
+        skippedCount++;
+        continue;
+      }
+      
+      // Additional validation: blockId should match expected patterns (granular IDs)
+      // This prevents tts-flow- fallback IDs from being used
+      if (blockId.startsWith('tts-flow-')) {
+        console.error(`[SMIL Page ${pageNumber}] CRITICAL: BlockId ${blockId} is a fallback ID that won't exist in XHTML. Skipping sync to prevent silent highlight failure.`);
+        skippedCount++;
+        continue;
       }
       
       // Escape the blockId for use in URL fragment
@@ -3104,15 +3967,19 @@ body > p {
       
       // Debug logging for first few syncs
       if (i < 3) {
-        console.log(`[SMIL Page ${pageNumber}] Sync ${i}: blockId=${blockId}, clipBegin=${startTime}, clipEnd=${endTime}, audioPath=${audioPath}`);
+        console.log(`[SMIL Page ${pageNumber}] Sync ${i}: blockId=${blockId}, clipBegin=${startTime.toFixed(3)}s, clipEnd=${endTime.toFixed(3)}s, audioPath=${audioPath}`);
       }
       
       bodyContent += `    <par id="par-${escapedBlockId}">
       <text src="${this.escapeHtml(xhtmlFile)}#${escapedBlockId}"/>
-      <audio src="${escapedAudioPath}" clipBegin="${startTime}s" clipEnd="${endTime}s"/>
+      <audio src="${escapedAudioPath}" clipBegin="${startTime.toFixed(3)}s" clipEnd="${endTime.toFixed(3)}s"/>
     </par>\n`;
       
       totalDuration = Math.max(totalDuration, endTime);
+    }
+    
+    if (skippedCount > 0) {
+      console.warn(`[SMIL Page ${pageNumber}] Skipped ${skippedCount} syncs due to mapping failures or invalid data`);
     }
     
     // EPUB 3 SMIL structure with <seq> wrapper

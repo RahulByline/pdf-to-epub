@@ -37,6 +37,14 @@ const AudioSync = () => {
   const [playingBlockId, setPlayingBlockId] = useState(null);
   const [blockAudioElements, setBlockAudioElements] = useState({});
   const [clipTimings, setClipTimings] = useState({}); // Store CLIPBEGIN/CLIPEND timings for each block
+  
+  // New state for user-uploaded audio workflow
+  const [uploadedAudio, setUploadedAudio] = useState(null); // Blob URL of uploaded audio
+  const [uploadedAudioFile, setUploadedAudioFile] = useState(null); // File object
+  const [syncBlocks, setSyncBlocks] = useState([]); // Parsed sync blocks from XHTML
+  const [tapToSyncMode, setTapToSyncMode] = useState(false); // Tap-to-sync mode enabled
+  const [currentSyncBlockIndex, setCurrentSyncBlockIndex] = useState(0); // Current block being synced
+  const [isRecordingSync, setIsRecordingSync] = useState(false); // Currently recording sync timings
 
   useEffect(() => {
     loadData();
@@ -131,6 +139,35 @@ const AudioSync = () => {
         // Don't set audioUrl - we'll use TTS instead
         setAudioSegments(audioData);
         
+        // Parse XHTML to extract sync blocks and map to TTS segments
+        if (epubSections && epubSections.length > 0) {
+          const allSyncBlocks = [];
+          epubSections.forEach(section => {
+            if (section.xhtml) {
+              const blocks = parseXhtmlToSyncBlocks(section.xhtml);
+              // Map TTS segments to sync blocks by matching block IDs
+              blocks.forEach(block => {
+                const matchingSegment = audioData.find(s => 
+                  s.blockId === block.id || 
+                  s.blockId === block.elementId ||
+                  s.blockId === `page_${section.id}_block_${block.id}`
+                );
+                if (matchingSegment) {
+                  block.start = matchingSegment.startTime || 0;
+                  block.end = matchingSegment.endTime || 0;
+                  block.shouldRead = true; // TTS-generated blocks default to enabled
+                  block.pageNumber = matchingSegment.pageNumber || 1;
+                }
+              });
+              allSyncBlocks.push(...blocks);
+            }
+          });
+          
+          if (allSyncBlocks.length > 0) {
+            setSyncBlocks(allSyncBlocks);
+          }
+        }
+        
         // Initialize clipTimings from audio segments
         const timings = {};
         audioData.forEach(segment => {
@@ -172,6 +209,184 @@ const AudioSync = () => {
     }
   };
 
+  /**
+   * Parse XHTML to extract sync blocks (paragraphs and sentences with data-read-aloud="true")
+   * @param {string} xhtmlString - XHTML content string
+   * @returns {Array} Array of sync block objects
+   */
+  const parseXhtmlToSyncBlocks = (xhtmlString) => {
+    if (!xhtmlString || typeof xhtmlString !== 'string') {
+      return [];
+    }
+
+    try {
+      // Create a DOMParser to parse XHTML
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xhtmlString, 'application/xhtml+xml');
+      
+      // Check for parsing errors
+      const parserError = doc.querySelector('parsererror');
+      if (parserError) {
+        console.error('XHTML parsing error:', parserError.textContent);
+        return [];
+      }
+
+      const syncBlocks = [];
+      
+      // Find all elements with data-read-aloud="true"
+      const readAloudElements = doc.querySelectorAll('[data-read-aloud="true"]');
+      
+      readAloudElements.forEach((element, index) => {
+        const id = element.getAttribute('id') || `sync-block-${index}`;
+        const text = element.textContent?.trim() || '';
+        const parentParagraph = element.closest('p[id]');
+        const paragraphId = parentParagraph?.getAttribute('id') || null;
+        
+        // Determine type: if inside a <p>, it's likely a sentence; if it IS a <p>, it's a paragraph
+        const type = element.tagName.toLowerCase() === 'p' ? 'paragraph' : 'sentence';
+        
+        syncBlocks.push({
+          id: id,
+          text: text,
+          type: type,
+          paragraphId: paragraphId,
+          shouldRead: true, // Default to true
+          start: 0,
+          end: 0,
+          elementId: id // For SMIL reference
+        });
+      });
+
+      // Also find paragraphs with IDs (even if they don't have data-read-aloud)
+      const paragraphs = doc.querySelectorAll('p[id]');
+      paragraphs.forEach((para, index) => {
+        const paraId = para.getAttribute('id');
+        const hasReadAloud = para.hasAttribute('data-read-aloud') && para.getAttribute('data-read-aloud') === 'true';
+        
+        // Only add if it doesn't already have read-aloud children or if it's marked for read-aloud
+        const hasReadAloudChildren = Array.from(para.querySelectorAll('[data-read-aloud="true"]')).length > 0;
+        
+        if (!hasReadAloudChildren && (hasReadAloud || paraId)) {
+          // Check if we already have this paragraph
+          const exists = syncBlocks.find(block => block.id === paraId);
+          if (!exists) {
+            syncBlocks.push({
+              id: paraId,
+              text: para.textContent?.trim() || '',
+              type: 'paragraph',
+              paragraphId: paraId,
+              shouldRead: hasReadAloud,
+              start: 0,
+              end: 0,
+              elementId: paraId
+            });
+          }
+        }
+      });
+
+      // Sort by reading order (by position in DOM)
+      syncBlocks.sort((a, b) => {
+        const aElement = doc.getElementById(a.id);
+        const bElement = doc.getElementById(b.id);
+        if (!aElement || !bElement) return 0;
+        
+        const position = aElement.compareDocumentPosition(bElement);
+        if (position & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+        if (position & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+        return 0;
+      });
+
+      return syncBlocks;
+    } catch (error) {
+      console.error('Error parsing XHTML to sync blocks:', error);
+      return [];
+    }
+  };
+
+  /**
+   * Handle audio file upload
+   */
+  const handleAudioUpload = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    if (!file.type.startsWith('audio/')) {
+      setError('Please upload a valid audio file (MP3, WAV, etc.)');
+      return;
+    }
+
+    // Create blob URL for playback
+    const blobUrl = URL.createObjectURL(file);
+    setUploadedAudio(blobUrl);
+    setUploadedAudioFile(file);
+    setError('');
+
+    // If we have EPUB sections, parse the first one to extract sync blocks
+    if (epubSections && epubSections.length > 0) {
+      const firstSection = epubSections[0];
+      if (firstSection.xhtml) {
+        const blocks = parseXhtmlToSyncBlocks(firstSection.xhtml);
+        setSyncBlocks(blocks);
+      }
+    }
+  };
+
+  /**
+   * Toggle read-aloud for a sync block
+   */
+  const toggleReadAloud = (blockId) => {
+    setSyncBlocks(prevBlocks => 
+      prevBlocks.map(block => 
+        block.id === blockId 
+          ? { ...block, shouldRead: !block.shouldRead }
+          : block
+      )
+    );
+    setHasUnsavedChanges(true);
+  };
+
+  /**
+   * Handle tap-to-sync: mark end of current block and start of next
+   */
+  const handleTapToSync = () => {
+    if (!uploadedAudio || !audioRef.current) return;
+
+    const currentTime = audioRef.current.currentTime;
+    const blocks = [...syncBlocks];
+    
+    if (currentSyncBlockIndex < blocks.length) {
+      // Set end time for current block
+      blocks[currentSyncBlockIndex].end = currentTime;
+      
+      // Set start time for next block (if exists)
+      if (currentSyncBlockIndex + 1 < blocks.length) {
+        blocks[currentSyncBlockIndex + 1].start = currentTime;
+      }
+      
+      setSyncBlocks(blocks);
+      setCurrentSyncBlockIndex(prev => Math.min(prev + 1, blocks.length - 1));
+      setHasUnsavedChanges(true);
+    }
+  };
+
+  /**
+   * Handle keyboard shortcut for tap-to-sync (Spacebar)
+   */
+  useEffect(() => {
+    if (!tapToSyncMode || !isRecordingSync) return;
+
+    const handleKeyPress = (e) => {
+      if (e.code === 'Space' && !e.target.matches('input, textarea')) {
+        e.preventDefault();
+        handleTapToSync();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyPress);
+    return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [tapToSyncMode, isRecordingSync, currentSyncBlockIndex, syncBlocks]);
+
   const handleGenerateAudio = async () => {
     if (!pdf) {
       setError('PDF not available');
@@ -202,6 +417,31 @@ const AudioSync = () => {
       
       setAudioSegments(segments);
       setSelectedBlocks([]); // Clear selection after generation
+      
+      // Parse XHTML to extract sync blocks for TTS-generated audio
+      if (epubSections && epubSections.length > 0) {
+        // Parse all sections to get sync blocks
+        const allSyncBlocks = [];
+        epubSections.forEach(section => {
+          if (section.xhtml) {
+            const blocks = parseXhtmlToSyncBlocks(section.xhtml);
+            // Map TTS segments to sync blocks by matching block IDs
+            blocks.forEach(block => {
+              const matchingSegment = segments.find(s => s.blockId === block.id || s.blockId === block.elementId);
+              if (matchingSegment) {
+                block.start = matchingSegment.startTime || 0;
+                block.end = matchingSegment.endTime || 0;
+                block.shouldRead = true; // TTS-generated blocks default to enabled
+              }
+            });
+            allSyncBlocks.push(...blocks);
+          }
+        });
+        
+        if (allSyncBlocks.length > 0) {
+          setSyncBlocks(allSyncBlocks);
+        }
+      }
       
       // Auto-populate CLIPBEGIN/CLIPEND from generated segments
       const timings = {};
@@ -439,8 +679,62 @@ const AudioSync = () => {
       setError('');
       setLoading(true);
       
+      // If user uploaded audio and has sync blocks, save them first
+      if (uploadedAudioFile && syncBlocks.length > 0) {
+        console.log('Saving sync blocks with uploaded audio...');
+        
+        // Upload audio file to server
+        const uploadResult = await audioSyncService.uploadAudioFile(parseInt(jobId), uploadedAudioFile);
+        const serverAudioFileName = uploadResult?.fileName || uploadedAudioFile.name;
+        
+        // Save sync blocks (only those with shouldRead === true will be saved)
+        await audioSyncService.saveSyncBlocks(
+          parseInt(jobId),
+          syncBlocks.map(block => ({
+            ...block,
+            pageNumber: selectedPage // Use current selected page
+          })),
+          serverAudioFileName
+        );
+        
+        console.log(`Saved ${syncBlocks.filter(b => b.shouldRead).length} active sync blocks`);
+      } else if (audioSegments.length > 0 && syncBlocks.length > 0) {
+        // For TTS-generated audio, update sync blocks with shouldRead flags
+        console.log('Saving TTS sync blocks with read-aloud flags...');
+        
+        // Get the audio file name from the first segment
+        const audioFileName = audioSegments[0]?.audioFilePath?.split('/').pop() || `combined_audio_${jobId}.mp3`;
+        
+        // Update existing audio syncs to set shouldRead flag
+        // Delete syncs for blocks where shouldRead === false
+        const activeBlockIds = syncBlocks.filter(b => b.shouldRead).map(b => b.id || b.elementId);
+        
+        // Update audio syncs based on shouldRead flag
+        // Keep all syncs but mark disabled ones in notes (don't delete - user might re-enable)
+        for (const segment of audioSegments) {
+          const blockId = segment.blockId;
+          const matchingBlock = syncBlocks.find(b => 
+            b.id === blockId || 
+            b.elementId === blockId ||
+            blockId?.includes(b.id) ||
+            b.id?.includes(blockId)
+          );
+          
+          if (matchingBlock) {
+            // Update sync with shouldRead flag in notes and timings
+            await audioSyncService.updateAudioSync(segment.id, {
+              startTime: matchingBlock.start || segment.startTime || 0,
+              endTime: matchingBlock.end || segment.endTime || 0,
+              notes: `TTS-generated. Read-aloud: ${matchingBlock.shouldRead ? 'enabled' : 'disabled'}. Type: ${matchingBlock.type || 'block'}`
+            });
+          }
+        }
+        
+        console.log(`Updated TTS sync blocks: ${activeBlockIds.length} active, ${syncBlocks.length - activeBlockIds.length} disabled`);
+      }
+      
       // Regenerate EPUB with current audio mappings
-      if (audioSegments.length > 0) {
+      if (audioSegments.length > 0 || (uploadedAudioFile && syncBlocks.length > 0)) {
         console.log('Saving changes: Regenerating EPUB with audio mappings...');
         await conversionService.regenerateEpub(parseInt(jobId));
       }
@@ -733,7 +1027,295 @@ const AudioSync = () => {
           >
             {generating ? 'Generating...' : 'Generate Audio'}
           </button>
+          
+          {/* Upload Audio Button */}
+          <div style={{ position: 'relative' }}>
+            <input
+              type="file"
+              accept="audio/*"
+              onChange={handleAudioUpload}
+              style={{ display: 'none' }}
+              id="audio-upload-input"
+            />
+            <label
+              htmlFor="audio-upload-input"
+              className="btn btn-secondary"
+              style={{ 
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                marginLeft: '12px'
+              }}
+            >
+              <HiOutlineVolumeUp size={18} />
+              {uploadedAudio ? 'Change Audio' : 'Upload Audio'}
+            </label>
+          </div>
         </div>
+        
+        {/* Audio Upload & Sync Controls Section */}
+        {uploadedAudio && (
+          <div style={{
+            marginTop: '20px',
+            padding: '20px',
+            backgroundColor: '#f5f5f5',
+            borderRadius: '8px',
+            border: '1px solid #e0e0e0'
+          }}>
+            <div style={{ marginBottom: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3 style={{ margin: 0, fontSize: '16px', fontWeight: '600' }}>Audio Sync Mode</h3>
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                <button
+                  onClick={() => {
+                    setTapToSyncMode(!tapToSyncMode);
+                    setIsRecordingSync(!tapToSyncMode);
+                    if (!tapToSyncMode) {
+                      setCurrentSyncBlockIndex(0);
+                    }
+                  }}
+                  style={{
+                    padding: '8px 16px',
+                    border: `2px solid ${tapToSyncMode ? '#4caf50' : '#e0e0e0'}`,
+                    borderRadius: '6px',
+                    backgroundColor: tapToSyncMode ? '#e8f5e9' : '#ffffff',
+                    color: tapToSyncMode ? '#2e7d32' : '#666',
+                    cursor: 'pointer',
+                    fontWeight: tapToSyncMode ? '600' : '400'
+                  }}
+                >
+                  {tapToSyncMode ? '✓ Tap-to-Sync Active' : 'Enable Tap-to-Sync'}
+                </button>
+                {tapToSyncMode && (
+                  <button
+                    onClick={handleTapToSync}
+                    style={{
+                      padding: '8px 16px',
+                      border: '2px solid #1976d2',
+                      borderRadius: '6px',
+                      backgroundColor: '#e3f2fd',
+                      color: '#1976d2',
+                      cursor: 'pointer',
+                      fontWeight: '600'
+                    }}
+                  >
+                    Mark End (Spacebar)
+                  </button>
+                )}
+              </div>
+            </div>
+            
+            {/* Audio Player with Waveform Visualization */}
+            <div style={{ marginBottom: '20px' }}>
+              {uploadedAudio ? (
+                <audio
+                  ref={audioRef}
+                  src={uploadedAudio}
+                  controls
+                  style={{ width: '100%', marginBottom: '12px' }}
+                  onTimeUpdate={(e) => setCurrentTime(e.target.currentTime)}
+                  onLoadedMetadata={(e) => setDuration(e.target.duration)}
+                  onPlay={() => setIsPlaying(true)}
+                  onPause={() => setIsPlaying(false)}
+                />
+              ) : audioSegments.length > 0 && (
+                <div style={{ 
+                  padding: '12px', 
+                  backgroundColor: '#e3f2fd', 
+                  borderRadius: '6px',
+                  marginBottom: '12px',
+                  fontSize: '14px'
+                }}>
+                  <strong>TTS-Generated Audio:</strong> {audioSegments.length} segments generated. 
+                  Use the sync blocks below to control which segments are included in the final EPUB.
+                </div>
+              )}
+              
+              {/* Simple Waveform Visualization (Progress Bar) - Only for uploaded audio */}
+              {uploadedAudio && duration > 0 && (
+                <div style={{ marginTop: '12px' }}>
+                  <div style={{
+                    width: '100%',
+                    height: '60px',
+                    backgroundColor: '#f0f0f0',
+                    borderRadius: '4px',
+                    position: 'relative',
+                    overflow: 'hidden',
+                    border: '1px solid #e0e0e0'
+                  }}>
+                    {/* Progress indicator */}
+                    <div style={{
+                      position: 'absolute',
+                      left: 0,
+                      top: 0,
+                      width: `${(currentTime / duration) * 100}%`,
+                      height: '100%',
+                      backgroundColor: '#1976d2',
+                      opacity: 0.3,
+                      transition: 'width 0.1s linear'
+                    }} />
+                    
+                    {/* Sync block markers */}
+                    {syncBlocks.map((block, idx) => {
+                      if (block.start === 0 && block.end === 0) return null;
+                      const startPercent = (block.start / duration) * 100;
+                      const endPercent = (block.end / duration) * 100;
+                      const width = endPercent - startPercent;
+                      
+                      return (
+                        <div
+                          key={block.id}
+                          style={{
+                            position: 'absolute',
+                            left: `${startPercent}%`,
+                            width: `${width}%`,
+                            height: '100%',
+                            backgroundColor: block.shouldRead ? '#4caf50' : '#ccc',
+                            opacity: 0.4,
+                            borderLeft: '1px solid #333',
+                            borderRight: '1px solid #333',
+                            cursor: 'pointer'
+                          }}
+                          title={`${block.text.substring(0, 30)}... (${formatTime(block.start)} - ${formatTime(block.end)})`}
+                          onClick={() => {
+                            if (audioRef.current) {
+                              audioRef.current.currentTime = block.start;
+                            }
+                          }}
+                        />
+                      );
+                    })}
+                    
+                    {/* Current time indicator */}
+                    <div style={{
+                      position: 'absolute',
+                      left: `${(currentTime / duration) * 100}%`,
+                      top: 0,
+                      width: '2px',
+                      height: '100%',
+                      backgroundColor: '#ff5722',
+                      zIndex: 10
+                    }} />
+                    
+                    {/* Time labels */}
+                    <div style={{
+                      position: 'absolute',
+                      bottom: '4px',
+                      left: '8px',
+                      fontSize: '11px',
+                      color: '#666',
+                      fontWeight: '500'
+                    }}>
+                      {formatTime(currentTime)} / {formatTime(duration)}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {tapToSyncMode && isRecordingSync && (
+                <div style={{
+                  padding: '12px',
+                  backgroundColor: '#fff3cd',
+                  borderRadius: '6px',
+                  fontSize: '13px',
+                  color: '#856404',
+                  marginTop: '8px'
+                }}>
+                  <strong>Tap-to-Sync Mode:</strong> Play the audio and press <kbd style={{ padding: '2px 6px', backgroundColor: '#fff', borderRadius: '3px' }}>Spacebar</kbd> or click "Mark End" when each segment finishes. 
+                  Current block: {syncBlocks[currentSyncBlockIndex]?.text?.substring(0, 50)}...
+                </div>
+              )}
+            </div>
+            
+            {/* Sync Blocks List */}
+            {syncBlocks.length > 0 && (
+              <div>
+                <h4 style={{ marginBottom: '12px', fontSize: '14px', fontWeight: '600' }}>
+                  Sync Blocks ({syncBlocks.filter(b => b.shouldRead).length} enabled)
+                </h4>
+                <div style={{
+                  maxHeight: '400px',
+                  overflowY: 'auto',
+                  border: '1px solid #e0e0e0',
+                  borderRadius: '6px',
+                  padding: '12px'
+                }}>
+                  {syncBlocks.map((block, idx) => (
+                    <div
+                      key={block.id}
+                      style={{
+                        padding: '12px',
+                        marginBottom: '8px',
+                        border: `2px solid ${idx === currentSyncBlockIndex && tapToSyncMode ? '#1976d2' : '#e0e0e0'}`,
+                        borderRadius: '6px',
+                        backgroundColor: idx === currentSyncBlockIndex && tapToSyncMode ? '#e3f2fd' : '#ffffff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '12px'
+                      }}
+                    >
+                      {/* Read-Aloud Toggle */}
+                      <button
+                        onClick={() => toggleReadAloud(block.id)}
+                        style={{
+                          width: '48px',
+                          height: '24px',
+                          borderRadius: '12px',
+                          border: 'none',
+                          backgroundColor: block.shouldRead ? '#4caf50' : '#ccc',
+                          cursor: 'pointer',
+                          position: 'relative',
+                          transition: 'background-color 0.2s',
+                          display: 'flex',
+                          alignItems: 'center',
+                          padding: '2px'
+                        }}
+                        title={block.shouldRead ? 'Disable read-aloud' : 'Enable read-aloud'}
+                      >
+                        <span
+                          style={{
+                            width: '20px',
+                            height: '20px',
+                            borderRadius: '50%',
+                            backgroundColor: '#fff',
+                            transform: block.shouldRead ? 'translateX(24px)' : 'translateX(0)',
+                            transition: 'transform 0.2s',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center'
+                          }}
+                        >
+                          {block.shouldRead && <HiOutlineVolumeUp size={12} color="#4caf50" />}
+                        </span>
+                      </button>
+                      
+                      {/* Block Info */}
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: '12px', color: '#666', marginBottom: '4px' }}>
+                          {block.type} • ID: {block.id}
+                        </div>
+                        <div style={{ fontSize: '14px', fontWeight: block.shouldRead ? '500' : '400', color: block.shouldRead ? '#212121' : '#999' }}>
+                          {block.text || '(empty)'}
+                        </div>
+                        <div style={{ fontSize: '11px', color: '#999', marginTop: '4px' }}>
+                          {block.start > 0 || block.end > 0 ? (
+                            <>
+                              {formatTime(block.start)} → {formatTime(block.end)}
+                              {audioSegments.find(s => s.blockId === block.id || s.blockId === block.elementId) && (
+                                <span style={{ marginLeft: '8px', color: '#1976d2', fontSize: '10px' }}>(TTS)</span>
+                              )}
+                            </>
+                          ) : (
+                            <span style={{ color: '#999', fontStyle: 'italic' }}>Not synced yet</span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {error && <div className="error">{error}</div>}

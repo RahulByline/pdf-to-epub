@@ -99,6 +99,39 @@ export class EpubService {
       correctDoctype + '\n<html'
     );
     
+    // Fix duplicate class attributes: <div class="foo" class="bar"> -> <div class="foo bar">
+    sanitized = sanitized.replace(/<([a-zA-Z][a-zA-Z0-9]*)\s+([^>]*?)class="([^"]*)"([^>]*?)class="([^"]*)"([^>]*)>/gi, 
+      (match, tagName, before, class1, middle, class2, after) => {
+        const mergedClasses = `${class1} ${class2}`.trim();
+        let cleanMiddle = middle.replace(/\s*class="[^"]*"\s*/gi, ' ');
+        let cleanAfter = after.replace(/\s*class="[^"]*"\s*/gi, ' ');
+        return `<${tagName} ${before}class="${mergedClasses}"${cleanMiddle}${cleanAfter}>`;
+      }
+    );
+    
+    // Run again in case there were more than 2 class attributes
+    sanitized = sanitized.replace(/<([a-zA-Z][a-zA-Z0-9]*)\s+([^>]*?)class="([^"]*)"([^>]*?)class="([^"]*)"([^>]*)>/gi, 
+      (match, tagName, before, class1, middle, class2, after) => {
+        const mergedClasses = `${class1} ${class2}`.trim();
+        let cleanMiddle = middle.replace(/\s*class="[^"]*"\s*/gi, ' ');
+        let cleanAfter = after.replace(/\s*class="[^"]*"\s*/gi, ' ');
+        return `<${tagName} ${before}class="${mergedClasses}"${cleanMiddle}${cleanAfter}>`;
+      }
+    );
+    
+    // Fix duplicate id attributes (keep only the first one)
+    sanitized = sanitized.replace(/<([a-zA-Z][a-zA-Z0-9]*)\s+([^>]*?)id="([^"]*)"([^>]*?)id="[^"]*"([^>]*)>/gi, 
+      (match, tagName, before, id, middle, after) => {
+        let cleanMiddle = middle.replace(/\s*id="[^"]*"\s*/gi, ' ');
+        let cleanAfter = after.replace(/\s*id="[^"]*"\s*/gi, ' ');
+        return `<${tagName} ${before}id="${id}"${cleanMiddle}${cleanAfter}>`;
+      }
+    );
+    
+    // Clean up multiple spaces in tags
+    sanitized = sanitized.replace(/\s+>/g, '>');
+    sanitized = sanitized.replace(/<(\w+)\s+/g, '<$1 ');
+    
     return sanitized;
   }
 
