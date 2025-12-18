@@ -54,7 +54,7 @@ export const conversionService = {
   getTextBlocks: (jobId) =>
     api.get(`/conversions/${jobId}/text-blocks`).then(res => res.data.data),
   
-  regenerateEpub: (jobId) =>
-    api.post(`/conversions/${jobId}/regenerate`).then(res => res.data.data)
+  regenerateEpub: (jobId, options = {}) =>
+    api.post(`/conversions/${jobId}/regenerate`, options).then(res => res.data.data)
 };
 

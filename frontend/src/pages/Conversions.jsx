@@ -380,12 +380,19 @@ const Conversions = () => {
                       Download EPUB
                     </button>
                     <Link
-                      to={`/audio-sync/${job.id}`}
+                      to={`/sync-studio/${job.id}`}
                       className="btn btn-secondary"
                       style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
                     >
                       <HiOutlineVolumeUp size={18} />
-                      Reconstruct & Map Audio
+                      🎚️ Sync Studio
+                    </Link>
+                    <Link
+                      to={`/audio-sync-cards/${job.id}`}
+                      className="btn btn-outline"
+                      style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', border: '1px solid #ccc' }}
+                    >
+                      📋 Card View
                     </Link>
                   </>
                 )}
@@ -511,16 +518,24 @@ const Conversions = () => {
                   <td>{new Date(job.createdAt).toLocaleString()}</td>
                   <td>
                     {job.status === 'COMPLETED' && (
-                      <>
+                      <div style={{ display: 'flex', gap: '6px' }}>
                         <Link
-                          to={`/audio-sync/${job.id}`}
+                          to={`/sync-studio/${job.id}`}
                           className="btn btn-primary"
                           style={{ padding: '6px 12px', fontSize: '14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                          title="Professional Waveform Editor"
                         >
-                          <HiOutlineVolumeUp size={14} />
-                          Reconstruct & Map
+                          🎚️ Studio
                         </Link>
-                      </>
+                        <Link
+                          to={`/audio-sync-cards/${job.id}`}
+                          className="btn btn-outline"
+                          style={{ padding: '6px 12px', fontSize: '14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', border: '1px solid #ccc' }}
+                          title="Card-based Editor"
+                        >
+                          📋 Cards
+                        </Link>
+                      </div>
                     )}
                     {job.status === 'IN_PROGRESS' && (
                       <button

@@ -33,6 +33,51 @@ export const audioSyncService = {
     api.get('/audio-sync/voices').then(res => res.data.data),
   
   getAudioUrl: (syncId) =>
-    `${api.defaults.baseURL}/audio-sync/${syncId}/audio`
+    `${api.defaults.baseURL}/audio-sync/${syncId}/audio`,
+  
+  saveSyncBlocks: (jobId, syncBlocks, audioFileName, granularity = 'sentence') =>
+    api.post('/audio-sync/save-sync-blocks', { jobId, syncBlocks, audioFileName, granularity }).then(res => res.data.data),
+  
+  uploadAudioFile: (jobId, audioFile) => {
+    const formData = new FormData();
+    formData.append('audio', audioFile);
+    formData.append('jobId', jobId);
+    return api.post('/audio-sync/upload-audio', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    }).then(res => res.data.data);
+  },
+
+  // Check if Aeneas forced aligner is available
+  checkAeneas: () =>
+    api.get('/audio-sync/check-aeneas').then(res => res.data.data),
+
+  // Automated forced alignment (Kitaboo-style)
+  autoSync: (jobId, options = {}) =>
+    api.post('/audio-sync/auto-sync', { 
+      jobId, 
+      language: options.language || 'eng',
+      granularity: options.granularity || 'sentence',
+      propagateWords: options.propagateWords !== false,
+      audioPath: options.audioPath
+    }).then(res => res.data.data),
+
+  // Batch auto-sync for multiple pages
+  batchAutoSync: (jobId, options = {}) =>
+    api.post('/audio-sync/batch-auto-sync', {
+      jobId,
+      language: options.language || 'eng',
+      granularity: options.granularity || 'sentence',
+      audioPath: options.audioPath
+    }).then(res => res.data.data),
+
+  // Linear spread sync (fallback when Aeneas not available)
+  linearSpread: (jobId, startTime, endTime, options = {}) =>
+    api.post('/audio-sync/linear-spread', {
+      jobId,
+      startTime,
+      endTime,
+      granularity: options.granularity || 'sentence',
+      propagateWords: options.propagateWords !== false
+    }).then(res => res.data.data)
 };
 

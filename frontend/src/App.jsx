@@ -7,6 +7,8 @@ import PdfList from './pages/PdfList';
 import PdfUpload from './pages/PdfUpload';
 import Conversions from './pages/Conversions';
 import AudioSync from './pages/AudioSync';
+import AudioSyncCards from './pages/AudioSyncCards';
+import SyncStudio from './pages/SyncStudio';
 import MediaOverlaySyncEditor from './pages/MediaOverlaySyncEditor';
 import AiConfig from './pages/AiConfig';
 
@@ -20,6 +22,8 @@ function App() {
           <Route path="pdfs" element={<PdfList />} />
           <Route path="pdfs/upload" element={<PdfUpload />} />
           <Route path="conversions" element={<Conversions />} />
+          <Route path="sync-studio/:jobId" element={<SyncStudio />} />
+          <Route path="audio-sync-cards/:jobId" element={<AudioSyncCards />} />
           <Route path="audio-sync/:jobId" element={<AudioSync />} />
           <Route path="media-overlay-sync/:jobId/:pageNumber" element={<MediaOverlaySyncEditor />} />
           <Route path="ai-config" element={<AiConfig />} />

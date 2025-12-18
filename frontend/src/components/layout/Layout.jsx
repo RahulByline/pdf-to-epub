@@ -15,6 +15,9 @@ const Layout = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
+  // Hide sidebar for full-screen pages like Sync Studio
+  const isFullScreenPage = location.pathname.startsWith('/sync-studio');
+
   const handleLogout = () => {
     localStorage.removeItem('token');
     navigate('/login');
@@ -26,6 +29,17 @@ const Layout = () => {
     }
     return location.pathname.startsWith(path) ? 'active' : '';
   };
+
+  // Full-screen layout (no sidebar, no navbar)
+  if (isFullScreenPage) {
+    return (
+      <div className="layout layout-fullscreen">
+        <main className="main-content main-content-fullscreen">
+          <Outlet />
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="layout">
