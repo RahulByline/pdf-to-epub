@@ -898,13 +898,24 @@ router.post('/magic-align', async (req, res) => {
       const { extractTextFragments } = aeneasService;
       const { idMap } = extractTextFragments(pageXhtml, granularity, {
         excludeIds: [],
-        excludePatterns: []
+        excludePatterns: [],
+        disableDefaultExclusions: true // Include headers, duplicates, TOC, etc. for better coverage
       });
+      
+      // Log what we found for debugging
+      if (idMap.length > 0) {
+        console.log(`[MagicAlign] Page ${pageNumber}: Found ${idMap.length} total elements`);
+        const sampleIds = idMap.slice(0, 5).map(m => m.id);
+        console.log(`[MagicAlign] Sample IDs: ${sampleIds.join(', ')}`);
+      } else {
+        console.log(`[MagicAlign] Page ${pageNumber}: No elements found in XHTML (check if XHTML has IDs)`);
+      }
       
       const bookBlocks = idMap.map(m => ({ id: m.id, text: m.text }));
       
       if (bookBlocks.length === 0) {
         console.log(`[MagicAlign] No syncable blocks found on page ${pageNumber}`);
+        console.log(`[MagicAlign] This might mean the XHTML doesn't have the hierarchical structure yet. Consider regenerating the EPUB.`);
         continue;
       }
       

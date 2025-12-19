@@ -1956,6 +1956,19 @@ OUTPUT ONLY VALID JSON ARRAY (no markdown, no explanation):
         disableDefaultExclusions: true // Include headers, duplicates, TOC, etc.
       });
       
+      // Log all found IDs for debugging
+      if (idMap.length > 0) {
+        console.log(`[GeminiService] Found ${idMap.length} total elements in XHTML`);
+        const sampleIds = idMap.slice(0, 10).map(m => m.id);
+        console.log(`[GeminiService] Sample IDs found: ${sampleIds.join(', ')}`);
+        
+        // Analyze ID patterns
+        const hasWordLevel = idMap.some(m => m.id.includes('_w'));
+        const hasSentenceLevel = idMap.some(m => m.id.includes('_s') && !m.id.includes('_w'));
+        const hasParagraphLevel = idMap.some(m => m.id.match(/_p\d+$/) && !m.id.includes('_s'));
+        console.log(`[GeminiService] ID pattern analysis: word-level=${hasWordLevel}, sentence-level=${hasSentenceLevel}, paragraph-level=${hasParagraphLevel}`);
+      }
+      
       // Filter blocks to only include those matching the specified granularity
       // Headers, footers, and other non-granularity elements are ALWAYS excluded
       const filteredBlocks = idMap.filter(m => {
@@ -1970,28 +1983,31 @@ OUTPUT ONLY VALID JSON ARRAY (no markdown, no explanation):
           return false; // Always exclude headers/footers
         }
         
-        // For sentence granularity: only include sentence-level elements (p{N}_s{N})
+        // For sentence granularity: include sentence-level elements (p{N}_s{N}, h{N}_s{N}, li{N}_s{N}, etc.)
         if (granularity === 'sentence') {
-          // Must have sentence pattern: p{N}_s{N} (not p{N}_s{N}_w{N})
-          const hasSentencePattern = id.includes('_s') && !id.includes('_w');
+          // Must have sentence pattern: [type]{N}_s{N} (not [type]{N}_s{N}_w{N})
+          // Supports all element types: p, h, li, td, th, header, footer, div, etc.
+          const hasSentencePattern = id.match(/[a-z]+\d+_s\d+$/) || (id.includes('_s') && !id.includes('_w'));
           // Must match sentence type or pattern
           return (type === 'sentence' || hasSentencePattern) && !id.includes('_w');
         }
         
-        // For word granularity: only include word-level elements (p{N}_s{N}_w{N})
+        // For word granularity: include word-level elements (p{N}_s{N}_w{N}, h{N}_s{N}_w{N}, etc.)
         if (granularity === 'word') {
-          // Must have word pattern: p{N}_s{N}_w{N}
-          const hasWordPattern = id.includes('_w');
+          // Must have word pattern: [type]{N}_s{N}_w{N}
+          // Supports all element types
+          const hasWordPattern = id.match(/[a-z]+\d+_s\d+_w\d+$/) || id.includes('_w');
           // Must match word type or pattern
           return type === 'word' || hasWordPattern;
         }
         
-        // For paragraph granularity: only include paragraph-level elements (p{N})
+        // For paragraph granularity: include paragraph-level elements (p{N}, h{N}, li{N}, etc.)
         if (granularity === 'paragraph') {
-          // Must have paragraph pattern: p{N} (but not p{N}_s{N} or p{N}_s{N}_w{N})
-          const hasParagraphPattern = id.includes('_p') && !id.includes('_s') && !id.includes('_w');
-          // Must match paragraph type or pattern
-          return (type === 'paragraph' || hasParagraphPattern) && !id.includes('_s');
+          // Must have element pattern: [type]{N} (but not [type]{N}_s{N} or [type]{N}_s{N}_w{N})
+          // Supports all element types: p, h, li, td, th, div, etc.
+          const hasElementPattern = id.match(/[a-z]+\d+$/) && !id.includes('_s') && !id.includes('_w');
+          // Must match paragraph/element type or pattern
+          return (type === 'paragraph' || hasElementPattern) && !id.includes('_s');
         }
         
         // Default: exclude all (shouldn't reach here with valid granularity)
@@ -2003,6 +2019,21 @@ OUTPUT ONLY VALID JSON ARRAY (no markdown, no explanation):
       if (bookBlocks.length === 0) {
         console.log(`[GeminiService] ⚠️ WARNING: No ${granularity}-level blocks found in XHTML after filtering`);
         console.log(`[GeminiService] Total blocks before filtering: ${idMap.length}`);
+        console.log(`[GeminiService] Requested granularity: ${granularity}`);
+        
+        // If no blocks match the granularity, try to find what granularity levels ARE available
+        const availableLevels = [];
+        if (idMap.some(m => m.id.includes('_w'))) availableLevels.push('word');
+        if (idMap.some(m => m.id.includes('_s') && !m.id.includes('_w'))) availableLevels.push('sentence');
+        if (idMap.some(m => m.id.match(/[a-z]+\d+$/) && !m.id.includes('_s'))) availableLevels.push('paragraph');
+        
+        if (availableLevels.length > 0) {
+          console.log(`[GeminiService] ⚠️ Available granularity levels in XHTML: ${availableLevels.join(', ')}`);
+          console.log(`[GeminiService] ⚠️ Consider regenerating EPUB with hierarchical structure or using granularity: ${availableLevels[0]}`);
+        } else {
+          console.log(`[GeminiService] ⚠️ No hierarchical structure found in XHTML. Elements may need IDs assigned.`);
+        }
+        
         return [];
       }
       

@@ -281,37 +281,86 @@ class AeneasService {
     };
 
     // ISSUE #5 FIX: Multiple strategies to find syncable elements
-    // Strategy 1: data-read-aloud="true" attribute
-    let readAloudElements = doc.querySelectorAll('[data-read-aloud="true"]');
+    // Strategy 1: Find elements by granularity-specific patterns FIRST (most specific)
+    // This ensures we get word/sentence elements even if they don't have data-read-aloud
+    let readAloudElements = new Set();
     
-    // Strategy 2: If no data-read-aloud, try ID patterns
-    if (readAloudElements.length === 0) {
-      // Try to find elements with known ID patterns
-      const idPatterns = [
-        '[id*="_w"]', // Words
-        '[id*="_s"]', // Sentences
-        '[id*="p"]', // Paragraphs
-        '[id^="page"]', // Page-prefixed IDs
-        '.sync-word', // CSS classes
-        '.sync-sentence',
-        '.sync-paragraph'
-      ];
-      
-      for (const pattern of idPatterns) {
-        const elements = doc.querySelectorAll(pattern);
-        if (elements.length > 0) {
-          readAloudElements = elements;
-          console.log(`[AeneasService] Found ${elements.length} elements using pattern: ${pattern}`);
-          break;
+    // Find elements based on granularity
+    if (granularity === 'word') {
+      // Find word-level elements by ID pattern or class
+      const wordElements = doc.querySelectorAll('[id*="_w"], .sync-word');
+      wordElements.forEach(el => readAloudElements.add(el));
+      console.log(`[AeneasService] Found ${wordElements.length} word-level elements by pattern`);
+    } else if (granularity === 'sentence') {
+      // Find sentence-level elements (must have _s but not _w)
+      const sentenceElements = doc.querySelectorAll('[id*="_s"]:not([id*="_w"]), .sync-sentence');
+      sentenceElements.forEach(el => {
+        const id = el.getAttribute('id');
+        // Double-check it's not a word-level element
+        if (id && !id.includes('_w')) {
+          readAloudElements.add(el);
         }
-      }
+      });
+      console.log(`[AeneasService] Found ${sentenceElements.length} sentence-level elements by pattern`);
+    } else if (granularity === 'paragraph') {
+      // Find paragraph/element-level elements (must NOT have _s or _w)
+      const paragraphElements = doc.querySelectorAll('[id^="page"]:not([id*="_s"]):not([id*="_w"]), .paragraph-block');
+      paragraphElements.forEach(el => {
+        const id = el.getAttribute('id');
+        // Double-check it's not a sentence or word element
+        if (id && !id.includes('_s') && !id.includes('_w')) {
+          readAloudElements.add(el);
+        }
+      });
+      console.log(`[AeneasService] Found ${paragraphElements.length} paragraph-level elements by pattern`);
+    }
+    
+    // Strategy 2: Also include elements with data-read-aloud="true" (fallback/compatibility)
+    const dataReadAloudElements = doc.querySelectorAll('[data-read-aloud="true"]');
+    dataReadAloudElements.forEach(el => readAloudElements.add(el));
+    
+    // Convert Set to Array for processing
+    readAloudElements = Array.from(readAloudElements);
+    
+    if (readAloudElements.length === 0) {
+      console.warn(`[AeneasService] No elements found for granularity: ${granularity}`);
     }
 
     let excludedCount = 0;
     
-    readAloudElements.forEach((el, index) => {
+    // CRITICAL FIX: Process elements in order of specificity (most specific first)
+    // This ensures word-level elements are processed before their parent sentence/paragraph elements
+    // Convert NodeList to Array and sort by specificity
+    const elementsArray = Array.from(readAloudElements);
+    
+    // Sort by specificity: words first, then sentences, then paragraphs/elements
+    elementsArray.sort((a, b) => {
+      const aId = a.getAttribute('id') || '';
+      const bId = b.getAttribute('id') || '';
+      
+      const aIsWord = aId.includes('_w') || a.classList.contains('sync-word');
+      const bIsWord = bId.includes('_w') || b.classList.contains('sync-word');
+      const aIsSentence = aId.includes('_s') && !aId.includes('_w') || a.classList.contains('sync-sentence');
+      const bIsSentence = bId.includes('_s') && !bId.includes('_w') || b.classList.contains('sync-sentence');
+      
+      // Words come first
+      if (aIsWord && !bIsWord) return -1;
+      if (!aIsWord && bIsWord) return 1;
+      
+      // Then sentences
+      if (aIsSentence && !bIsSentence) return -1;
+      if (!aIsSentence && bIsSentence) return 1;
+      
+      // Then everything else (paragraphs, divs, etc.)
+      return 0;
+    });
+    
+    // Track processed IDs to avoid duplicates (when parent and child both have data-read-aloud)
+    const processedIds = new Set();
+    
+    elementsArray.forEach((el, index) => {
       const id = el.getAttribute('id');
-      if (!id) return;
+      if (!id || processedIds.has(id)) return;
 
       const text = el.textContent?.trim() || '';
       if (!text) return;
@@ -326,24 +375,47 @@ class AeneasService {
       // ISSUE #5 FIX: Improved type detection with multiple patterns
       let type = 'paragraph';
       
-      // Check for word pattern (most specific first)
-      if (id.includes('_w') || id.match(/w\d+$/i) || el.classList.contains('sync-word')) {
+      // Check for word pattern (most specific first) - matches page{N}_[type]{N}_s{N}_w{N} or _w{N}
+      if (id.match(/[a-z]+\d+_s\d+_w\d+$/) || id.includes('_w') || el.classList.contains('sync-word')) {
         type = 'word';
       } 
-      // Check for sentence pattern
-      else if (id.includes('_s') || id.match(/s\d+$/i) || el.classList.contains('sync-sentence')) {
+      // Check for sentence pattern - matches page{N}_[type]{N}_s{N} (but not _w{N})
+      else if ((id.match(/[a-z]+\d+_s\d+$/) || id.includes('_s')) && !id.includes('_w') || el.classList.contains('sync-sentence')) {
         type = 'sentence';
       }
-      // Check for paragraph pattern
-      else if (id.match(/^p\d+/i) || id.match(/paragraph/i) || el.classList.contains('sync-paragraph')) {
+      // Check for paragraph/element pattern - matches page{N}_[type]{N} (but not _s{N} or _w{N})
+      else if (id.match(/[a-z]+\d+$/) && !id.includes('_s') && !id.includes('_w')) {
         type = 'paragraph';
       }
 
       // Filter based on granularity
       if (granularity === 'word' && type !== 'word') return;
-      if (granularity === 'sentence' && (type === 'word' || type === 'paragraph')) return;
+      if (granularity === 'sentence' && type !== 'sentence') return;
       if (granularity === 'paragraph' && type !== 'paragraph') return;
 
+      // CRITICAL FIX: Skip parent elements if they have children that match the granularity
+      // This prevents processing paragraph when we want words/sentences
+      if (granularity === 'word' || granularity === 'sentence') {
+        // Check if this element has children that match the granularity
+        const hasMatchingChild = Array.from(el.querySelectorAll('[data-read-aloud="true"]')).some(child => {
+          const childId = child.getAttribute('id');
+          if (!childId || childId === id) return false;
+          
+          if (granularity === 'word') {
+            return childId.match(/[a-z]+\d+_s\d+_w\d+$/) || childId.includes('_w') || child.classList.contains('sync-word');
+          } else if (granularity === 'sentence') {
+            return (childId.match(/[a-z]+\d+_s\d+$/) || childId.includes('_s')) && !childId.includes('_w') || child.classList.contains('sync-sentence');
+          }
+          return false;
+        });
+        
+        // If this element has matching children, skip it (children will be processed separately)
+        if (hasMatchingChild) {
+          return;
+        }
+      }
+
+      processedIds.add(id);
       textLines.push(text);
       idMap.push({
         id,
