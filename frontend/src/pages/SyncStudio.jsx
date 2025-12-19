@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import WaveSurfer from 'wavesurfer.js';
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.esm.js';
 import TimelinePlugin from 'wavesurfer.js/dist/plugins/timeline.esm.js';
+import { HiOutlineDownload, HiOutlineCheck } from 'react-icons/hi';
 import { audioSyncService } from '../services/audioSyncService';
 import { conversionService } from '../services/conversionService';
 import './SyncStudio.css';
@@ -38,6 +39,7 @@ const SyncStudio = () => {
   const [currentSectionIndex, setCurrentSectionIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
 
   // State for audio
   const [audioUrl, setAudioUrl] = useState(null);
@@ -47,6 +49,7 @@ const SyncStudio = () => {
   const [duration, setDuration] = useState(0);
   const [isReady, setIsReady] = useState(false);
   const [zoom, setZoom] = useState(50);
+  const [playbackSpeed, setPlaybackSpeed] = useState(1.0); // Audio playback speed (0.5x to 2.0x)
 
   // State for sync data
   const [syncData, setSyncData] = useState({
@@ -75,6 +78,21 @@ const SyncStudio = () => {
   const [aeneasAvailable, setAeneasAvailable] = useState(null);
   const [autoSyncLanguage, setAutoSyncLanguage] = useState('eng');
   const [autoSyncProgress, setAutoSyncProgress] = useState(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+
+  // State for resizable panels
+  const [leftPanelWidth, setLeftPanelWidth] = useState(() => {
+    const saved = localStorage.getItem('sync-studio-left-panel-width');
+    return saved ? parseInt(saved, 10) : 350;
+  });
+  const [rightPanelWidth, setRightPanelWidth] = useState(() => {
+    const saved = localStorage.getItem('sync-studio-right-panel-width');
+    return saved ? parseInt(saved, 10) : 320;
+  });
+  const [isResizingLeft, setIsResizingLeft] = useState(false);
+  const [isResizingRight, setIsResizingRight] = useState(false);
+  const resizeContainerRef = useRef(null);
 
   /**
    * Parse XHTML to extract syncable elements
@@ -429,11 +447,23 @@ const SyncStudio = () => {
    * Initialize WaveSurfer
    */
   useEffect(() => {
-    if (!waveformRef.current || !audioUrl) return;
+    if (!waveformRef.current || !audioUrl) {
+      // Reset ready state when no audio URL
+      setIsReady(false);
+      return;
+    }
+
+    // Reset ready state when loading new audio
+    setIsReady(false);
 
     // Destroy existing instance
     if (wavesurferRef.current) {
-      wavesurferRef.current.destroy();
+      try {
+        wavesurferRef.current.destroy();
+      } catch (err) {
+        // Ignore errors during cleanup
+        console.warn('[SyncStudio] Error destroying WaveSurfer:', err.message);
+      }
     }
 
     // Create regions plugin
@@ -468,12 +498,34 @@ const SyncStudio = () => {
 
     // Load audio
     wavesurferRef.current.load(audioUrl);
+    
+    // Apply playback speed
+    if (wavesurferRef.current.getMediaElement) {
+      const mediaElement = wavesurferRef.current.getMediaElement();
+      if (mediaElement) {
+        mediaElement.playbackRate = playbackSpeed;
+      }
+    }
 
     // Event handlers
     wavesurferRef.current.on('ready', () => {
-      setDuration(wavesurferRef.current.getDuration());
-      setIsReady(true);
-      console.log('[WaveSurfer] Ready');
+      try {
+        const duration = wavesurferRef.current.getDuration();
+        if (duration && duration > 0) {
+          setDuration(duration);
+          setIsReady(true);
+          console.log('[WaveSurfer] Ready');
+        }
+      } catch (err) {
+        console.error('[WaveSurfer] Error in ready handler:', err);
+        setIsReady(false);
+      }
+    });
+
+    // Handle errors
+    wavesurferRef.current.on('error', (error) => {
+      console.error('[WaveSurfer] Error:', error);
+      setIsReady(false);
     });
 
     wavesurferRef.current.on('audioprocess', (time) => {
@@ -506,7 +558,14 @@ const SyncStudio = () => {
 
     return () => {
       if (wavesurferRef.current) {
-        wavesurferRef.current.destroy();
+        try {
+          // Reset ready state before destroying
+          setIsReady(false);
+          wavesurferRef.current.destroy();
+        } catch (err) {
+          // Ignore errors during cleanup
+          console.warn('[SyncStudio] Error during WaveSurfer cleanup:', err.message);
+        }
       }
     };
   }, [audioUrl, handleRegionUpdate, handleRegionDrag, highlightElement, activeRegionId]);
@@ -516,9 +575,64 @@ const SyncStudio = () => {
    */
   useEffect(() => {
     if (wavesurferRef.current && isReady) {
-      wavesurferRef.current.zoom(zoom);
+      try {
+        // Check if audio is actually loaded before zooming
+        const duration = wavesurferRef.current.getDuration();
+        if (duration && duration > 0) {
+          wavesurferRef.current.zoom(zoom);
+        }
+      } catch (err) {
+        // Audio not loaded yet, skip zoom
+        console.warn('[SyncStudio] Cannot zoom: audio not loaded yet', err.message);
+      }
     }
   }, [zoom, isReady]);
+
+  /**
+   * Update playback speed
+   */
+  useEffect(() => {
+    if (wavesurferRef.current && isReady) {
+      try {
+        const mediaElement = wavesurferRef.current.getMediaElement();
+        if (mediaElement) {
+          mediaElement.playbackRate = playbackSpeed;
+        }
+      } catch (err) {
+        // Audio not loaded yet, skip playback speed update
+        console.warn('[SyncStudio] Cannot set playback speed: audio not loaded yet', err.message);
+      }
+    }
+  }, [playbackSpeed, isReady]);
+
+  /**
+   * Ensure XHTML content is properly reflowable
+   */
+  useEffect(() => {
+    if (viewerRef.current && xhtmlContent) {
+      // Apply reflowable styles to all elements in the viewer
+      const allElements = viewerRef.current.querySelectorAll('*');
+      allElements.forEach(el => {
+        // Ensure text wraps properly
+        el.style.wordWrap = 'break-word';
+        el.style.overflowWrap = 'break-word';
+        el.style.maxWidth = '100%';
+        el.style.boxSizing = 'border-box';
+        
+        // Prevent horizontal overflow
+        if (el.tagName === 'TABLE') {
+          el.style.tableLayout = 'auto';
+          el.style.width = '100%';
+        }
+        
+        // Ensure images scale properly
+        if (el.tagName === 'IMG') {
+          el.style.maxWidth = '100%';
+          el.style.height = 'auto';
+        }
+      });
+    }
+  }, [xhtmlContent, leftPanelWidth]);
 
   /**
    * Spacebar tap-in/tap-out handler
@@ -682,6 +796,14 @@ const SyncStudio = () => {
         const jobData = await conversionService.getConversionJob(parseInt(jobId));
         if (jobData?.pdfDocumentId) {
           setPdfId(jobData.pdfDocumentId);
+        }
+        // Load playback speed from job metadata if available
+        if (jobData?.metadata?.playbackSpeed !== undefined && jobData.metadata.playbackSpeed !== null) {
+          const savedSpeed = parseFloat(jobData.metadata.playbackSpeed);
+          if (!isNaN(savedSpeed) && savedSpeed > 0) {
+            setPlaybackSpeed(savedSpeed);
+            console.log(`[SyncStudio] Loaded playback speed from job metadata: ${savedSpeed}x`);
+          }
         }
 
         // Load EPUB sections
@@ -1447,17 +1569,52 @@ const SyncStudio = () => {
         });
       });
 
-      // Save to backend
-      await audioSyncService.saveSyncBlocks(parseInt(jobId), syncBlocks, audioFileName, granularity);
+      // Ensure playback speed is a valid number
+      const speedToSave = parseFloat(playbackSpeed) || 1.0;
+      console.log(`[SyncStudio] Saving with playback speed: ${speedToSave}x`);
 
-      // Regenerate EPUB
-      await conversionService.regenerateEpub(parseInt(jobId), { granularity });
+      // Save to backend with playback speed
+      await audioSyncService.saveSyncBlocks(
+        parseInt(jobId), 
+        syncBlocks, 
+        audioFileName, 
+        granularity,
+        speedToSave
+      );
 
-      alert(`Saved ${syncBlocks.length} sync points successfully!`);
+      // Regenerate EPUB with playback speed setting
+      const regenerateResult = await conversionService.regenerateEpub(parseInt(jobId), { 
+        granularity,
+        playbackSpeed: speedToSave
+      });
+
+      setSaveSuccess(true);
+      setError('');
+      console.log(`[SyncStudio] EPUB regenerated successfully. ${syncBlocks.length} sync points saved. Playback speed: ${playbackSpeed}x`);
     } catch (err) {
       setError('Failed to save: ' + err.message);
+      setSaveSuccess(false);
     } finally {
       setLoading(false);
+    }
+  };
+
+  /**
+   * Download EPUB file
+   */
+  const handleDownloadEpub = async () => {
+    try {
+      setDownloading(true);
+      setError('');
+      setSuccess('');
+      await conversionService.downloadEpub(parseInt(jobId));
+      setSuccess('EPUB downloaded successfully!');
+      // Clear success message after 3 seconds
+      setTimeout(() => setSuccess(''), 3000);
+    } catch (err) {
+      setError('Failed to download EPUB: ' + err.message);
+    } finally {
+      setDownloading(false);
     }
   };
 
@@ -1483,6 +1640,94 @@ const SyncStudio = () => {
     }
   };
 
+  // Resize handlers for left panel
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isResizingLeft) return;
+      
+      const container = resizeContainerRef.current;
+      if (!container) return;
+      
+      const containerRect = container.getBoundingClientRect();
+      const newWidth = e.clientX - containerRect.left;
+      
+      const minWidth = 250;
+      const maxWidth = Math.min(800, containerRect.width * 0.6);
+      
+      if (newWidth >= minWidth && newWidth <= maxWidth) {
+        setLeftPanelWidth(newWidth);
+        localStorage.setItem('sync-studio-left-panel-width', newWidth.toString());
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingLeft(false);
+    };
+
+    if (isResizingLeft) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingLeft]);
+
+  // Resize handlers for right panel
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isResizingRight) return;
+      
+      const container = resizeContainerRef.current;
+      if (!container) return;
+      
+      const containerRect = container.getBoundingClientRect();
+      const newWidth = containerRect.width - (e.clientX - containerRect.left);
+      
+      const minWidth = 250;
+      const maxWidth = Math.min(800, containerRect.width * 0.6);
+      
+      if (newWidth >= minWidth && newWidth <= maxWidth) {
+        setRightPanelWidth(newWidth);
+        localStorage.setItem('sync-studio-right-panel-width', newWidth.toString());
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizingRight(false);
+    };
+
+    if (isResizingRight) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizingRight]);
+
+  const handleLeftResizeStart = (e) => {
+    e.preventDefault();
+    setIsResizingLeft(true);
+  };
+
+  const handleRightResizeStart = (e) => {
+    e.preventDefault();
+    setIsResizingRight(true);
+  };
+
   if (loading && sections.length === 0) {
     return (
       <div className="sync-studio-loading">
@@ -1504,17 +1749,51 @@ const SyncStudio = () => {
           <span className="job-badge">Job #{jobId}</span>
         </div>
         <div className="header-right">
-          <button onClick={handleSave} className="btn-save" disabled={loading}>
-            {loading ? 'Saving...' : '💾 Save & Export'}
-          </button>
+          {saveSuccess ? (
+            <div className="save-success-actions">
+              <span className="save-success-message">
+                <HiOutlineCheck size={16} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+                Saved successfully!
+              </span>
+              <button 
+                onClick={handleDownloadEpub} 
+                className="btn-download" 
+                disabled={downloading}
+              >
+                <HiOutlineDownload size={18} />
+                {downloading ? 'Downloading...' : 'Download EPUB'}
+              </button>
+              <button 
+                onClick={() => setSaveSuccess(false)} 
+                className="btn-save-again"
+                title="Save again"
+              >
+                💾 Save Again
+              </button>
+            </div>
+          ) : (
+            <button onClick={handleSave} className="btn-save" disabled={loading}>
+              {loading ? 'Saving...' : '💾 Save & Export'}
+            </button>
+          )}
         </div>
       </header>
 
       {error && <div className="error-banner">{error}</div>}
+      {success && <div className="success-banner"><HiOutlineCheck size={18} /> <span>{success}</span></div>}
+      {saveSuccess && !error && !success && (
+        <div className="success-banner">
+          <HiOutlineCheck size={18} />
+          <span>Sync data saved successfully! EPUB has been regenerated with your settings. Click "Download EPUB" in the header to get your file.</span>
+        </div>
+      )}
 
-      <div className="studio-layout">
+      <div className="studio-layout" ref={resizeContainerRef}>
         {/* Left Panel: XHTML Viewer */}
-        <aside className="viewer-panel">
+        <aside 
+          className="viewer-panel"
+          style={{ width: `${leftPanelWidth}px`, minWidth: `${leftPanelWidth}px`, maxWidth: `${leftPanelWidth}px` }}
+        >
           <div className="panel-header">
             <h3>📄 Page {currentSectionIndex + 1}</h3>
             <div className="page-nav-buttons">
@@ -1552,6 +1831,15 @@ const SyncStudio = () => {
           />
         </aside>
 
+        {/* Left Resizable Divider */}
+        <div 
+          className="studio-divider studio-divider-left"
+          onMouseDown={handleLeftResizeStart}
+          style={{ cursor: 'col-resize' }}
+        >
+          <div className="studio-divider-handle" />
+        </div>
+
         {/* Main Content */}
         <main className="main-panel">
           {/* Audio Controls */}
@@ -1584,14 +1872,14 @@ const SyncStudio = () => {
             </div>
 
             <div className="playback-controls">
-              <button 
+              <button
                 onClick={() => wavesurferRef.current?.playPause()}
                 disabled={!isReady}
                 className="btn-play"
               >
                 {isPlaying ? '⏸️ Pause' : '▶️ Play'}
               </button>
-              <button 
+              <button
                 onClick={() => wavesurferRef.current?.stop()}
                 disabled={!isReady}
               >
@@ -1602,12 +1890,30 @@ const SyncStudio = () => {
               </span>
             </div>
 
+            <div className="speed-control">
+              <span>Speed:</span>
+              <select
+                value={playbackSpeed}
+                onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
+                className="speed-select"
+                title="Audio playback speed (applied to final EPUB)"
+              >
+                <option value="0.5">0.5x</option>
+                <option value="0.75">0.75x</option>
+                <option value="1.0">1.0x (Normal)</option>
+                <option value="1.25">1.25x</option>
+                <option value="1.5">1.5x</option>
+                <option value="1.75">1.75x</option>
+                <option value="2.0">2.0x</option>
+              </select>
+            </div>
+
             <div className="zoom-control">
               <span>Zoom:</span>
-              <input 
-                type="range" 
-                min="10" 
-                max="200" 
+              <input
+                type="range"
+                min="10"
+                max="200"
                 value={zoom}
                 onChange={(e) => setZoom(parseInt(e.target.value))}
               />
@@ -1816,8 +2122,20 @@ const SyncStudio = () => {
           </div>
         </main>
 
+        {/* Right Resizable Divider */}
+        <div 
+          className="studio-divider studio-divider-right"
+          onMouseDown={handleRightResizeStart}
+          style={{ cursor: 'col-resize' }}
+        >
+          <div className="studio-divider-handle" />
+        </div>
+
         {/* Right Panel: Sync List */}
-        <aside className="sync-panel">
+        <aside 
+          className="sync-panel"
+          style={{ width: `${rightPanelWidth}px`, minWidth: `${rightPanelWidth}px`, maxWidth: `${rightPanelWidth}px` }}
+        >
           <div className="panel-header">
             <h3>📋 Page {currentSectionIndex + 1} Sync</h3>
             <div className="page-nav-buttons">

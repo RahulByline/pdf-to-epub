@@ -911,7 +911,7 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
   }
 
   static async regenerateEpub(jobId, options = {}) {
-    const { granularity = null } = options; // 'word', 'sentence', 'paragraph', or null for all
+    const { granularity = null, playbackSpeed = null } = options; // 'word', 'sentence', 'paragraph', or null for all
     
     const job = await ConversionJobModel.findById(jobId);
     if (!job) {
@@ -1182,11 +1182,33 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
         totalDuration = Math.max(totalDuration, parseFloat(sync.end_time) || 0);
       }
     }
+
+    // Get playback speed from options first, then job metadata
+    let finalPlaybackSpeed = null;
+    if (playbackSpeed !== undefined && playbackSpeed !== null) {
+      finalPlaybackSpeed = parseFloat(playbackSpeed);
+    } else {
+      // Try to get from job metadata
+      const jobMetadata = job.metadata || {};
+      if (jobMetadata.playbackSpeed !== undefined && jobMetadata.playbackSpeed !== null) {
+        finalPlaybackSpeed = parseFloat(jobMetadata.playbackSpeed);
+      }
+    }
+    // Default to 1.0 only if no value found
+    if (!finalPlaybackSpeed || isNaN(finalPlaybackSpeed)) {
+      finalPlaybackSpeed = 1.0; // Default to normal speed
+    }
+    console.log(`[RegenerateEpub] Using playback speed: ${finalPlaybackSpeed}x (from ${playbackSpeed !== undefined ? 'options' : 'metadata'})`);
+
+    // Build media overlay metadata
+    let mediaOverlayMeta = '';
+    if (audioFileName && smilFiles.length > 0) {
+      mediaOverlayMeta = `\n    <meta property="media:duration">${totalDuration.toFixed(3)}s</meta>
+    <meta property="media:active-class">-epub-media-overlay-active</meta>`;
+    }
     
-    const mediaOverlayMeta = audioFileName && smilFiles.length > 0 
-      ? `\n    <meta property="media:duration">${totalDuration.toFixed(3)}s</meta>
-    <meta property="media:active-class">-epub-media-overlay-active</meta>`
-      : '';
+    // Always include playback speed metadata (even if no audio, for consistency)
+    const playbackSpeedMeta = `\n    <meta property="media:playback-speed">${finalPlaybackSpeed.toFixed(2)}</meta>`;
     
     const opfContent = `<?xml version="1.0" encoding="UTF-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id">
@@ -1194,7 +1216,7 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
     <dc:identifier id="book-id">urn:uuid:${jobId}</dc:identifier>
     <dc:title>${this.escapeXml(title)}</dc:title>
     <dc:language>en</dc:language>
-    <meta property="dcterms:modified">${new Date().toISOString()}</meta>${mediaOverlayMeta}
+    <meta property="dcterms:modified">${new Date().toISOString()}</meta>${mediaOverlayMeta}${playbackSpeedMeta}
   </metadata>
   <manifest>
     <item id="nav" href="OEBPS/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>

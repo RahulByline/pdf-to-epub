@@ -258,10 +258,12 @@ router.post('/:jobId/regenerate', async (req, res) => {
       return badRequestResponse(res, 'Can only regenerate EPUB for completed conversions');
     }
     
-    console.log(`[API] Regenerating EPUB for job ${jobId}${granularity ? ` with ${granularity}-level audio` : ''}`);
+    const { playbackSpeed } = req.body || {};
+    
+    console.log(`[API] Regenerating EPUB for job ${jobId}${granularity ? ` with ${granularity}-level audio` : ''}${playbackSpeed ? ` at ${playbackSpeed}x speed` : ''}`);
     
     // Regenerate EPUB with updated sync files and granularity option
-    const result = await ConversionService.regenerateEpub(jobId, { granularity });
+    const result = await ConversionService.regenerateEpub(jobId, { granularity, playbackSpeed });
     return successResponse(res, result);
   } catch (error) {
     console.error('Error regenerating EPUB:', error);

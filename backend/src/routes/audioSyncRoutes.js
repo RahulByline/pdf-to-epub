@@ -234,7 +234,7 @@ router.post('/upload-audio', audioUpload.single('audio'), async (req, res) => {
 // POST /api/audio-sync/save-sync-blocks - Save sync blocks with read-aloud flags
 router.post('/save-sync-blocks', async (req, res) => {
   try {
-    const { jobId, syncBlocks, audioFileName, granularity = 'sentence' } = req.body;
+    const { jobId, syncBlocks, audioFileName, granularity = 'sentence', playbackSpeed = 1.0 } = req.body;
     
     if (!jobId || !syncBlocks || !Array.isArray(syncBlocks)) {
       return badRequestResponse(res, 'Job ID and sync blocks array are required');
@@ -355,8 +355,20 @@ router.post('/save-sync-blocks', async (req, res) => {
       }
     }
 
+    // Store playback speed in conversion job metadata (always save, even if 1.0)
+    if (playbackSpeed !== undefined && playbackSpeed !== null) {
+      const { ConversionJobModel } = await import('../models/ConversionJob.js');
+      const job = await ConversionJobModel.findById(jobId);
+      if (job) {
+        const metadata = job.metadata || {};
+        metadata.playbackSpeed = parseFloat(playbackSpeed);
+        await ConversionJobModel.update(jobId, { metadata });
+        console.log(`[AudioSync] Stored playback speed ${playbackSpeed}x for job ${jobId}`);
+      }
+    }
+
     console.log(`[AudioSync] Saved ${savedSegments.length} segments (${activeBlocks.length} active)`);
-    return successResponse(res, { savedSegments, totalActive: activeBlocks.length, granularity }, 201);
+    return successResponse(res, { savedSegments, totalActive: activeBlocks.length, granularity, playbackSpeed }, 201);
   } catch (error) {
     console.error('Error saving sync blocks:', error);
     return errorResponse(res, error.message, 500);
@@ -440,11 +452,13 @@ router.post('/auto-sync', async (req, res) => {
       if (existingSyncs.length > 0 && existingSyncs[0].audio_file_path) {
         resolvedAudioPath = existingSyncs[0].audio_file_path;
         console.log(`[AutoSync] Found audio path from sync: ${resolvedAudioPath}`);
-        
+
         // Handle relative paths
         if (!path.isAbsolute(resolvedAudioPath)) {
-          const uploadDir = getUploadDir();
-          resolvedAudioPath = path.join(uploadDir, resolvedAudioPath);
+          // Normalize path: remove all leading 'audio/' segments, then add one
+          let normalizedPath = resolvedAudioPath.replace(/^(audio[\\/])+/i, ''); // Remove all leading 'audio/' or 'audio\'
+          normalizedPath = path.join('audio', normalizedPath); // Add single 'audio/' prefix
+          resolvedAudioPath = path.join(getUploadDir(), normalizedPath);
           console.log(`[AutoSync] Resolved to absolute: ${resolvedAudioPath}`);
         }
       }
@@ -757,7 +771,10 @@ router.post('/magic-align', async (req, res) => {
       if (existingSyncs.length > 0 && existingSyncs[0].audio_file_path) {
         resolvedAudioPath = existingSyncs[0].audio_file_path;
         if (!path.isAbsolute(resolvedAudioPath)) {
-          resolvedAudioPath = path.join(getUploadDir(), resolvedAudioPath);
+          // Normalize path: remove all leading 'audio/' segments, then add one
+          let normalizedPath = resolvedAudioPath.replace(/^(audio[\\/])+/i, ''); // Remove all leading 'audio/' or 'audio\'
+          normalizedPath = path.join('audio', normalizedPath); // Add single 'audio/' prefix
+          resolvedAudioPath = path.join(getUploadDir(), normalizedPath);
         }
       }
     }
@@ -1059,7 +1076,10 @@ router.post('/batch-auto-sync', async (req, res) => {
       if (existingSyncs.length > 0 && existingSyncs[0].audio_file_path) {
         resolvedAudioPath = existingSyncs[0].audio_file_path;
         if (!path.isAbsolute(resolvedAudioPath)) {
-          resolvedAudioPath = path.join(getUploadDir(), resolvedAudioPath);
+          // Normalize path: remove all leading 'audio/' segments, then add one
+          let normalizedPath = resolvedAudioPath.replace(/^(audio[\\/])+/i, ''); // Remove all leading 'audio/' or 'audio\'
+          normalizedPath = path.join('audio', normalizedPath); // Add single 'audio/' prefix
+          resolvedAudioPath = path.join(getUploadDir(), normalizedPath);
         }
       }
     }
@@ -1215,10 +1235,12 @@ router.get('/:id/audio', async (req, res) => {
 
     // Resolve audio path - it could be relative to uploads dir or absolute
     let filePath = sync.audio_file_path;
-    
+
     if (!path.isAbsolute(filePath)) {
-      // Relative path - resolve from uploads directory
-      filePath = path.join(getUploadDir(), filePath);
+      // Normalize path: remove all leading 'audio/' segments, then add one
+      let normalizedPath = filePath.replace(/^(audio[\\/])+/i, ''); // Remove all leading 'audio/' or 'audio\'
+      normalizedPath = path.join('audio', normalizedPath); // Add single 'audio/' prefix
+      filePath = path.join(getUploadDir(), normalizedPath);
     }
     
     console.log(`[AudioSync] Serving audio file: ${filePath}`);
