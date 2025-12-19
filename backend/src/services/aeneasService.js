@@ -216,10 +216,11 @@ class AeneasService {
    * @param {Object} options - Additional options
    * @param {Array<string>} options.excludeIds - Array of IDs to exclude from sync
    * @param {Array<string>} options.excludePatterns - Array of regex patterns to exclude
+   * @param {boolean} options.disableDefaultExclusions - If true, disable default exclusion patterns (headers, TOC, etc.)
    * @returns {Object} { textLines: string[], idMap: Array<{id, text, type, order}> }
    */
   extractTextFragments(xhtmlContent, granularity = 'sentence', options = {}) {
-    const { excludeIds = [], excludePatterns = [] } = options;
+    const { excludeIds = [], excludePatterns = [], disableDefaultExclusions = false } = options;
     
     const dom = new JSDOM(xhtmlContent);
     const doc = dom.window.document;
@@ -228,7 +229,8 @@ class AeneasService {
     const idMap = [];
 
     // CRITICAL FIX: Default exclusion patterns for unspoken content
-    const defaultExcludePatterns = [
+    // Can be disabled via disableDefaultExclusions option
+    const defaultExcludePatterns = disableDefaultExclusions ? [] : [
       /toc/i,                    // Table of Contents
       /table-of-contents/i,      // Table of Contents (hyphenated)
       /contents/i,                // Contents page

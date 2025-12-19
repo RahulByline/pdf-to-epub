@@ -1133,12 +1133,21 @@ const SyncStudio = () => {
         }
       }
 
-      setAutoSyncProgress('Phase 1: Getting transcript from audio...');
-      console.log('[MagicSync] Starting hybrid alignment...');
+      // Validate jobId
+      const numericJobId = parseInt(jobId);
+      if (!jobId || isNaN(numericJobId)) {
+        setError('Invalid job ID. Please refresh the page and try again.');
+        setAutoSyncing(false);
+        return;
+      }
 
-      const result = await audioSyncService.magicSync(parseInt(jobId), {
-        language: autoSyncLanguage,
-        granularity: granularity
+      setAutoSyncProgress('Phase 1: Getting transcript from audio...');
+      console.log('[MagicSync] Starting hybrid alignment for job:', numericJobId);
+      console.log('[MagicSync] Options:', { language: autoSyncLanguage, granularity });
+
+      const result = await audioSyncService.magicSync(numericJobId, {
+        language: autoSyncLanguage || 'eng',
+        granularity: granularity || 'sentence'
       });
 
       console.log('[MagicSync] Result:', result);
@@ -1235,7 +1244,26 @@ const SyncStudio = () => {
 
     } catch (err) {
       console.error('[MagicSync] Error:', err);
-      setError('Magic Sync failed: ' + err.message);
+      console.error('[MagicSync] Error details:', {
+        message: err.message,
+        response: err.response?.data,
+        status: err.response?.status,
+        jobId: jobId
+      });
+      
+      // Provide more helpful error messages
+      let errorMessage = 'Magic Sync failed: ';
+      if (err.response?.status === 400) {
+        errorMessage += err.response?.data?.message || err.response?.data?.error || 'Bad request. Please check that audio file exists and job is valid.';
+      } else if (err.response?.status === 404) {
+        errorMessage += 'Job or audio file not found.';
+      } else if (err.response?.status === 500) {
+        errorMessage += 'Server error. Please check backend logs.';
+      } else {
+        errorMessage += err.message || 'Unknown error occurred';
+      }
+      
+      setError(errorMessage);
       setAutoSyncProgress(null);
     } finally {
       setAutoSyncing(false);
