@@ -35,8 +35,8 @@ export const audioSyncService = {
   getAudioUrl: (syncId) =>
     `${api.defaults.baseURL}/audio-sync/${syncId}/audio`,
   
-  saveSyncBlocks: (jobId, syncBlocks, audioFileName, granularity = 'sentence') =>
-    api.post('/audio-sync/save-sync-blocks', { jobId, syncBlocks, audioFileName, granularity }).then(res => res.data.data),
+  saveSyncBlocks: (jobId, syncBlocks, audioFileName, granularity = 'sentence', playbackSpeed = 1.0) =>
+    api.post('/audio-sync/save-sync-blocks', { jobId, syncBlocks, audioFileName, granularity, playbackSpeed }).then(res => res.data.data),
   
   uploadAudioFile: (jobId, audioFile) => {
     const formData = new FormData();

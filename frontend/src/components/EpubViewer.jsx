@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { conversionService } from '../services/conversionService';
-import { HiOutlineChevronLeft, HiOutlineChevronRight, HiOutlineZoomIn, HiOutlineZoomOut } from 'react-icons/hi';
+import { HiOutlineChevronLeft, HiOutlineChevronRight, HiOutlineZoomIn, HiOutlineZoomOut, HiOutlineChevronDoubleLeft, HiOutlineChevronDoubleRight } from 'react-icons/hi';
 import './EpubViewer.css';
 
 /**
@@ -22,8 +22,15 @@ const EpubViewer = ({ jobId, onTextSelect }) => {
   const [error, setError] = useState('');
   const [zoom, setZoom] = useState(1);
   const [showRawXhtml, setShowRawXhtml] = useState(true);
+  const [sidebarWidth, setSidebarWidth] = useState(() => {
+    const saved = localStorage.getItem('epub-viewer-sidebar-width');
+    return saved ? parseInt(saved, 10) : 200;
+  });
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [isResizing, setIsResizing] = useState(false);
   const contentRef = useRef(null);
   const pageContainerRef = useRef(null);
+  const resizeRef = useRef(null);
 
   useEffect(() => {
     if (jobId) {
@@ -285,6 +292,51 @@ const EpubViewer = ({ jobId, onTextSelect }) => {
     }
   };
 
+  // Resize handlers
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!isResizing) return;
+      
+      const container = resizeRef.current?.closest('.epub-viewer-container');
+      if (!container) return;
+      
+      const containerRect = container.getBoundingClientRect();
+      const newWidth = e.clientX - containerRect.left;
+      
+      // Constrain sidebar width between min and max
+      const minWidth = 120;
+      const maxWidth = Math.min(400, containerRect.width * 0.4);
+      
+      if (newWidth >= minWidth && newWidth <= maxWidth) {
+        setSidebarWidth(newWidth);
+        localStorage.setItem('epub-viewer-sidebar-width', newWidth.toString());
+      }
+    };
+
+    const handleMouseUp = () => {
+      setIsResizing(false);
+    };
+
+    if (isResizing) {
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    }
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+  }, [isResizing]);
+
+  const handleResizeStart = (e) => {
+    e.preventDefault();
+    setIsResizing(true);
+  };
+
   if (loading) {
     return (
       <div className="epub-viewer-loading">
@@ -311,33 +363,101 @@ const EpubViewer = ({ jobId, onTextSelect }) => {
   }
 
   return (
-    <div className="epub-viewer-container">
+    <div className="epub-viewer-container" ref={resizeRef}>
       {/* Section Navigation */}
-      <div className="epub-viewer-sidebar">
-        <h3>Chapters</h3>
-        <nav className="epub-sections-nav">
-          {sections.map((section) => (
-            <button
-              key={section.id}
-              className={`epub-section-btn ${currentSection?.id === section.id ? 'active' : ''}`}
-              onClick={() => {
-                setCurrentSection(section);
-                // Calculate page index for this section
-                const sectionIndex = sections.findIndex(s => s.id === section.id);
-                const pageStart = sections.slice(0, sectionIndex).reduce((sum, s) => sum + (s.pageNumbers?.length || 1), 0);
-                setCurrentPageIndex(pageStart);
-              }}
-            >
-              {section.title || section.id}
-            </button>
-          ))}
-        </nav>
-      </div>
+      {!sidebarCollapsed && (
+        <>
+          <div 
+            className="epub-viewer-sidebar"
+            style={{ width: `${sidebarWidth}px`, minWidth: `${sidebarWidth}px`, maxWidth: `${sidebarWidth}px` }}
+          >
+            <div className="epub-viewer-sidebar-header">
+              <h3>Chapters</h3>
+              <button
+                className="epub-sidebar-toggle-btn"
+                onClick={() => setSidebarCollapsed(true)}
+                title="Collapse Sidebar"
+              >
+                <HiOutlineChevronDoubleLeft size={16} />
+              </button>
+            </div>
+            <nav className="epub-sections-nav">
+              {sections.map((section) => (
+                <button
+                  key={section.id}
+                  className={`epub-section-btn ${currentSection?.id === section.id ? 'active' : ''}`}
+                  onClick={() => {
+                    setCurrentSection(section);
+                    // Calculate page index for this section
+                    const sectionIndex = sections.findIndex(s => s.id === section.id);
+                    const pageStart = sections.slice(0, sectionIndex).reduce((sum, s) => sum + (s.pageNumbers?.length || 1), 0);
+                    setCurrentPageIndex(pageStart);
+                  }}
+                >
+                  {section.title || section.id}
+                </button>
+              ))}
+            </nav>
+          </div>
+
+          {/* Resizable Divider */}
+          <div 
+            className="epub-viewer-divider"
+            onMouseDown={handleResizeStart}
+            style={{ cursor: 'col-resize' }}
+          >
+            <div className="epub-viewer-divider-handle" />
+          </div>
+        </>
+      )}
+      
+      {sidebarCollapsed && (
+        <button
+          className="epub-sidebar-collapsed-toggle"
+          onClick={() => setSidebarCollapsed(false)}
+          title="Expand Sidebar"
+        >
+          <HiOutlineChevronDoubleRight size={20} />
+        </button>
+      )}
 
       {/* Main Content Area */}
       <div className="epub-viewer-content">
         <div className="epub-viewer-header">
-          <h2 className="epub-preview-title">XHTML Preview</h2>
+          <div className="epub-viewer-header-left">
+            <HiOutlineDocumentText size={20} style={{ color: '#666' }} />
+            <div className="epub-page-navigation">
+              <button
+                onClick={handlePreviousPage}
+                disabled={currentPageIndex === 0}
+                className="epub-nav-btn-header"
+                title="Previous Page"
+              >
+                <HiOutlineChevronLeft size={20} />
+              </button>
+              <div className="epub-page-selector">
+                <select
+                  value={currentPageIndex + 1}
+                  onChange={(e) => goToPage(parseInt(e.target.value))}
+                  className="epub-page-dropdown"
+                >
+                  {Array.from({ length: totalPages }, (_, i) => i + 1).map(pageNum => (
+                    <option key={pageNum} value={pageNum}>
+                      Page {pageNum}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <button
+                onClick={handleNextPage}
+                disabled={currentPageIndex >= totalPages - 1}
+                className="epub-nav-btn-header"
+                title="Next Page"
+              >
+                <HiOutlineChevronRight size={20} />
+              </button>
+            </div>
+          </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <button
               onClick={() => setShowRawXhtml(!showRawXhtml)}
