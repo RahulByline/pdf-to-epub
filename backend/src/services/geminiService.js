@@ -1,9 +1,14 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import dotenv from 'dotenv';
 import fs from 'fs/promises';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { RateLimiterService } from './rateLimiterService.js';
 import { RequestQueueService } from './requestQueueService.js';
 import { CircuitBreakerService } from './circuitBreakerService.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 dotenv.config();
 
@@ -259,11 +264,31 @@ export class GeminiService {
     try {
       let responseContent = rawResponse.trim();
       
-      // Remove markdown code blocks if present
-      const codeBlockMatch = responseContent.match(/```(?:html|xhtml|xml)?\s*\n?([\s\S]*?)\n?```/);
-      if (codeBlockMatch) {
-        responseContent = codeBlockMatch[1].trim();
+      // Remove markdown code blocks if present (handle various formats)
+      // Match: ```xml, ```html, ```xhtml, ```, or just ``` with optional language
+      const codeBlockPatterns = [
+        /```(?:xml|html|xhtml)?\s*\n?([\s\S]*?)\n?```/g,  // Standard markdown code blocks
+        /```\s*\n?([\s\S]*?)\n?```/g,  // Generic code blocks
+        /`([^`]+)`/g  // Inline code (less likely but possible)
+      ];
+      
+      for (const pattern of codeBlockPatterns) {
+        const matches = responseContent.match(pattern);
+        if (matches && matches.length > 0) {
+          // Extract content from the first (largest) code block
+          const codeBlockMatch = responseContent.match(/```(?:xml|html|xhtml)?\s*\n?([\s\S]*?)\n?```/);
+          if (codeBlockMatch && codeBlockMatch[1]) {
+            responseContent = codeBlockMatch[1].trim();
+            console.log(`[Page ${pageNumber}] Removed markdown code block wrapper`);
+            break;
+          }
+        }
       }
+      
+      // Also check for leading/trailing markdown markers and remove them
+      responseContent = responseContent.replace(/^```(?:xml|html|xhtml)?\s*\n?/i, '');
+      responseContent = responseContent.replace(/\n?```\s*$/i, '');
+      responseContent = responseContent.trim();
       
       // Method 1: Direct DOCTYPE to </html> extraction (most reliable)
       const doctypeIdx = responseContent.indexOf('<!DOCTYPE');
@@ -450,11 +475,78 @@ export class GeminiService {
         1) **TWO-COLUMN (Multi-Page Split):** Use ONLY if the image shows a visible divider line or two distinct page numbers. Use .container with two .page children.
         2) **SINGLE-COLUMN (Default):** Standard single worksheet. Use a single .page element.
 
-        **AUDIO SYNC REQUIREMENTS (MANDATORY) - IDs MUST include page number:**
-        - Wrap every paragraph in <p id="page${pageNumber}_p1" data-read-aloud="true">
-        - Inside paragraphs, wrap sentences in <span class="sync-sentence" id="page${pageNumber}_p1_s1" data-read-aloud="true">
-        - For titles/short text, optionally wrap words in <span class="sync-word" id="page${pageNumber}_p1_s1_w1" data-read-aloud="true">
-        - Increment paragraph numbers: page${pageNumber}_p1, page${pageNumber}_p2, page${pageNumber}_p3, etc.
+        **AUDIO SYNC REQUIREMENTS (MANDATORY) - HIERARCHICAL NESTED STRUCTURE FOR ALL ELEMENTS:**
+        - **CRITICAL: ALL text elements must use NESTED hierarchical structure to support word/sentence/paragraph granularity**
+        - **STRUCTURE: Parent Element → Sentences → Words (nested hierarchy)**
+        - **ID FORMAT: page${pageNumber}_[type][number]_[subtype][number]...**
+        
+        **HIERARCHICAL STRUCTURE (MANDATORY FOR ALL TEXT ELEMENTS):**
+        - **Paragraphs**: <p id="page${pageNumber}_p1" class="paragraph-block" data-read-aloud="true">
+          - Inside paragraphs, NEST sentences: <span class="sync-sentence" id="page${pageNumber}_p1_s1" data-read-aloud="true">
+          - Inside sentences, NEST words: <span class="sync-word" id="page${pageNumber}_p1_s1_w1" data-read-aloud="true">word</span>
+        
+        - **Headers (h1-h6)**: <h1 id="page${pageNumber}_h1" data-read-aloud="true">
+          - Inside headers, NEST sentences: <span class="sync-sentence" id="page${pageNumber}_h1_s1" data-read-aloud="true">
+          - Inside sentences, NEST words: <span class="sync-word" id="page${pageNumber}_h1_s1_w1" data-read-aloud="true">word</span>
+        
+        - **List Items (li)**: <li id="page${pageNumber}_li1" data-read-aloud="true">
+          - Inside list items, NEST sentences: <span class="sync-sentence" id="page${pageNumber}_li1_s1" data-read-aloud="true">
+          - Inside sentences, NEST words: <span class="sync-word" id="page${pageNumber}_li1_s1_w1" data-read-aloud="true">word</span>
+        
+        - **Table Cells (td, th)**: <td id="page${pageNumber}_td1" data-read-aloud="true">
+          - Inside table cells, NEST sentences: <span class="sync-sentence" id="page${pageNumber}_td1_s1" data-read-aloud="true">
+          - Inside sentences, NEST words: <span class="sync-word" id="page${pageNumber}_td1_s1_w1" data-read-aloud="true">word</span>
+        
+        - **Headers/Footers**: <header id="page${pageNumber}_header1" data-read-aloud="true">
+          - Inside headers/footers, NEST sentences: <span class="sync-sentence" id="page${pageNumber}_header1_s1" data-read-aloud="true">
+          - Inside sentences, NEST words: <span class="sync-word" id="page${pageNumber}_header1_s1_w1" data-read-aloud="true">word</span>
+        
+        - **Divs, Sections, Articles**: <div id="page${pageNumber}_div1" data-read-aloud="true">
+          - Inside divs/sections/articles, NEST sentences: <span class="sync-sentence" id="page${pageNumber}_div1_s1" data-read-aloud="true">
+          - Inside sentences, NEST words: <span class="sync-word" id="page${pageNumber}_div1_s1_w1" data-read-aloud="true">word</span>
+        
+        - **This nested structure allows CSS highlighting to work at element, sentence, or word level for ALL elements**
+        
+        **EXAMPLE STRUCTURE (REQUIRED FORMAT):**
+        <p id="page${pageNumber}_p1" class="paragraph-block" data-read-aloud="true">
+          <span class="sync-sentence" id="page${pageNumber}_p1_s1" data-read-aloud="true">
+            <span class="sync-word" id="page${pageNumber}_p1_s1_w1">If</span>
+            <span class="sync-word" id="page${pageNumber}_p1_s1_w2">you</span>
+            <span class="sync-word" id="page${pageNumber}_p1_s1_w3">were</span>
+            <span class="sync-word" id="page${pageNumber}_p1_s1_w4">a</span>
+            <span class="sync-word" id="page${pageNumber}_p1_s1_w5">horse.</span>
+          </span>
+          <span class="sync-sentence" id="page${pageNumber}_p1_s2" data-read-aloud="true">
+            <span class="sync-word" id="page${pageNumber}_p1_s2_w1">You</span>
+            <span class="sync-word" id="page${pageNumber}_p1_s2_w2">would</span>
+            <span class="sync-word" id="page${pageNumber}_p1_s2_w3">gallop.</span>
+          </span>
+        </p>
+        
+        **ID NUMBERING RULES (ALL ELEMENTS FOLLOW HIERARCHY):**
+          * Headers: page${pageNumber}_h1, page${pageNumber}_h2, page${pageNumber}_h3 (sequential, regardless of h1-h6 level)
+            - Sentences in headers: page${pageNumber}_h{N}_s{N} (e.g., page${pageNumber}_h1_s1, page${pageNumber}_h1_s2)
+            - Words in header sentences: page${pageNumber}_h{N}_s{N}_w{N} (e.g., page${pageNumber}_h1_s1_w1, page${pageNumber}_h1_s1_w2)
+          * Paragraphs: page${pageNumber}_p1, page${pageNumber}_p2, page${pageNumber}_p3, etc.
+            - Sentences in paragraphs: page${pageNumber}_p{N}_s{N} (e.g., page${pageNumber}_p1_s1, page${pageNumber}_p1_s2, page${pageNumber}_p2_s1)
+            - Words in paragraph sentences: page${pageNumber}_p{N}_s{N}_w{N} (e.g., page${pageNumber}_p1_s1_w1, page${pageNumber}_p1_s1_w2)
+          * List Items: page${pageNumber}_li1, page${pageNumber}_li2, etc.
+            - Sentences in list items: page${pageNumber}_li{N}_s{N} (e.g., page${pageNumber}_li1_s1, page${pageNumber}_li1_s2)
+            - Words in list item sentences: page${pageNumber}_li{N}_s{N}_w{N} (e.g., page${pageNumber}_li1_s1_w1, page${pageNumber}_li1_s1_w2)
+          * Table Cells: page${pageNumber}_td1, page${pageNumber}_td2, etc.
+            - Sentences in table cells: page${pageNumber}_td{N}_s{N} (e.g., page${pageNumber}_td1_s1, page${pageNumber}_td1_s2)
+            - Words in table cell sentences: page${pageNumber}_td{N}_s{N}_w{N} (e.g., page${pageNumber}_td1_s1_w1, page${pageNumber}_td1_s1_w2)
+          * Headers/Footers: page${pageNumber}_header1, page${pageNumber}_footer1, etc.
+            - Sentences in headers/footers: page${pageNumber}_header{N}_s{N} (e.g., page${pageNumber}_header1_s1)
+            - Words in header/footer sentences: page${pageNumber}_header{N}_s{N}_w{N} (e.g., page${pageNumber}_header1_s1_w1)
+          * Divs/Sections: page${pageNumber}_div1, page${pageNumber}_section1, etc.
+            - Sentences in divs/sections: page${pageNumber}_div{N}_s{N} (e.g., page${pageNumber}_div1_s1)
+            - Words in div/section sentences: page${pageNumber}_div{N}_s{N}_w{N} (e.g., page${pageNumber}_div1_s1_w1)
+          * **ALWAYS nest: words inside sentences, sentences inside parent elements (p, h1-h6, li, td, th, header, footer, div, section, etc.)**
+          * Be consistent: same element types use same numbering pattern across all pages
+        - **NO TEXT ELEMENT SHOULD BE WITHOUT AN ID** - Every piece of text must be wrapped in an element with a unique ID
+        - **Even if text appears multiple times (duplicates), each occurrence must have a unique ID**
+        - **Page numbers, headers, footers, titles, captions, labels - ALL must have unique IDs**
 
         **XHTML 1.0 STRICT REQUIREMENTS:**
         - DOCTYPE: <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
@@ -469,10 +561,14 @@ export class GeminiService {
         - Use flexbox for layouts
 
         **OUTPUT FORMAT - CRITICAL:**
-        Return ONLY the raw XHTML content. Do NOT wrap in JSON. Do NOT use markdown code blocks.
-        Start directly with <!DOCTYPE and end with </html>
+        Return ONLY the raw XHTML content. 
+        - Do NOT wrap in JSON
+        - Do NOT use markdown code blocks (no triple backticks with xml/html/xhtml)
+        - Do NOT use any markdown formatting
+        - Start directly with <!DOCTYPE and end with </html>
+        - Return pure XHTML only, nothing else
 
-        Example structure for PAGE ${pageNumber}:
+        Example structure for PAGE ${pageNumber} (showing HIERARCHICAL NESTED structure for ALL elements):
         <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
         <html xmlns="http://www.w3.org/1999/xhtml">
         <head>
@@ -482,13 +578,70 @@ export class GeminiService {
             /* ALL CSS goes here - do not put CSS anywhere else */
             body { margin: 0; padding: 0; }
             .-epub-media-overlay-active { background-color: #ffff00; }
+            .paragraph-block { margin: 1em 0; }
+            .sync-sentence { display: inline; }
+            .sync-word { display: inline; }
           </style>
         </head>
         <body>
           <div class="page">
-            <p id="page${pageNumber}_p1" data-read-aloud="true">
-              <span class="sync-sentence" id="page${pageNumber}_p1_s1" data-read-aloud="true">Content here</span>
+            <!-- Header with NESTED sentences and words -->
+            <header id="page${pageNumber}_header1" data-read-aloud="true">
+              <h1 id="page${pageNumber}_h1" data-read-aloud="true">
+                <span class="sync-sentence" id="page${pageNumber}_h1_s1" data-read-aloud="true">
+                  <span class="sync-word" id="page${pageNumber}_h1_s1_w1">Chapter</span>
+                  <span class="sync-word" id="page${pageNumber}_h1_s1_w2">Title</span>
+                </span>
+              </h1>
+            </header>
+            <!-- Paragraphs with NESTED sentences and words -->
+            <p id="page${pageNumber}_p1" class="paragraph-block" data-read-aloud="true">
+              <span class="sync-sentence" id="page${pageNumber}_p1_s1" data-read-aloud="true">
+                <span class="sync-word" id="page${pageNumber}_p1_s1_w1">If</span>
+                <span class="sync-word" id="page${pageNumber}_p1_s1_w2">you</span>
+                <span class="sync-word" id="page${pageNumber}_p1_s1_w3">were</span>
+                <span class="sync-word" id="page${pageNumber}_p1_s1_w4">a</span>
+                <span class="sync-word" id="page${pageNumber}_p1_s1_w5">horse.</span>
+              </span>
+              <span class="sync-sentence" id="page${pageNumber}_p1_s2" data-read-aloud="true">
+                <span class="sync-word" id="page${pageNumber}_p1_s2_w1">You</span>
+                <span class="sync-word" id="page${pageNumber}_p1_s2_w2">would</span>
+                <span class="sync-word" id="page${pageNumber}_p1_s2_w3">gallop.</span>
+              </span>
             </p>
+            <!-- List items with NESTED sentences and words -->
+            <ul>
+              <li id="page${pageNumber}_li1" data-read-aloud="true">
+                <span class="sync-sentence" id="page${pageNumber}_li1_s1" data-read-aloud="true">
+                  <span class="sync-word" id="page${pageNumber}_li1_s1_w1">First</span>
+                  <span class="sync-word" id="page${pageNumber}_li1_s1_w2">item.</span>
+                </span>
+              </li>
+              <li id="page${pageNumber}_li2" data-read-aloud="true">
+                <span class="sync-sentence" id="page${pageNumber}_li2_s1" data-read-aloud="true">
+                  <span class="sync-word" id="page${pageNumber}_li2_s1_w1">Second</span>
+                  <span class="sync-word" id="page${pageNumber}_li2_s1_w2">item.</span>
+                </span>
+              </li>
+            </ul>
+            <!-- Table cells with NESTED sentences and words -->
+            <table>
+              <tr>
+                <td id="page${pageNumber}_td1" data-read-aloud="true">
+                  <span class="sync-sentence" id="page${pageNumber}_td1_s1" data-read-aloud="true">
+                    <span class="sync-word" id="page${pageNumber}_td1_s1_w1">Cell</span>
+                    <span class="sync-word" id="page${pageNumber}_td1_s1_w2">content.</span>
+                  </span>
+                </td>
+              </tr>
+            </table>
+            <!-- Footer with NESTED sentences and words -->
+            <footer id="page${pageNumber}_footer1" data-read-aloud="true">
+              <span class="sync-sentence" id="page${pageNumber}_footer1_s1" data-read-aloud="true">
+                <span class="sync-word" id="page${pageNumber}_footer1_s1_w1">Page</span>
+                <span class="sync-word" id="page${pageNumber}_footer1_s1_w2">${pageNumber}</span>
+              </span>
+            </footer>
           </div>
         </body>
         </html>
@@ -1736,87 +1889,299 @@ OUTPUT ONLY VALID JSON ARRAY (no markdown, no explanation):
   }
 
   /**
-   * Reconcile alignment from XHTML blocks directly (no transcript needed)
-   * Gemini analyzes the audio file directly and matches XHTML blocks to timestamps
+   * Reconcile alignment from XHTML content directly (no transcript needed)
+   * Gemini analyzes the FULL audio file and matches XHTML elements to timestamps
    * 
-   * @param {Array} bookBlocks - Array of {id: string, text: string}
-   * @param {number} pageStartTime - Estimated start time for this page (in seconds)
-   * @param {number} pageEndTime - Estimated end time for this page (in seconds)
+   * @param {string} xhtmlContent - Full XHTML content for the page
    * @param {number} totalAudioDuration - Total audio duration (in seconds)
-   * @param {string} audioFilePath - Path to the audio file to attach to Gemini
+   * @param {string} audioFilePath - Path to the FULL audio file to attach to Gemini
+   * @param {string} granularity - Granularity level ('sentence', 'word', etc.)
    * @returns {Promise<Array>} Array of {id: string, status: 'SYNCED'|'SKIPPED', start?: number, end?: number}
    */
-  static async reconcileAlignmentFromXhtml(bookBlocks, pageStartTime, pageEndTime, totalAudioDuration, audioFilePath) {
+  static async reconcileAlignmentFromXhtml(xhtmlContent, totalAudioDuration, audioFilePath, granularity = 'sentence') {
     try {
       const client = this.getClient();
+      if (!client) {
+        throw new Error('Gemini client not available');
+      }
+
+      // Check if audio file exists
+      if (!audioFilePath) {
+        throw new Error('Audio file path is required');
+      }
+
+      try {
+        await fs.access(audioFilePath);
+        const stats = await fs.stat(audioFilePath);
+        if (stats.size === 0) {
+          throw new Error(`Audio file is empty: ${audioFilePath}`);
+        }
+        console.log(`[GeminiService] Audio file verified: ${(stats.size / 1024 / 1024).toFixed(2)}MB`);
+      } catch (err) {
+        throw new Error(`Audio file not found or invalid: ${audioFilePath} - ${err.message}`);
+      }
+
       const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
       const model = client.getGenerativeModel({ model: modelName });
 
-      // Add position indices to book blocks
-      const bookBlocksWithPosition = bookBlocks.map((b, idx) => ({
-        position: idx,
-        id: b.id,
-        text: b.text.trim()
-      }));
+      console.log(`[GeminiService] Starting XHTML-based alignment with FULL audio file...`);
+      console.log(`[GeminiService] Reading full audio file: ${audioFilePath}`);
+      console.log(`[GeminiService] Audio duration: ${totalAudioDuration.toFixed(2)}s`);
+      console.log(`[GeminiService] Granularity: ${granularity}`);
+      
+      // Read the FULL audio file (no segmentation)
+      let audioBuffer;
+      let audioMimeType = 'audio/mpeg';
+      
+      audioBuffer = await fs.readFile(audioFilePath);
+      console.log(`[GeminiService] Using full audio file: ${(audioBuffer.length / 1024 / 1024).toFixed(2)}MB`);
+      
+      const audioExtension = audioFilePath.toLowerCase().split('.').pop();
+      if (audioExtension === 'wav') {
+        audioMimeType = 'audio/wav';
+      } else if (audioExtension === 'mp3') {
+        audioMimeType = 'audio/mpeg';
+      } else if (audioExtension === 'm4a' || audioExtension === 'mp4') {
+        audioMimeType = 'audio/mp4';
+      } else if (audioExtension === 'ogg') {
+        audioMimeType = 'audio/ogg';
+      }
 
-      // Calculate total text length for this page
-      const totalTextLength = bookBlocks.reduce((sum, b) => sum + b.text.length, 0);
-      const pageDuration = pageEndTime - pageStartTime;
-
+      // Extract text blocks from XHTML for reference (but send full XHTML to Gemini)
+      // Disable default exclusions to include headers, duplicates, TOC, etc.
+      const { aeneasService } = await import('./aeneasService.js');
+      const { idMap } = aeneasService.extractTextFragments(xhtmlContent, granularity, {
+        excludeIds: [],
+        excludePatterns: [],
+        disableDefaultExclusions: true // Include headers, duplicates, TOC, etc.
+      });
+      
+      // Filter blocks to only include those matching the specified granularity
+      // Headers, footers, and other non-granularity elements are ALWAYS excluded
+      const filteredBlocks = idMap.filter(m => {
+        const id = m.id;
+        const type = m.type || 'paragraph';
+        
+        // ALWAYS exclude headers, footers, and header elements regardless of granularity
+        const isHeader = id.includes('_h') || id.match(/^page\d+_h\d+$/);
+        const isFooter = id.includes('footer') || id.includes('_footer');
+        const isHeaderElement = id.includes('header') || id.includes('_header');
+        if (isHeader || isFooter || isHeaderElement) {
+          return false; // Always exclude headers/footers
+        }
+        
+        // For sentence granularity: only include sentence-level elements (p{N}_s{N})
+        if (granularity === 'sentence') {
+          // Must have sentence pattern: p{N}_s{N} (not p{N}_s{N}_w{N})
+          const hasSentencePattern = id.includes('_s') && !id.includes('_w');
+          // Must match sentence type or pattern
+          return (type === 'sentence' || hasSentencePattern) && !id.includes('_w');
+        }
+        
+        // For word granularity: only include word-level elements (p{N}_s{N}_w{N})
+        if (granularity === 'word') {
+          // Must have word pattern: p{N}_s{N}_w{N}
+          const hasWordPattern = id.includes('_w');
+          // Must match word type or pattern
+          return type === 'word' || hasWordPattern;
+        }
+        
+        // For paragraph granularity: only include paragraph-level elements (p{N})
+        if (granularity === 'paragraph') {
+          // Must have paragraph pattern: p{N} (but not p{N}_s{N} or p{N}_s{N}_w{N})
+          const hasParagraphPattern = id.includes('_p') && !id.includes('_s') && !id.includes('_w');
+          // Must match paragraph type or pattern
+          return (type === 'paragraph' || hasParagraphPattern) && !id.includes('_s');
+        }
+        
+        // Default: exclude all (shouldn't reach here with valid granularity)
+        return false;
+      });
+      
+      const bookBlocks = filteredBlocks.map(m => ({ id: m.id, text: m.text }));
+      
+      if (bookBlocks.length === 0) {
+        console.log(`[GeminiService] ⚠️ WARNING: No ${granularity}-level blocks found in XHTML after filtering`);
+        console.log(`[GeminiService] Total blocks before filtering: ${idMap.length}`);
+        return [];
+      }
+      
+      console.log(`[GeminiService] Found ${bookBlocks.length} ${granularity}-level blocks (filtered from ${idMap.length} total blocks)`);
+      console.log(`[GeminiService] Granularity: ${granularity} - Only ${granularity}-level elements will be synced`);
+      
+      // Log first few blocks as sample
+      if (bookBlocks.length > 0) {
+        console.log(`[GeminiService] Sample blocks (first 5):`);
+        bookBlocks.slice(0, 5).forEach((b, idx) => {
+          console.log(`  ${idx + 1}. ${b.id}: "${b.text.substring(0, 50)}${b.text.length > 50 ? '...' : ''}"`);
+        });
+      }
+      
       const prompt = `
-I am an AI audio-sync specialist. 
+You are an expert audio transcription and timestamp alignment specialist. Your task is to listen to the FULL attached audio file and match XHTML elements to precise timestamps.
 
-INPUT:
-1. BOOK BLOCKS: A list of IDs and text from one page of the EPUB file (in reading order, with position indices).
-2. AUDIO TIME RANGE: This page's content appears between ${pageStartTime.toFixed(2)}s and ${pageEndTime.toFixed(2)}s in the audio (duration: ${pageDuration.toFixed(2)}s).
-3. TOTAL AUDIO DURATION: ${totalAudioDuration.toFixed(2)}s
+**MANDATORY REQUIREMENT: SYNC ALL ${granularity.toUpperCase()}-LEVEL ELEMENTS**
+- **GRANULARITY: ${granularity}** - You MUST only sync elements at the ${granularity} level
+- **CRITICAL: Only sync elements matching ${granularity} granularity:**
+  ${granularity === 'sentence' ? 
+    '* Sentence-level elements: IDs with pattern p{N}_s{N} (e.g., page1_p1_s1, page1_p2_s1)' :
+    granularity === 'word' ?
+    '* Word-level elements: IDs with pattern p{N}_s{N}_w{N} (e.g., page1_p1_s1_w1, page1_p1_s1_w2)' :
+    '* Paragraph-level elements: IDs with pattern p{N} (e.g., page1_p1, page1_p2)'
+  }
+- **DO NOT sync headers, footers, or other elements** unless they match the ${granularity} pattern
+- **DO NOT sync elements at different granularity levels** (e.g., if ${granularity} is "sentence", don't sync word-level or paragraph-only elements)
+- You MUST provide timestamps for EVERY ${granularity}-level element that has an ID in the XHTML
+- NO ${granularity}-level element should be skipped unless it's completely empty with no text content
+- When in doubt, ALWAYS SYNC it - include all ${granularity}-level elements
 
-CRITICAL RULES:
-1. LISTEN TO THE AUDIO: The audio file is attached. Listen to it and identify where each text block is actually spoken.
-   - Match the text blocks to what you hear in the audio
-   - Provide EXACT timestamps based on when you hear each block spoken
-   - Do NOT estimate - use the actual audio timestamps
-2. If you cannot find a block in the audio (e.g., TOC, page numbers, headers), mark it as SKIPPED.
+CRITICAL: You will receive:
+1. FULL XHTML CONTENT: The complete XHTML markup for one page of an EPUB book
+2. FULL AUDIO FILE: The complete audio narration (duration: ${totalAudioDuration.toFixed(2)} seconds)
+3. TEXT BLOCKS REFERENCE: A list of text blocks extracted from the XHTML with their IDs
 
-3. For duplicate text (e.g., "If You Were a Horse" appears multiple times):
-   - Listen to the audio and match based on position and context
-   - Earlier position = earlier timestamp in the audio
-   - Use the actual audio timestamps, not estimates
+Your job is to:
+- Parse the XHTML to identify ALL elements with IDs (especially those with data-read-aloud attributes or matching the block IDs)
+- Listen to the FULL audio file
+- Match EACH XHTML element/text block to when it's spoken in the audio
+- Provide ABSOLUTE timestamps (from 0.0s to ${totalAudioDuration.toFixed(2)}s) for ALL text elements
 
-4. Status "SYNCED" = block is spoken and timestamps are provided.
-5. Status "SKIPPED" = block is NOT spoken (TOC, page numbers, headers, footers, navigation).
+CRITICAL INSTRUCTIONS FOR ACCURATE TIMESTAMPS:
 
-TIMESTAMP MATCHING:
-For each book block:
-1. Listen to the attached audio file
-2. Find where the block's text is spoken in the audio
-3. Use the EXACT start and end timestamps from the audio
-4. If the text is not found in the audio, mark as SKIPPED
+1. ANALYZE THE XHTML:
+   - The XHTML contains structured content with IDs (e.g., id="page3_p1_s1", id="page4_p2_s1")
+   - Look for elements with IDs that match the block IDs provided
+   - Elements may have data-read-aloud="true" attributes indicating they should be spoken
+   - Parse the XHTML structure to understand reading order and content hierarchy
 
-EXAMPLE:
-- Block: "If You Were a Horse" → Listen to audio → Found at 11.96s - 18.00s → Use 11.96s - 18.00s
-- Block: "Table of Contents" → Listen to audio → Not found → Mark as SKIPPED
+2. LISTEN TO THE FULL AUDIO:
+   - The FULL audio file is attached (${totalAudioDuration.toFixed(2)} seconds total)
+   - Listen carefully from start to finish
+   - Identify where each XHTML element's text content is spoken
+   - Timestamps are ABSOLUTE (0.0s = start of full audio, ${totalAudioDuration.toFixed(2)}s = end)
 
-REQUIRED OUTPUT FORMAT:
-- EVERY block must have either:
-  - {"id": "...", "status": "SYNCED", "start": X.XX, "end": Y.YY} (if spoken)
-  - {"id": "...", "status": "SKIPPED"} (if NOT spoken)
+3. MATCHING XHTML ELEMENTS TO AUDIO (BE THOROUGH):
+   - Match XHTML element text content to what you hear in the audio
+   - Account for slight variations (e.g., "If You Were a Horse" vs "If you were a horse")
+   - Match based on actual spoken words, not just text similarity
+   - Use FUZZY MATCHING: Match similar words/phrases even if not exact
+   - Match PARTIAL TEXT: If only part of an element is spoken, still provide timestamps
+   - Match KEYWORDS: If key words from an element are heard, match it
+   - Consider reading order: Elements earlier in XHTML should appear earlier in audio
 
-BOOK BLOCKS (in reading order with positions): ${JSON.stringify(bookBlocksWithPosition, null, 2)}
+4. TIMESTAMP ACCURACY REQUIREMENTS (CRITICAL - NO OVERLAPS, INCLUDE NATURAL PAUSES):
+   - START time: The exact moment (in full audio) when the first word of the element begins to be spoken
+   - END time: **CRITICAL - Include natural pauses**: The moment when the last word finishes PLUS the natural pause/silence that follows in the audio
+     * For sentences ending with period/exclamation/question: Include 0.3-0.5s of silence after the last word
+     * For other blocks: Include 0.2-0.3s of silence after the last word
+     * Listen for the natural pause in the audio - don't cut off abruptly
+   - **DO NOT end timestamps exactly when speech ends - extend to include the natural pause/silence that follows**
+   - Do NOT use estimates - ONLY use what you actually hear in the audio (including pauses)
+   - Timestamps must be within audio duration: 0.0s to ${totalAudioDuration.toFixed(2)}s
+   - Timestamps must be precise to 2 decimal places (e.g., 7.36, 18.58, 28.06)
+   - **CRITICAL: Each block MUST have UNIQUE, NON-OVERLAPPING timestamps**
+   - **NO OVERLAPS: The end time of one block MUST be less than the start time of the next block (leave at least 0.05s gap)**
+   - **SEQUENTIAL ORDER: Blocks should appear in reading order with timestamps that don't overlap**
+   - **SMOOTH TRANSITIONS: End times should include natural pauses to prevent abrupt cuts**
 
-AUDIO TIME RANGE FOR THIS PAGE: ${pageStartTime.toFixed(2)}s - ${pageEndTime.toFixed(2)}s (${pageDuration.toFixed(2)}s duration)
-TOTAL TEXT LENGTH: ${totalTextLength} characters
-ESTIMATED READING PACE: ~150 words/minute (~2.5 words/second)
+5. SYNC ALL ${granularity.toUpperCase()}-LEVEL ELEMENTS (CRITICAL - RESPECT GRANULARITY):
+   - **GRANULARITY CONSTRAINT: You are syncing at ${granularity} level ONLY**
+   - **MANDATORY RULE: Sync ALL ${granularity}-level elements that appear in the XHTML**
+   - **EVERY ${granularity}-level element with an ID in the XHTML MUST be synced**
+   - **${granularity === 'sentence' ? 
+     'Elements to sync: Only sentence-level elements (IDs with pattern p{N}_s{N}, e.g., page1_p1_s1)' :
+     granularity === 'word' ?
+     'Elements to sync: Only word-level elements (IDs with pattern p{N}_s{N}_w{N}, e.g., page1_p1_s1_w1)' :
+     'Elements to sync: Only paragraph-level elements (IDs with pattern p{N}, e.g., page1_p1)'
+   }**
+   - **DO NOT sync:**
+     * Headers, footers, or other non-${granularity} elements (unless they match the ${granularity} pattern)
+     * Elements at different granularity levels (e.g., if ${granularity} is "sentence", don't sync word-level or paragraph-only elements)
+     * Elements that don't match the ${granularity} ID pattern
+   - **DO NOT SKIP ANY ${granularity}-LEVEL ELEMENT** unless it's completely empty with no text content
+   - **When in doubt, ALWAYS SYNC it** - it's better to have timestamps for all ${granularity}-level elements than to miss content
+   - **ONLY mark as SKIPPED if:**
+     * The element is completely empty (no text content at all)
+     * OR the element doesn't match the ${granularity} pattern (shouldn't happen if filtering is correct)
+   - **SYNC ALL ${granularity.toUpperCase()}-LEVEL ELEMENTS:**
+     * If an element matches the ${granularity} pattern and has text content, it MUST be synced
+     * If you're not 100% certain it's not spoken, SYNC it
+     * If the text appears in the audio (even partially or with variations), SYNC it
+     * If similar words are heard, SYNC it
 
-OUTPUT ONLY VALID JSON ARRAY (no markdown, no explanation):
+6. OUTPUT FORMAT:
+   - For each block ID, provide: {"id": "block_id", "status": "SYNCED", "start": X.XX, "end": Y.YY}
+   - OR: {"id": "block_id", "status": "SKIPPED"} if not spoken
+   - All timestamps in seconds (ABSOLUTE, from start of full audio), with 2 decimal places
+   - Start time must be less than end time
+   - End time of one block should typically be close to start time of next block (allowing for brief pauses)
+
+INPUT DATA:
+- Full audio duration: ${totalAudioDuration.toFixed(2)} seconds
+- Granularity: ${granularity}
+- Number of blocks to align: ${bookBlocks.length}
+
+XHTML CONTENT (full markup):
+${xhtmlContent.substring(0, 5000)}${xhtmlContent.length > 5000 ? '\n... (truncated, full XHTML provided in context)' : ''}
+
+TEXT BLOCKS REFERENCE (extracted from XHTML with IDs):
+${JSON.stringify(bookBlocks.map((b, idx) => ({ position: idx, id: b.id, text: b.text.trim().substring(0, 200) })), null, 2)}
+
+FULL AUDIO FILE: The complete audio narration is attached. Listen to the entire audio and match each XHTML element to its spoken timestamps.
+
+OUTPUT: Return ONLY a valid JSON array with timestamps. No markdown, no explanations, no code blocks. Just the JSON array:
 [
-  {"id": "page3_p1_s1", "status": "SYNCED", "start": ${pageStartTime.toFixed(2)}, "end": ${(pageStartTime + 2.5).toFixed(2)}},
-  {"id": "page3_p2_s1", "status": "SYNCED", "start": ${(pageStartTime + 2.5).toFixed(2)}, "end": ${(pageStartTime + 5.0).toFixed(2)}}
+  {"id": "page3_p2_s1", "status": "SYNCED", "start": 7.36, "end": 8.66},
+  {"id": "page4_p1_s1", "status": "SYNCED", "start": 15.05, "end": 18.58},
+  {"id": "page5_p4_s1", "status": "SYNCED", "start": 18.56, "end": 20.99}
 ]
 `;
+      
+      // Use RequestQueueService and RateLimiterService for rate limiting
+      const result = await RequestQueueService.enqueue('Gemini', async () => {
+        // Pre-request rate limit check
+        if (!RateLimiterService.acquire('Gemini')) {
+          const waitTime = RateLimiterService.getTimeUntilNextToken('Gemini');
+          if (waitTime > 0) {
+            console.log(`[GeminiService] Waiting ${Math.round(waitTime/1000)}s for rate limit token...`);
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            if (!RateLimiterService.acquire('Gemini')) {
+              throw new Error('Rate limit exceeded after wait');
+            }
+          } else {
+            throw new Error('Rate limit exceeded');
+          }
+        }
 
-      console.log(`[GeminiService] Starting XHTML-based alignment for page (${pageStartTime.toFixed(2)}s - ${pageEndTime.toFixed(2)}s)...`);
-      const result = await this.generateWithBackoff(model, prompt, 1);
+        try {
+          // Check circuit breaker
+          if (!CircuitBreakerService.canMakeRequest('Gemini')) {
+            throw new Error('Circuit breaker is OPEN');
+          }
+
+          // Call Gemini with both text prompt and audio file
+          const apiResult = await model.generateContent([
+            { text: prompt },
+            {
+              inlineData: {
+                data: audioBuffer.toString('base64'),
+                mimeType: audioMimeType
+              }
+            }
+          ]);
+          
+          CircuitBreakerService.recordSuccess('Gemini');
+          return apiResult;
+        } catch (error) {
+          const is429 = error?.status === 429 || error?.statusCode === 429;
+          if (is429) {
+            CircuitBreakerService.recordFailure('Gemini', true);
+          } else {
+            CircuitBreakerService.recordFailure('Gemini', false);
+          }
+          throw error;
+        }
+      }, 1); // High priority
       
       if (!result) {
         throw new Error('Gemini API call failed or was rate limited');
@@ -1841,6 +2206,7 @@ OUTPUT ONLY VALID JSON ARRAY (no markdown, no explanation):
         console.log(`[GeminiService] Successfully parsed JSON, items: ${alignmentMap.length}`);
       } catch (parseError) {
         console.error('[GeminiService] JSON parse error:', parseError.message);
+        console.error('[GeminiService] Raw response (first 1000 chars):', responseText.substring(0, 1000));
         throw new Error(`Failed to parse Gemini response as JSON: ${parseError.message}`);
       }
       
@@ -1848,11 +2214,224 @@ OUTPUT ONLY VALID JSON ARRAY (no markdown, no explanation):
         throw new Error('Gemini returned invalid format: expected array, got ' + typeof alignmentMap);
       }
       
-      const syncedCount = alignmentMap.filter(a => a.status === 'SYNCED').length;
+      // Validate and log timestamps
+      const syncedItems = alignmentMap.filter(a => a.status === 'SYNCED');
       const skippedCount = alignmentMap.filter(a => a.status === 'SKIPPED').length;
-      console.log(`[GeminiService] XHTML alignment complete: ${syncedCount} synced, ${skippedCount} skipped`);
       
-      return alignmentMap;
+      // Log skipped blocks for debugging
+      if (skippedCount > 0) {
+        const skippedBlocks = alignmentMap.filter(a => a.status === 'SKIPPED');
+        console.log(`[GeminiService] ⚠️ ${skippedCount} blocks marked as SKIPPED:`);
+        skippedBlocks.forEach(item => {
+          const block = bookBlocks.find(b => b.id === item.id);
+          const textPreview = block?.text?.substring(0, 50).replace(/\n/g, ' ') || 'N/A';
+          console.log(`  - ${item.id}: "${textPreview}..."`);
+        });
+      }
+      
+      let validTimestamps = 0;
+      let invalidTimestamps = 0;
+      const timestampWarnings = [];
+      const correctedAlignmentMap = [];
+      
+      // First pass: validate and collect all valid timestamps
+      const validItems = [];
+      for (const item of alignmentMap) {
+        if (item.status === 'SKIPPED') {
+          correctedAlignmentMap.push(item);
+          continue;
+        }
+        
+        if (item.start === undefined || item.end === undefined) {
+          invalidTimestamps++;
+          timestampWarnings.push(`Block ${item.id}: Missing timestamps - marking as SKIPPED`);
+          correctedAlignmentMap.push({ ...item, status: 'SKIPPED' });
+          continue;
+        }
+        
+        let start = Number(item.start);
+        let end = Number(item.end);
+        
+        // Validate timestamp ranges
+        if (isNaN(start) || isNaN(end)) {
+          invalidTimestamps++;
+          timestampWarnings.push(`Block ${item.id}: Invalid timestamp values (start: ${item.start}, end: ${item.end}) - marking as SKIPPED`);
+          correctedAlignmentMap.push({ ...item, status: 'SKIPPED' });
+          continue;
+        }
+        
+        if (start >= end) {
+          invalidTimestamps++;
+          timestampWarnings.push(`Block ${item.id}: Start time (${start}s) >= End time (${end}s) - marking as SKIPPED`);
+          correctedAlignmentMap.push({ ...item, status: 'SKIPPED' });
+          continue;
+        }
+        
+        // Check if timestamps are within total audio duration
+        if (start < 0 || end > totalAudioDuration) {
+          invalidTimestamps++;
+          timestampWarnings.push(`Block ${item.id}: Timestamps (${start.toFixed(2)}s-${end.toFixed(2)}s) outside audio duration (0s-${totalAudioDuration.toFixed(2)}s) - marking as SKIPPED`);
+          correctedAlignmentMap.push({ ...item, status: 'SKIPPED' });
+          continue;
+        }
+        
+        validItems.push({ ...item, start, end });
+      }
+      
+      // Second pass: Sort by start time and resolve overlaps
+      validItems.sort((a, b) => a.start - b.start);
+      
+      for (let i = 0; i < validItems.length; i++) {
+        const item = validItems[i];
+        let start = item.start;
+        let end = item.end;
+        
+        // Check for overlap with previous item
+        if (i > 0) {
+          const prevItem = validItems[i - 1];
+          const prevEnd = prevItem.end;
+          
+          if (start < prevEnd) {
+            // Overlap detected - adjust this item's start time
+            const overlap = prevEnd - start;
+            const minGap = 0.2; // Minimum 200ms gap between blocks for natural pause
+            start = prevEnd + minGap;
+            
+            // If adjusting start makes end invalid, adjust end too
+            if (end <= start) {
+              const originalDuration = end - item.start;
+              end = start + Math.max(originalDuration, 0.1); // At least 100ms duration
+            }
+            
+            console.warn(`[GeminiService] ⚠️ Overlap detected for ${item.id}: adjusted start from ${item.start.toFixed(2)}s to ${start.toFixed(2)}s (overlap: ${overlap.toFixed(2)}s, added ${minGap.toFixed(2)}s gap)`);
+            timestampWarnings.push(`Block ${item.id}: Overlap with previous block - adjusted start from ${item.start.toFixed(2)}s to ${start.toFixed(2)}s`);
+          } else if (start - prevEnd < 0.2) {
+            // Even if no overlap, ensure minimum gap for natural pause
+            const currentGap = start - prevEnd;
+            const minGap = 0.2; // Minimum 200ms gap
+            if (currentGap < minGap) {
+              const gapNeeded = minGap - currentGap;
+              start = prevEnd + minGap;
+              // Extend end time to maintain original duration
+              end = start + (item.end - item.start);
+              console.log(`[GeminiService] Added ${gapNeeded.toFixed(2)}s gap before ${item.id}: start adjusted from ${item.start.toFixed(2)}s to ${start.toFixed(2)}s for natural pause`);
+            }
+          }
+        }
+        
+        // Check for overlap with next item
+        if (i < validItems.length - 1) {
+          const nextItem = validItems[i + 1];
+          const nextStart = nextItem.start;
+          
+          if (end > nextStart) {
+            // Overlap detected - adjust this item's end time
+            const overlap = end - nextStart;
+            const minGap = 0.2; // Minimum 200ms gap for natural pause
+            end = nextStart - minGap;
+            
+            // Ensure minimum duration
+            if (end <= start) {
+              end = start + 0.1; // At least 100ms duration
+            }
+            
+            console.warn(`[GeminiService] ⚠️ Overlap detected for ${item.id}: adjusted end from ${item.end.toFixed(2)}s to ${end.toFixed(2)}s (overlap: ${overlap.toFixed(2)}s, added ${minGap.toFixed(2)}s gap)`);
+            timestampWarnings.push(`Block ${item.id}: Overlap with next block - adjusted end from ${item.end.toFixed(2)}s to ${end.toFixed(2)}s`);
+          } else if (nextStart - end < 0.2) {
+            // Even if no overlap, ensure minimum gap for natural pause
+            const currentGap = nextStart - end;
+            const minGap = 0.2; // Minimum 200ms gap
+            if (currentGap < minGap) {
+              const gapNeeded = minGap - currentGap;
+              end = nextStart - minGap;
+              // Ensure minimum duration
+              if (end <= start) {
+                end = start + 0.1;
+              }
+              console.log(`[GeminiService] Added ${gapNeeded.toFixed(2)}s gap after ${item.id}: end adjusted from ${item.end.toFixed(2)}s to ${end.toFixed(2)}s for natural pause`);
+            }
+          }
+        }
+        
+        // Final validation after adjustments
+        if (start >= end || isNaN(start) || isNaN(end)) {
+          invalidTimestamps++;
+          timestampWarnings.push(`Block ${item.id}: Invalid timestamps after overlap resolution (${start.toFixed(2)}s-${end.toFixed(2)}s) - marking as SKIPPED`);
+          correctedAlignmentMap.push({ ...item, status: 'SKIPPED' });
+          continue;
+        }
+        
+        // Update validItems array with adjusted timestamps for next iteration
+        validItems[i].start = start;
+        validItems[i].end = end;
+        
+        // Add to corrected map
+        correctedAlignmentMap.push({
+          ...item,
+          start: parseFloat(start.toFixed(2)),
+          end: parseFloat(end.toFixed(2))
+        });
+        
+        validTimestamps++;
+      }
+      
+      if (timestampWarnings.length > 0) {
+        console.warn(`[GeminiService] Timestamp validation warnings (${timestampWarnings.length}):`);
+        timestampWarnings.slice(0, 5).forEach(w => console.warn(`  - ${w}`));
+        if (timestampWarnings.length > 5) {
+          console.warn(`  ... and ${timestampWarnings.length - 5} more warnings`);
+        }
+      }
+      
+      const finalSyncedCount = correctedAlignmentMap.filter(a => a.status === 'SYNCED').length;
+      const finalSkippedCount = correctedAlignmentMap.filter(a => a.status === 'SKIPPED').length;
+      const skipPercentage = bookBlocks.length > 0 ? (finalSkippedCount / bookBlocks.length) * 100 : 0;
+      
+      console.log(`[GeminiService] XHTML alignment complete: ${finalSyncedCount} synced (${validTimestamps} valid, ${invalidTimestamps} invalid/rejected), ${finalSkippedCount} skipped`);
+      
+      // Warn if too many blocks are skipped (more than 30% of blocks)
+      if (skipPercentage > 30 && bookBlocks.length > 2) {
+        console.warn(`[GeminiService] ⚠️ WARNING: ${skipPercentage.toFixed(1)}% of blocks were skipped (${finalSkippedCount}/${bookBlocks.length}). This might indicate:`);
+        console.warn(`  - Audio segment might not contain all the content`);
+        console.warn(`  - Text blocks might not match what's spoken in audio`);
+        console.warn(`  - Consider checking if audio file matches the EPUB content`);
+      }
+      
+      // Log first few timestamps for debugging
+      const validSyncedItems = correctedAlignmentMap.filter(a => a.status === 'SYNCED');
+      if (validSyncedItems.length > 0) {
+        console.log(`[GeminiService] Sample timestamps (first 3, absolute):`);
+        validSyncedItems.slice(0, 3).forEach(item => {
+          const block = bookBlocks.find(b => b.id === item.id);
+          const textPreview = block ? block.text.substring(0, 40) : 'N/A';
+          console.log(`  - ${item.id}: "${textPreview}..." → ${item.start.toFixed(2)}s - ${item.end.toFixed(2)}s`);
+        });
+      }
+      
+      // Final validation: Check for any remaining overlaps (shouldn't happen, but double-check)
+      const finalSyncedItems = correctedAlignmentMap.filter(a => a.status === 'SYNCED');
+      finalSyncedItems.sort((a, b) => a.start - b.start);
+      for (let i = 1; i < finalSyncedItems.length; i++) {
+        const prev = finalSyncedItems[i - 1];
+        const curr = finalSyncedItems[i];
+        if (curr.start < prev.end) {
+          console.error(`[GeminiService] ⚠️ CRITICAL: Overlap still exists after resolution: ${prev.id} (${prev.end.toFixed(2)}s) overlaps with ${curr.id} (${curr.start.toFixed(2)}s)`);
+          // Force fix: adjust current start to be after previous end
+          curr.start = prev.end + 0.05;
+          if (curr.end <= curr.start) {
+            curr.end = curr.start + 0.1; // Minimum duration
+          }
+          console.log(`[GeminiService] Fixed overlap: ${curr.id} adjusted to ${curr.start.toFixed(2)}s - ${curr.end.toFixed(2)}s`);
+        }
+      }
+      
+      // Log final timestamp summary
+      if (finalSyncedItems.length > 0) {
+        console.log(`[GeminiService] ✅ Final timestamp validation: ${finalSyncedItems.length} blocks with unique, non-overlapping timestamps`);
+        console.log(`[GeminiService] Timestamp range: ${finalSyncedItems[0].start.toFixed(2)}s - ${finalSyncedItems[finalSyncedItems.length - 1].end.toFixed(2)}s`);
+      }
+      
+      return correctedAlignmentMap;
     } catch (error) {
       console.error('[GeminiService] Error in reconcileAlignmentFromXhtml:', error);
       throw error;
