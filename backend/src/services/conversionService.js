@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import crypto from 'crypto';
 import JSZip from 'jszip';
+import { JSDOM } from 'jsdom';
 import { getEpubOutputDir, getHtmlIntermediateDir } from '../config/fileStorage.js';
 import { PdfExtractionService } from './pdfExtractionService.js';
 import { GeminiService } from './geminiService.js';
@@ -226,6 +227,9 @@ body { margin: 0; padding: 0; }
           }
         }
         
+        // CRITICAL: Ensure every text element has a unique ID
+        xhtmlContent = this.ensureAllTextElementsHaveIds(xhtmlContent, pageImage.pageNumber);
+        
         await fs.writeFile(xhtmlFilePath, xhtmlContent, 'utf8');
         
         xhtmlPages.push({
@@ -433,6 +437,371 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&apos;');
+  }
+
+  /**
+   * Ensure every text element in XHTML has a unique ID
+   * This is critical for audio sync - every text element must be syncable
+   * @param {string} xhtmlContent - XHTML content to process
+   * @param {number} pageNumber - Page number for ID prefix
+   * @returns {string} - XHTML content with all text elements having unique IDs
+   */
+  static ensureAllTextElementsHaveIds(xhtmlContent, pageNumber) {
+    try {
+      // Validate XHTML content before parsing
+      if (!xhtmlContent || typeof xhtmlContent !== 'string') {
+        console.warn(`[ConversionService] Invalid XHTML content for page ${pageNumber}: not a string`);
+        return xhtmlContent;
+      }
+      
+      // Check for basic XHTML structure
+      if (!xhtmlContent.includes('<html') && !xhtmlContent.includes('<!DOCTYPE')) {
+        console.warn(`[ConversionService] XHTML content for page ${pageNumber} doesn't appear to be valid XHTML`);
+        return xhtmlContent;
+      }
+      
+      // Try parsing with error handling
+      let dom;
+      try {
+        dom = new JSDOM(xhtmlContent, { 
+          contentType: 'text/xml',
+          strict: false, // Be more lenient with parsing
+          pretendToBeVisual: false
+        });
+      } catch (parseError) {
+        console.error(`[ConversionService] JSDOM parse error for page ${pageNumber}:`, parseError.message);
+        console.error(`[ConversionService] XHTML preview (first 500 chars):`, xhtmlContent.substring(0, 500));
+        // Try to fix common issues and retry
+        let fixedContent = xhtmlContent;
+        // Remove any remaining markdown artifacts
+        fixedContent = fixedContent.replace(/^```(?:xml|html|xhtml)?\s*\n?/i, '');
+        fixedContent = fixedContent.replace(/\n?```\s*$/i, '');
+        // Try again with fixed content
+        try {
+          dom = new JSDOM(fixedContent, { 
+            contentType: 'text/xml',
+            strict: false
+          });
+          console.log(`[ConversionService] Successfully parsed after fixing markdown artifacts`);
+        } catch (retryError) {
+          console.error(`[ConversionService] Still failed after fix attempt:`, retryError.message);
+          // Return original content if we can't parse it
+          return xhtmlContent;
+        }
+      }
+      
+      const document = dom.window.document;
+      
+      // Text-containing elements that should have IDs
+      const textElementTags = ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'span', 'div', 'li', 'td', 'th', 'header', 'footer', 'section', 'article', 'aside', 'blockquote', 'figcaption', 'label', 'a'];
+      
+      // Consistent ID counter format matching Gemini's expected format
+      // Format: page{N}_[type][number] or page{N}_[type][number]_[subtype][number]
+      let idCounter = {
+        h: 0,           // All headers (h1-h6) use same sequential counter
+        header: 0,      // Header elements
+        footer: 0,      // Footer elements
+        p: 0,           // Paragraphs
+        div: 0,         // Divs
+        li: 0,          // List items
+        td: 0,          // Table cells
+        th: 0,          // Table headers
+        section: 0,     // Sections
+        article: 0,     // Articles
+        aside: 0,       // Asides
+        blockquote: 0,  // Blockquotes
+        figcaption: 0,  // Figure captions
+        label: 0,       // Labels
+        a: 0            // Links
+      };
+      
+      // Track sentence counters per paragraph: { 'p1': 0, 'p2': 0, ... }
+      const sentenceCounters = {};
+      // Track word counters per sentence: { 'p1_s1': 0, 'p1_s2': 0, ... }
+      const wordCounters = {};
+      
+      // First pass: Scan existing IDs to initialize counters correctly
+      const scanExistingIds = (element) => {
+        if (!element || element.nodeType !== 1) return;
+        
+        const existingId = element.getAttribute('id');
+        if (existingId) {
+          const id = existingId.trim();
+          const prefix = `page${pageNumber}_`;
+          
+          if (id.startsWith(prefix)) {
+            const suffix = id.substring(prefix.length);
+            
+            // Match h1, h2, h3, etc. (format: h{N}) - all headers use same counter
+            const hMatch = suffix.match(/^h(\d+)$/);
+            if (hMatch) {
+              const num = parseInt(hMatch[1], 10);
+              if (!idCounter.h || idCounter.h < num) {
+                idCounter.h = num;
+              }
+            }
+            
+            // Match paragraphs (format: p{N})
+            const pMatch = suffix.match(/^p(\d+)$/);
+            if (pMatch) {
+              const num = parseInt(pMatch[1], 10);
+              if (!idCounter.p || idCounter.p < num) {
+                idCounter.p = num;
+              }
+            }
+            
+            // Match sentences (format: [type]{N}_s{N} - supports all element types)
+            const sMatch = suffix.match(/^([a-z]+)(\d+)_s(\d+)$/);
+            if (sMatch) {
+              const parentType = sMatch[1]; // e.g., 'p', 'h', 'li', 'td', 'header'
+              const parentNum = parseInt(sMatch[2], 10);
+              const sNum = parseInt(sMatch[3], 10);
+              const parentKey = `${parentType}${parentNum}`;
+              if (!sentenceCounters[parentKey] || sentenceCounters[parentKey] < sNum) {
+                sentenceCounters[parentKey] = sNum;
+              }
+            }
+            
+            // Match words (format: [type]{N}_s{N}_w{N} - supports all element types)
+            const wMatch = suffix.match(/^([a-z]+)(\d+)_s(\d+)_w(\d+)$/);
+            if (wMatch) {
+              const parentType = wMatch[1]; // e.g., 'p', 'h', 'li', 'td', 'header'
+              const parentNum = parseInt(wMatch[2], 10);
+              const sNum = parseInt(wMatch[3], 10);
+              const wNum = parseInt(wMatch[4], 10);
+              const sKey = `${parentType}${parentNum}_s${sNum}`;
+              if (!wordCounters[sKey] || wordCounters[sKey] < wNum) {
+                wordCounters[sKey] = wNum;
+              }
+            }
+            
+            // Match other elements (format: [type]{N})
+            const otherMatch = suffix.match(/^([a-zA-Z]+)(\d+)$/);
+            if (otherMatch && !hMatch && !pMatch) {
+              const type = otherMatch[1];
+              const num = parseInt(otherMatch[2], 10);
+              const counterKey = type.toLowerCase();
+              if (!idCounter[counterKey] || idCounter[counterKey] < num) {
+                idCounter[counterKey] = num;
+              }
+            }
+          }
+        }
+        
+        // Process children
+        const children = Array.from(element.children || []);
+        children.forEach(child => scanExistingIds(child));
+      };
+      
+      // Get body element once for reuse
+      const body = document.querySelector('body');
+      
+      // Scan body for existing IDs to initialize counters
+      if (body) {
+        scanExistingIds(body);
+      } else {
+        // Scan all elements if no body
+        const allElements = document.querySelectorAll('*');
+        allElements.forEach(el => scanExistingIds(el));
+      }
+      
+      // Function to check if element contains text (directly or in children)
+      const hasTextContent = (element) => {
+        if (!element) return false;
+        const text = element.textContent?.trim() || '';
+        if (text.length > 0) return true;
+        // Check if it has child elements with text
+        const children = element.children || [];
+        for (let i = 0; i < children.length; i++) {
+          if (hasTextContent(children[i])) return true;
+        }
+        return false;
+      };
+      
+      // Function to generate unique ID following consistent format
+      const generateId = (tagName, parentId = null, isSentence = false, isWord = false) => {
+        const prefix = `page${pageNumber}_`;
+        
+        // Handle hierarchical IDs (sentences and words)
+        if (isWord && parentId) {
+          // Word ID: page{N}_p{N}_s{N}_w{N}
+          const wordKey = parentId;
+          if (!wordCounters[wordKey]) wordCounters[wordKey] = 0;
+          wordCounters[wordKey]++;
+          return `${parentId}_w${wordCounters[wordKey]}`;
+        }
+        
+        if (isSentence && parentId) {
+          // Sentence ID: page{N}_[type]{N}_s{N} (supports all element types: p, h, li, td, th, header, footer, div, etc.)
+          // Match pattern: [type][number] at the end (e.g., p1, h1, li1, td1, header1, etc.)
+          const parentMatch = parentId.match(/([a-z]+)(\d+)$/);
+          if (parentMatch) {
+            const parentType = parentMatch[1]; // e.g., 'p', 'h', 'li', 'td', 'header'
+            const parentNum = parentMatch[2];  // e.g., '1', '2', '3'
+            const parentKey = `${parentType}${parentNum}`;
+            if (!sentenceCounters[parentKey]) sentenceCounters[parentKey] = 0;
+            sentenceCounters[parentKey]++;
+            return `${parentId}_s${sentenceCounters[parentKey]}`;
+          }
+        }
+        
+        // Handle header tags (h1, h2, h3, etc.) - consistent format: page{N}_h{N} (sequential, not by level)
+        // All headers use the same counter regardless of level (h1, h2, h3 all increment same counter)
+        if (tagName.startsWith('h') && tagName.length === 2) {
+          // Use a single 'h' counter for all header levels to maintain consistency
+          if (!idCounter.h) idCounter.h = 0;
+          idCounter.h++;
+          return `${prefix}h${idCounter.h}`;
+        }
+        
+        // Handle other elements - consistent format: page{N}_[type][number]
+        const counterKey = tagName.toLowerCase();
+        if (!idCounter[counterKey]) {
+          // Initialize counter for this tag type
+          idCounter[counterKey] = 0;
+        }
+        idCounter[counterKey]++;
+        
+        return `${prefix}${counterKey}${idCounter[counterKey]}`;
+      };
+      
+      // Process all elements in the document (depth-first to handle nested elements properly)
+      const processElement = (element, parentId = null) => {
+        if (!element || element.nodeType !== 1) return; // Not an element node
+        
+        const tagName = element.tagName?.toLowerCase();
+        if (!tagName) {
+          // Not a valid element, process children
+          const children = Array.from(element.children || []);
+          children.forEach(child => processElement(child, parentId));
+          return;
+        }
+        
+        // Check if element has text content (directly or in children)
+        const directText = (element.textContent || '').trim();
+        const hasDirectText = directText.length > 0 && 
+          Array.from(element.childNodes || []).some(node => 
+            node.nodeType === 3 && node.textContent?.trim().length > 0
+          );
+        
+        // Check if element already has an ID
+        let existingId = element.getAttribute('id');
+        if (existingId) existingId = existingId.trim();
+        
+        // Determine if this element needs an ID
+        const needsId = textElementTags.includes(tagName) && 
+          (hasDirectText || hasTextContent(element)) &&
+          (!existingId || existingId === '');
+        
+        if (needsId) {
+          // Generate ID - maintain consistent hierarchy
+          let newId;
+          const parent = element.parentElement;
+          const parentIdAttr = parent ? parent.getAttribute('id') : null;
+          
+          // Check if this span should be part of hierarchical structure (sentence or word)
+          if (tagName === 'span' && parentIdAttr) {
+            const parentTag = parent.tagName?.toLowerCase();
+            const currentClass = element.getAttribute('class') || '';
+            const hasSyncSentenceClass = currentClass.includes('sync-sentence');
+            const hasSyncWordClass = currentClass.includes('sync-word');
+            
+            // Check if parent is a sentence span (has _s{N} in ID, e.g., page1_p1_s1, page1_h1_s1, page1_li1_s1, etc.)
+            // OR if this span has sync-word class and parent is a sentence
+            const isParentSentence = parentTag === 'span' && (
+              parentIdAttr.match(/[a-z]+\d+_s\d+$/) || // Matches p1_s1, h1_s1, li1_s1, td1_s1, etc.
+              parentIdAttr.match(/_s\d+$/) // Generic sentence pattern
+            );
+            
+            if (hasSyncWordClass || isParentSentence) {
+              // This is a word inside a sentence - generate word-level ID
+              // Parent should be a sentence (parentId_s{N})
+              newId = generateId(tagName, parentIdAttr, false, true);
+            }
+            // Check if parent is a text-containing element (p, h1-h6, li, td, th, header, footer, div, section, etc.)
+            // OR if this span has sync-sentence class
+            else if (hasSyncSentenceClass || (
+              ['p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'li', 'td', 'th', 'header', 'footer', 'div', 'section', 'article', 'aside'].includes(parentTag) &&
+              parentIdAttr && 
+              !parentIdAttr.match(/_s\d+/) && // Parent is not already a sentence
+              !parentIdAttr.match(/_w\d+/)    // Parent is not already a word
+            )) {
+              // This is a sentence inside a parent element - generate sentence-level ID
+              newId = generateId(tagName, parentIdAttr, true, false);
+            }
+            // Check if parent is a sentence span (has _s{N} but no _w{N})
+            else if (parentTag === 'span' && parentIdAttr.match(/[a-z]+\d+_s\d+$/) && !parentIdAttr.match(/_w\d+$/)) {
+              // This is a word inside a sentence
+              newId = generateId(tagName, parentIdAttr, false, true);
+            }
+            else {
+              // Regular span (not hierarchical) - assign non-hierarchical ID
+              newId = generateId(tagName, parentIdAttr);
+            }
+          } else if (tagName === 'p') {
+            // Paragraph element - generate paragraph-level ID
+            newId = generateId(tagName, parentIdAttr);
+            // Ensure paragraph has paragraph-block class for CSS
+            const currentClass = element.getAttribute('class') || '';
+            if (!currentClass.includes('paragraph-block')) {
+              element.setAttribute('class', currentClass ? `${currentClass} paragraph-block` : 'paragraph-block');
+            }
+          } else {
+            // Non-span, non-paragraph element or span without hierarchical parent
+            newId = generateId(tagName, parentIdAttr);
+          }
+          
+          element.setAttribute('id', newId);
+          // Also ensure data-read-aloud is set
+          if (!element.getAttribute('data-read-aloud')) {
+            element.setAttribute('data-read-aloud', 'true');
+          }
+          // Ensure proper classes for hierarchical structure
+          if (tagName === 'span') {
+            const currentClass = element.getAttribute('class') || '';
+            // If this is a word-level ID (has _w in ID), ensure sync-word class
+            if (newId.includes('_w') && !currentClass.includes('sync-word')) {
+              element.setAttribute('class', currentClass ? `${currentClass} sync-word` : 'sync-word');
+            }
+            // If this is a sentence-level ID (has _s but not _w), ensure sync-sentence class
+            else if (newId.includes('_s') && !newId.includes('_w') && !currentClass.includes('sync-sentence')) {
+              element.setAttribute('class', currentClass ? `${currentClass} sync-sentence` : 'sync-sentence');
+            }
+          }
+          console.log(`[ConversionService] Assigned ID "${newId}" to <${tagName}> element: "${directText.substring(0, 50)}..."`);
+          existingId = newId; // Update for children
+        }
+        
+        // Process children recursively with current element's ID as parent
+        const children = Array.from(element.children || []);
+        children.forEach(child => processElement(child, existingId || parentId));
+      };
+      
+      // Start processing from body, or root if no body (reuse body from above)
+      if (body) {
+        processElement(body);
+      } else {
+        // No body tag, process all elements
+        const allElements = document.querySelectorAll('*');
+        allElements.forEach(el => processElement(el));
+      }
+      
+      // Serialize back to XHTML string
+      const serializer = new dom.window.XMLSerializer();
+      let result = serializer.serializeToString(document);
+      
+      // Fix DOCTYPE if needed
+      if (!result.includes('<!DOCTYPE')) {
+        const doctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+        result = doctype + '\n' + result;
+      }
+      
+      return result;
+    } catch (error) {
+      console.error(`[ConversionService] Error ensuring IDs for page ${pageNumber}:`, error.message);
+      // Return original content if processing fails
+      return xhtmlContent;
+    }
   }
 
   static async startConversion(pdfDocumentId) {
@@ -2017,13 +2386,17 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
         hasSmil = true;
         const smilFileName = `page_${actualPageNum}.smil`;
         console.log(`[Job ${jobId}] Generating SMIL for page ${actualPageNum}: ${activeSyncs.length} active syncs, audio=${audioFileName}`);
+        // Get XHTML content for reading order (from epubXhtmlPages if available)
+        const pageXhtmlContent = epubXhtmlPages?.find(p => p.pageNumber === actualPageNum)?.xhtml || null;
         const smilContent = this.generateSMILContent(
           actualPageNum,
           activeSyncs, // Use filtered active syncs only (respects shouldRead flags)
           audioFileName,
           textData,
           pageIdMappings[actualPageNum],
-          fileName // Pass XHTML filename for textref
+          fileName, // Pass XHTML filename for textref
+          null, // targetGranularity (not specified here)
+          pageXhtmlContent // Pass XHTML content for reading order
         );
         zip.file(`OEBPS/${smilFileName}`, smilContent);
         smilFileNames.push(smilFileName);
@@ -2123,8 +2496,10 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
             // Get ID mapping for this page
             const pageIdMapping = pageIdMappings?.[parseInt(pageNum)] || {};
             const pageXhtmlFileName = `page_${pageNum}.xhtml`;
+            // Get XHTML content for reading order (from epubXhtmlPages if available)
+            const pageXhtmlContent = epubXhtmlPages?.find(p => p.pageNumber === parseInt(pageNum))?.xhtml || null;
             // Pass granularity to filter syncs at the desired level (word/sentence/paragraph)
-            const smilContent = this.generateSMILContent(parseInt(pageNum), pageSyncs, audioFileName, textData, pageIdMapping, pageXhtmlFileName, granularity);
+            const smilContent = this.generateSMILContent(parseInt(pageNum), pageSyncs, audioFileName, textData, pageIdMapping, pageXhtmlFileName, granularity, pageXhtmlContent);
             zip.file(`OEBPS/${smilFileName}`, smilContent);
             smilFileNames.push(smilFileName);
             // Use page${pageNum} format to match spine itemref idref
@@ -3798,13 +4173,57 @@ body > p {
     return null;
   }
 
-  static generateSMILContent(pageNumber, syncs, audioFileName, textData, idMapping = {}, xhtmlFileName = null, targetGranularity = null) {
+  static generateSMILContent(pageNumber, syncs, audioFileName, textData, idMapping = {}, xhtmlFileName = null, targetGranularity = null, xhtmlContent = null) {
     // Get the page data to access textBlocks
     const page = textData?.pages?.find(p => p.pageNumber === pageNumber);
     const textBlocks = page?.textBlocks || [];
     
     // Use provided XHTML filename or default
     const xhtmlFile = xhtmlFileName || `page_${pageNumber}.xhtml`;
+    
+    // Build reading order map from XHTML if available
+    let readingOrderMap = new Map();
+    if (xhtmlContent) {
+      try {
+        const dom = new JSDOM(xhtmlContent, { contentType: 'text/xml' });
+        const document = dom.window.document;
+        let readingOrder = 0;
+        
+        // Traverse document in reading order (depth-first)
+        const traverse = (element) => {
+          if (!element) return;
+          
+          // Check if element has an ID
+          const id = element.getAttribute('id');
+          if (id && id.trim()) {
+            readingOrderMap.set(id.trim(), readingOrder++);
+          }
+          
+          // Process children in order
+          const children = Array.from(element.children || []);
+          children.forEach(child => traverse(child));
+        };
+        
+        // Start from body
+        const body = document.querySelector('body');
+        if (body) {
+          traverse(body);
+        } else {
+          // If no body, traverse all elements
+          const allElements = document.querySelectorAll('*');
+          allElements.forEach(el => {
+            const id = el.getAttribute('id');
+            if (id && id.trim()) {
+              readingOrderMap.set(id.trim(), readingOrder++);
+            }
+          });
+        }
+        
+        console.log(`[SMIL Page ${pageNumber}] Built reading order map with ${readingOrderMap.size} elements`);
+      } catch (error) {
+        console.warn(`[SMIL Page ${pageNumber}] Could not parse XHTML for reading order: ${error.message}`);
+      }
+    }
     
     // Filter syncs by granularity if specified
     let filteredSyncs = syncs;
@@ -3923,7 +4342,20 @@ body > p {
       const blockIdA = a.blockId || a.block_id || '';
       const blockIdB = b.blockId || b.block_id || '';
       
-      // First, sort by hierarchy level (words first, then sentences, then paragraphs)
+      // CRITICAL: Sort by reading order first (if available), then by hierarchy, then by start time
+      const readingOrderA = readingOrderMap.get(blockIdA);
+      const readingOrderB = readingOrderMap.get(blockIdB);
+      
+      // If both have reading order, use it
+      if (readingOrderA !== undefined && readingOrderB !== undefined) {
+        return readingOrderA - readingOrderB;
+      }
+      
+      // If only one has reading order, prioritize it
+      if (readingOrderA !== undefined) return -1;
+      if (readingOrderB !== undefined) return 1;
+      
+      // Fallback: sort by hierarchy level (words first, then sentences, then paragraphs)
       const levelA = getHierarchyLevel(blockIdA);
       const levelB = getHierarchyLevel(blockIdB);
       
@@ -3952,6 +4384,9 @@ body > p {
         audioPath = `audio/${audioPath}`;
       }
     }
+    
+    // Track adjusted end times to prevent overlaps
+    let lastAdjustedEndTime = 0;
     
     for (let i = 0; i < sortedSyncs.length; i++) {
       const sync = sortedSyncs[i];
@@ -3986,20 +4421,145 @@ body > p {
       const minDurationByChars = 0.3 + (charCount * 0.05);
       const MIN_DURATION = Math.max(0.3, Math.max(minDurationByWords, minDurationByChars));
       
+      const originalStartTime = startTime;
+      const originalEndTime = endTime;
       const currentDuration = endTime - startTime;
       
-      if (currentDuration < MIN_DURATION) {
-        // Extend endTime to meet minimum duration (but don't exceed next sync's start time)
-        const nextSync = sortedSyncs[i + 1];
-        const nextStartTime = nextSync ? Number(nextSync.start_time ?? nextSync.startTime ?? nextSync.clipBegin ?? Infinity) : Infinity;
-        const maxEndTime = Math.min(startTime + MIN_DURATION, nextStartTime - 0.05); // Leave 50ms gap
+      // Get next sync's original start time (before any adjustments)
+      const nextSync = sortedSyncs[i + 1];
+      const nextOriginalStartTime = nextSync ? Number(nextSync.start_time ?? nextSync.startTime ?? nextSync.clipBegin ?? Infinity) : Infinity;
+      
+      // STEP 1: CRITICAL - Ensure NO OVERLAP with previous block
+      // Use lastAdjustedEndTime to track the actual end time of the previous processed block
+      if (startTime < lastAdjustedEndTime) {
+        const overlap = lastAdjustedEndTime - startTime;
+        console.warn(`[SMIL Page ${pageNumber}] ⚠️ OVERLAP DETECTED: ${blockId} starts at ${startTime.toFixed(3)}s but previous block ends at ${lastAdjustedEndTime.toFixed(3)}s (overlap: ${overlap.toFixed(3)}s). Adjusting startTime.`);
+        startTime = lastAdjustedEndTime + 0.05; // Add 50ms minimum gap
+        // Recalculate endTime to maintain original duration
+        const originalDuration = originalEndTime - originalStartTime;
+        endTime = startTime + originalDuration;
+        console.log(`[SMIL Page ${pageNumber}] Adjusted ${blockId}: start=${startTime.toFixed(3)}s, end=${endTime.toFixed(3)}s (original: ${originalStartTime.toFixed(3)}s-${originalEndTime.toFixed(3)}s)`);
+      }
+      
+      // STEP 2: Ensure minimum duration is met (do this before adding pause)
+      if ((endTime - startTime) < MIN_DURATION) {
+        const minEndTime = startTime + MIN_DURATION;
+        // Don't extend beyond next sync's start (leave 100ms gap)
+        const safeEndTime = Math.min(minEndTime, nextOriginalStartTime - 0.1);
         
-        if (maxEndTime > startTime) {
-          endTime = maxEndTime;
-          console.log(`[SMIL Page ${pageNumber}] Extended duration for ${blockId || 'unknown'}: ${currentDuration.toFixed(3)}s -> ${(endTime - startTime).toFixed(3)}s (text: "${text.substring(0, 30)}...", ${wordCount} words)`);
-        } else {
-          console.warn(`[SMIL Page ${pageNumber}] Cannot extend duration for ${blockId || 'unknown'}: would overlap with next sync`);
+        if (safeEndTime > endTime) {
+          endTime = safeEndTime;
+          console.log(`[SMIL Page ${pageNumber}] Extended duration for ${blockId || 'unknown'}: ${(originalEndTime - originalStartTime).toFixed(3)}s -> ${(endTime - startTime).toFixed(3)}s (text: "${text.substring(0, 30)}...", ${wordCount} words)`);
         }
+      }
+      
+      // STEP 3: ALWAYS add natural pause after speech to prevent abrupt cuts
+      // This ensures there's silence between blocks for smooth reading experience
+      const hasPeriod = text.trim().endsWith('.') || text.trim().endsWith('!') || text.trim().endsWith('?');
+      const hasComma = text.trim().endsWith(',') || text.trim().endsWith(';') || text.trim().endsWith(':');
+      
+      // Calculate desired pause based on punctuation and text length
+      let desiredPause = 0.3; // Default pause
+      if (hasPeriod) {
+        desiredPause = 0.5 + (wordCount * 0.02); // Longer pause after sentences (0.5-0.7s)
+      } else if (hasComma) {
+        desiredPause = 0.3; // Medium pause after clauses
+      } else {
+        desiredPause = 0.25; // Shorter pause for other blocks
+      }
+      
+      // Cap pause at reasonable maximum
+      desiredPause = Math.min(desiredPause, 0.8);
+      
+      // CRITICAL: Always ensure minimum pause (0.2s) to prevent abrupt cuts
+      const minRequiredPause = 0.2; // Minimum 200ms pause for smooth transitions
+      const actualPause = Math.max(desiredPause, minRequiredPause);
+      
+      // Calculate desired end time with pause
+      const originalEndBeforePause = endTime;
+      const desiredEndTime = endTime + actualPause;
+      
+      // Ensure we don't overlap with next block, but prioritize pause over tight spacing
+      // Leave at least 0.1s gap before next block
+      const maxSafeEndTime = nextOriginalStartTime - 0.1;
+      
+      if (desiredEndTime <= maxSafeEndTime) {
+        // We have room for the full pause
+        endTime = desiredEndTime;
+        console.log(`[SMIL Page ${pageNumber}] Added ${actualPause.toFixed(2)}s pause after ${blockId || 'unknown'}: endTime extended from ${originalEndBeforePause.toFixed(3)}s to ${endTime.toFixed(3)}s (smooth transition)`);
+      } else {
+        // Limited room - use as much pause as possible without overlapping
+        const availablePause = Math.max(0, maxSafeEndTime - endTime);
+        if (availablePause >= minRequiredPause) {
+          endTime = maxSafeEndTime;
+          console.log(`[SMIL Page ${pageNumber}] Added ${availablePause.toFixed(2)}s pause after ${blockId || 'unknown'}: endTime extended from ${originalEndBeforePause.toFixed(3)}s to ${endTime.toFixed(3)}s (limited by next block)`);
+        } else {
+          // Very tight spacing - still add minimum pause and adjust next block if needed
+          endTime = endTime + minRequiredPause;
+          if (endTime > nextOriginalStartTime) {
+            // Need to push next block forward
+            console.warn(`[SMIL Page ${pageNumber}] ⚠️ Tight spacing: Adding ${minRequiredPause.toFixed(2)}s pause after ${blockId} requires adjusting next block start from ${nextOriginalStartTime.toFixed(3)}s`);
+            // Note: We'll handle this in the next iteration, but for now ensure minimum gap
+            endTime = Math.min(endTime, nextOriginalStartTime - 0.05);
+          }
+          console.log(`[SMIL Page ${pageNumber}] Added minimum ${minRequiredPause.toFixed(2)}s pause after ${blockId || 'unknown'}: endTime extended from ${originalEndBeforePause.toFixed(3)}s to ${endTime.toFixed(3)}s (tight spacing)`);
+        }
+      }
+      
+      // STEP 4: Final overlap check with next block (prevent extending into next block)
+      if (endTime > nextOriginalStartTime) {
+        console.warn(`[SMIL Page ${pageNumber}] ⚠️ End time ${endTime.toFixed(3)}s would overlap with next block starting at ${nextOriginalStartTime.toFixed(3)}s. Adjusting endTime.`);
+        endTime = nextOriginalStartTime - 0.15; // Leave 150ms gap to prevent abrupt cuts
+      }
+      
+      // STEP 5: Final validation - ensure minimum gap is maintained (prevents abrupt cuts)
+      // Always leave at least 0.2s gap before next block for smooth transitions
+      const gapToNext = nextOriginalStartTime - endTime;
+      const minGap = 0.2; // Increased to 200ms for smoother transitions
+      
+      if (gapToNext < minGap) {
+        if (gapToNext < 0) {
+          // Overlap - must fix
+          console.warn(`[SMIL Page ${pageNumber}] ⚠️ OVERLAP: ${blockId} endTime ${endTime.toFixed(3)}s overlaps with next block at ${nextOriginalStartTime.toFixed(3)}s. Adjusting.`);
+          endTime = nextOriginalStartTime - minGap;
+        } else {
+          // Too close - adjust endTime to leave proper gap
+          const adjustedEndTime = nextOriginalStartTime - minGap;
+          if (adjustedEndTime > startTime) {
+            const currentDuration = endTime - startTime;
+            const adjustedDuration = adjustedEndTime - startTime;
+            // Only adjust if we're not making the duration too short (at least 60% of original)
+            if (adjustedDuration >= currentDuration * 0.6 && adjustedDuration >= 0.1) {
+              endTime = adjustedEndTime;
+              console.log(`[SMIL Page ${pageNumber}] Adjusted ${blockId} endTime from ${(endTime + minGap - gapToNext).toFixed(3)}s to ${endTime.toFixed(3)}s to ensure ${minGap.toFixed(2)}s gap before next block (prevents abrupt cut)`);
+            } else {
+              // Can't adjust without making duration too short - push next block forward instead
+              console.warn(`[SMIL Page ${pageNumber}] ⚠️ Block ${blockId} is very close to next block (${gapToNext.toFixed(3)}s gap) but can't adjust endTime. Next block will be adjusted.`);
+            }
+          }
+        }
+      }
+      
+      // Log gap information for debugging
+      if (i > 0) {
+        const gap = startTime - lastAdjustedEndTime;
+        if (gap < 0.2) {
+          console.warn(`[SMIL Page ${pageNumber}] ⚠️ Small gap of ${gap.toFixed(3)}s between previous block and ${blockId} - may cause abrupt cut`);
+        } else if (gap > 0.5) {
+          console.log(`[SMIL Page ${pageNumber}] Large gap of ${gap.toFixed(2)}s before ${blockId} (natural pause in audio)`);
+        } else {
+          console.log(`[SMIL Page ${pageNumber}] Gap of ${gap.toFixed(2)}s before ${blockId} (good spacing)`);
+        }
+      }
+      
+      // Update lastAdjustedEndTime for next iteration
+      lastAdjustedEndTime = endTime;
+      
+      // Log final timing for this block
+      const blockDuration = endTime - startTime;
+      const pauseAfter = i < sortedSyncs.length - 1 ? (sortedSyncs[i + 1] ? (Number(sortedSyncs[i + 1].start_time ?? sortedSyncs[i + 1].startTime ?? sortedSyncs[i + 1].clipBegin ?? Infinity) - endTime) : 0) : 0;
+      if (i < 3 || pauseAfter < 0.15) {
+        console.log(`[SMIL Page ${pageNumber}] Block ${blockId}: ${startTime.toFixed(3)}s-${endTime.toFixed(3)}s (duration: ${blockDuration.toFixed(3)}s, pause after: ${pauseAfter.toFixed(3)}s)`);
       }
       
       // Validate timestamps
@@ -4038,7 +4598,7 @@ body > p {
       
       // Debug logging for first few syncs
       if (i < 3) {
-        console.log(`[SMIL Page ${pageNumber}] Sync ${i}: blockId=${blockId}, clipBegin=${startTime.toFixed(3)}s, clipEnd=${endTime.toFixed(3)}s, audioPath=${audioPath}`);
+        console.log(`[SMIL Page ${pageNumber}] Sync ${i}: blockId=${blockId}, clipBegin=${startTime.toFixed(3)}s, clipEnd=${endTime.toFixed(3)}s, duration=${(endTime - startTime).toFixed(3)}s, audioPath=${audioPath}`);
       }
       
       bodyContent += `    <par id="par-${escapedBlockId}">

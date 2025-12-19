@@ -764,8 +764,15 @@ router.post('/magic-align', async (req, res) => {
       return badRequestResponse(res, 'No EPUB sections found for this job');
     }
 
-    // Resolve audio path (same logic as auto-sync)
+    // Resolve audio path (same improved logic as auto-sync)
     let resolvedAudioPath = audioPath;
+    
+    // First, try to get audio path from request body
+    if (resolvedAudioPath && !path.isAbsolute(resolvedAudioPath)) {
+      resolvedAudioPath = path.join(getUploadDir(), resolvedAudioPath);
+    }
+    
+    // If not provided, check existing syncs in database
     if (!resolvedAudioPath) {
       const existingSyncs = await AudioSyncModel.findByJobId(jobId);
       if (existingSyncs.length > 0 && existingSyncs[0].audio_file_path) {
@@ -776,25 +783,52 @@ router.post('/magic-align', async (req, res) => {
           normalizedPath = path.join('audio', normalizedPath); // Add single 'audio/' prefix
           resolvedAudioPath = path.join(getUploadDir(), normalizedPath);
         }
+        console.log(`[MagicAlign] Found audio path from existing syncs: ${resolvedAudioPath}`);
       }
     }
 
+    // If still no audio, try TTS output directory and uploaded audio folder
     if (!resolvedAudioPath) {
       const { getTtsOutputDir } = await import('../config/fileStorage.js');
       const ttsDir = getTtsOutputDir();
       const audioDir = path.join(getUploadDir(), 'audio');
       
+      // List all files in audio directory to find any recent uploads for this job
+      let uploadedAudioFiles = [];
+      try {
+        const files = await fs.readdir(audioDir);
+        uploadedAudioFiles = files
+          .filter(f => f.endsWith('.mp3') || f.endsWith('.wav') || f.endsWith('.m4a'))
+          .map(f => ({
+            path: path.join(audioDir, f),
+            name: f,
+            time: parseInt(f.split('_')[0]) || 0 // Extract timestamp from filename
+          }))
+          .sort((a, b) => b.time - a.time); // Most recent first
+        console.log(`[MagicAlign] Found ${uploadedAudioFiles.length} audio files in upload dir`);
+      } catch (e) {
+        console.log('[MagicAlign] Could not read audio directory:', e.message);
+      }
+      
       const possiblePaths = [
         path.join(ttsDir, `combined_audio_${jobId}.mp3`),
         path.join(audioDir, `combined_audio_${jobId}.mp3`),
         path.join(getUploadDir(), 'tts_audio', `combined_audio_${jobId}.mp3`),
+        path.join(audioDir, `audio_${jobId}.mp3`),
+        // Also check recently uploaded files (most recent first)
+        ...uploadedAudioFiles.slice(0, 5).map(f => f.path)
       ];
       
+      console.log(`[MagicAlign] Checking ${possiblePaths.length} possible audio file locations...`);
       for (const p of possiblePaths) {
         try {
           await fs.access(p);
-          resolvedAudioPath = p;
-          break;
+          const stats = await fs.stat(p);
+          if (stats.size > 0) {
+            resolvedAudioPath = p;
+            console.log(`[MagicAlign] Found audio file: ${resolvedAudioPath} (${(stats.size / 1024 / 1024).toFixed(2)}MB)`);
+            break;
+          }
         } catch (e) {
           // Not found, try next
         }
@@ -802,7 +836,21 @@ router.post('/magic-align', async (req, res) => {
     }
 
     if (!resolvedAudioPath) {
+      console.error(`[MagicAlign] No audio file found for job ${jobId}`);
+      console.error(`[MagicAlign] Checked paths: TTS dir, uploads/audio, uploads/tts_audio`);
       return badRequestResponse(res, 'No audio file found. Please generate TTS audio or upload an audio file first.');
+    }
+
+    // Verify audio file exists and is not empty
+    try {
+      const stats = await fs.stat(resolvedAudioPath);
+      if (stats.size === 0) {
+        return badRequestResponse(res, `Audio file is empty: ${resolvedAudioPath}`);
+      }
+      console.log(`[MagicAlign] Audio file verified: ${resolvedAudioPath} (${(stats.size / 1024 / 1024).toFixed(2)}MB)`);
+    } catch (err) {
+      console.error(`[MagicAlign] Audio file not accessible: ${resolvedAudioPath} - ${err.message}`);
+      return badRequestResponse(res, `Audio file not found or not accessible: ${resolvedAudioPath}`);
     }
 
     // STEP 1: Get audio duration (for Gemini to estimate timestamps)
@@ -833,7 +881,6 @@ router.post('/magic-align', async (req, res) => {
     
     const allSyncedBlocks = [];
     const allSkippedBlocks = [];
-    let cumulativeTime = 0; // Track cumulative time across pages
     
     for (let pageIndex = 0; pageIndex < sections.length; pageIndex++) {
       const section = sections[pageIndex];
@@ -847,7 +894,7 @@ router.post('/magic-align', async (req, res) => {
       
       console.log(`[MagicAlign] Processing page ${pageNumber} (${pageIndex + 1}/${sections.length})...`);
       
-      // Extract book blocks from this page
+      // Extract book blocks from this page for reference (but send full XHTML to Gemini)
       const { extractTextFragments } = aeneasService;
       const { idMap } = extractTextFragments(pageXhtml, granularity, {
         excludeIds: [],
@@ -861,30 +908,27 @@ router.post('/magic-align', async (req, res) => {
         continue;
       }
       
-      // Calculate estimated time for this page based on text length
-      const pageTextLength = bookBlocks.reduce((sum, b) => sum + b.text.length, 0);
-      const totalTextLength = sections.reduce((sum, s) => {
-        const { idMap: allIdMap } = extractTextFragments(s.xhtml || s.content || '', granularity, {
-          excludeIds: [],
-          excludePatterns: []
-        });
-        return sum + allIdMap.reduce((s, m) => s + m.text.length, 0);
-      }, 0);
+      console.log(`[MagicAlign] Page ${pageNumber}: ${bookBlocks.length} blocks found in XHTML`);
       
-      const estimatedPageDuration = (pageTextLength / totalTextLength) * audioDuration;
-      const pageStartTime = cumulativeTime;
-      const pageEndTime = cumulativeTime + estimatedPageDuration;
-      
-      console.log(`[MagicAlign] Page ${pageNumber}: ${bookBlocks.length} blocks, estimated duration: ${estimatedPageDuration.toFixed(2)}s (${pageStartTime.toFixed(2)}s - ${pageEndTime.toFixed(2)}s)`);
-      
-      // Call Gemini with this page's XHTML blocks and audio file
-      const alignmentMap = await GeminiService.reconcileAlignmentFromXhtml(
-        bookBlocks,
-        pageStartTime,
-        pageEndTime,
-        audioDuration,
-        resolvedAudioPath // Pass audio file path to Gemini
-      );
+      // Call Gemini with this page's FULL XHTML and FULL audio file
+      let alignmentMap;
+      try {
+        alignmentMap = await GeminiService.reconcileAlignmentFromXhtml(
+          pageXhtml,           // Full XHTML content
+          audioDuration,        // Total audio duration
+          resolvedAudioPath,    // Full audio file path
+          granularity          // Granularity level
+        );
+      } catch (geminiError) {
+        console.error(`[MagicAlign] Error processing page ${pageNumber} with Gemini:`, geminiError);
+        // If Gemini fails for a page, skip it and continue with other pages
+        // Mark all blocks as skipped for this page
+        alignmentMap = bookBlocks.map(block => ({
+          id: block.id,
+          status: 'SKIPPED'
+        }));
+        console.warn(`[MagicAlign] Page ${pageNumber} failed, marking ${alignmentMap.length} blocks as SKIPPED`);
+      }
       
       // Process results
       const synced = alignmentMap.filter(a => a.status === 'SYNCED');
@@ -892,8 +936,6 @@ router.post('/magic-align', async (req, res) => {
       
       allSyncedBlocks.push(...synced);
       allSkippedBlocks.push(...skipped);
-      
-      cumulativeTime = pageEndTime; // Update cumulative time for next page
       
       console.log(`[MagicAlign] Page ${pageNumber}: ${synced.length} synced, ${skipped.length} skipped`);
     }
