@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { conversionService } from '../services/conversionService';
 import { pdfService } from '../services/pdfService';
-import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineVolumeUp, HiOutlineAdjustments, HiOutlineDownload } from 'react-icons/hi';
+import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineVolumeUp, HiOutlineAdjustments, HiOutlineDownload, HiOutlineTrash } from 'react-icons/hi';
 import { Link } from 'react-router-dom';
 
 const Conversions = () => {
@@ -135,6 +135,25 @@ const Conversions = () => {
     } catch (err) {
       console.error('Error retrying conversion:', err);
       setError(err.message || 'Failed to retry conversion');
+    }
+  };
+
+  const handleDelete = async (jobId) => {
+    // Confirm deletion
+    const confirmed = window.confirm(
+      `Are you sure you want to permanently delete Job #${jobId}?\n\nThis action cannot be undone and will delete:\n- The conversion job\n- Associated EPUB files\n- Audio sync data`
+    );
+    
+    if (!confirmed) return;
+
+    try {
+      setError(''); // Clear previous errors
+      await conversionService.deleteConversionJob(jobId);
+      // Remove from local state immediately for better UX
+      setConversions(prev => prev.filter(job => job.id !== jobId));
+    } catch (err) {
+      console.error('Error deleting conversion:', err);
+      setError(err.message || 'Failed to delete conversion job');
     }
   };
 
@@ -324,9 +343,38 @@ const Conversions = () => {
                     PDF ID: {job.pdfDocumentId}
                   </p>
                 </div>
-                <span className={`badge ${getStatusBadge(job.status)}`}>
-                  {job.status.replace(/_/g, ' ')}
-                </span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span className={`badge ${getStatusBadge(job.status)}`}>
+                    {job.status.replace(/_/g, ' ')}
+                  </span>
+                  <button
+                    onClick={() => handleDelete(job.id)}
+                    style={{
+                      padding: '6px 10px',
+                      border: 'none',
+                      borderRadius: '6px',
+                      backgroundColor: 'transparent',
+                      color: '#dc3545',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      transition: 'all 0.2s ease',
+                      fontSize: '16px'
+                    }}
+                    onMouseEnter={(e) => {
+                      e.target.style.backgroundColor = '#fee';
+                      e.target.style.transform = 'scale(1.1)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.target.style.backgroundColor = 'transparent';
+                      e.target.style.transform = 'scale(1)';
+                    }}
+                    title="Delete this job permanently"
+                  >
+                    <HiOutlineTrash size={18} />
+                  </button>
+                </div>
               </div>
 
               <div style={{ marginBottom: '16px' }}>
@@ -433,9 +481,9 @@ const Conversions = () => {
                 <th>PDF ID</th>
                 <th>Status</th>
                 <th style={{ width: '200px' }}>Progress</th>
-                <th>Step</th>
-                <th>Created</th>
-                <th>Actions</th>
+                  <th>Step</th>
+                  <th>Created</th>
+                  <th style={{ width: '200px' }}>Actions</th>
               </tr>
             </thead>
             <tbody>
@@ -568,6 +616,22 @@ const Conversions = () => {
                     {job.status === 'PENDING' && (
                       <span style={{ color: '#666', fontSize: '14px' }}>Waiting...</span>
                     )}
+                    <button
+                      onClick={() => handleDelete(job.id)}
+                      className="btn btn-danger"
+                      style={{ 
+                        marginLeft: '8px', 
+                        padding: '6px 12px', 
+                        fontSize: '14px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px'
+                      }}
+                      title="Delete this job permanently"
+                    >
+                      <HiOutlineTrash size={14} />
+                      Delete
+                    </button>
                   </td>
                 </tr>
               ))}
