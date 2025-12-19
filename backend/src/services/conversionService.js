@@ -1777,6 +1777,14 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
     const totalPages = Math.max(actualPdfPageCount, pageImages.length, textData.pages?.length || 0);
     console.log(`[Job ${jobId}] EPUB generation: ${totalPages} total pages (PDF: ${actualPdfPageCount}, images: ${pageImages.length}, text: ${textData.pages?.length || 0})`);
     
+    // Validate that we have data for all pages
+    if (pageImages.length < actualPdfPageCount) {
+      console.warn(`[Job ${jobId}] ⚠️ WARNING: Only ${pageImages.length} page images rendered but PDF has ${actualPdfPageCount} pages. Missing pages may be skipped.`);
+    }
+    if (textData.pages && textData.pages.length < actualPdfPageCount) {
+      console.warn(`[Job ${jobId}] ⚠️ WARNING: Only ${textData.pages.length} text pages extracted but PDF has ${actualPdfPageCount} pages. Missing pages may have no text content.`);
+    }
+    
     const manifestItems = [];
     const spineItems = [];
     const tocItems = [];
@@ -1842,7 +1850,7 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
         console.log(`[Job ${jobId}] Successfully added image for page ${img.pageNumber}: ${imagePath}`);
       } catch (imgError) {
         console.warn(`[Job ${jobId}] Could not add page image ${img.fileName} (page ${img.pageNumber}):`, imgError.message);
-        // Don't set epubPath - this page will be skipped
+        // Page will still be generated without image - don't skip it
       }
     }
     
@@ -2072,10 +2080,10 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
       const epubPageNum = pageImage.pageNumber;
       const pdfPageNum = pageImage.pdfPageNumber || pageImage.pageNumber;
       
-      // CRITICAL: Only generate page if image was successfully added
+      // WARNING: Image may be missing, but still generate page with text content
       if (!successfullyAddedImages.has(epubPageNum)) {
-        console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Image not found or failed to add, skipping page generation`);
-        continue; // Skip this page if image is missing
+        console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Image not found or failed to add, but will still generate page with text content`);
+        // Continue to generate page even without image - don't skip
       }
       
       let page = null;
@@ -2183,9 +2191,11 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
       
       // Generate XHTML and get ID mapping for SMIL sync
       // Use HTML-based pages with page image background for pixel-perfect layout
+      // If image failed to add, pass null for pageImage so page is still generated without image
+      const imageForGeneration = successfullyAddedImages.has(epubPageNum) ? pageImage : null;
       const { html: rawPageXhtml, idMapping } = this.generateHtmlBasedPageXHTML(
         page,
-        pageImage,
+        imageForGeneration,
         actualPageNum,
         actualPageWidthPoints,
         actualPageHeightPoints,
@@ -2561,7 +2571,11 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
       throw new Error('EPUB spine is empty - no pages to display');
     }
     
-    console.log(`[Job ${jobId}] EPUB structure: ${manifestItems.length} manifest items, ${spineItems.length} spine items, ${pageImages.length} images`);
+    console.log(`[Job ${jobId}] EPUB structure: ${manifestItems.length} manifest items, ${spineItems.length} spine items, ${pageImages.length} page images`);
+    console.log(`[Job ${jobId}] Successfully generated ${spineItems.length} pages (expected ${pageImages.length} from images, ${textData.pages?.length || 0} from text data)`);
+    if (spineItems.length < pageImages.length) {
+      console.warn(`[Job ${jobId}] ⚠️ WARNING: Generated ${spineItems.length} pages but ${pageImages.length} page images exist. Some pages may have been skipped!`);
+    }
     
     const epubBuffer = await zip.generateAsync({
       type: 'nodebuffer',
@@ -4095,15 +4109,54 @@ body > p {
       throw new Error('Conversion job not found with id: ' + jobId);
     }
 
+    // Delete EPUB file if it exists
     if (job.epub_file_path) {
       try {
         await fs.unlink(job.epub_file_path);
+        console.log(`[DeleteJob] Deleted EPUB file: ${job.epub_file_path}`);
       } catch (error) {
         console.error('Error deleting EPUB file:', error);
+        // Continue even if file deletion fails
       }
     }
 
+    // Delete associated audio sync data
+    try {
+      const { AudioSyncModel } = await import('../models/AudioSync.js');
+      const audioSyncs = await AudioSyncModel.findByJobId(jobId);
+      console.log(`[DeleteJob] Found ${audioSyncs.length} audio sync records to delete`);
+      
+      for (const sync of audioSyncs) {
+        // Delete audio file if it exists
+        if (sync.audio_file_path) {
+          try {
+            const { getUploadDir } = await import('../config/fileStorage.js');
+            let audioFilePath = sync.audio_file_path;
+            if (!path.isAbsolute(audioFilePath)) {
+              // Normalize path: remove all leading 'audio/' segments, then add one
+              let normalizedPath = audioFilePath.replace(/^(audio[\\/])+/i, '');
+              normalizedPath = path.join('audio', normalizedPath);
+              audioFilePath = path.join(getUploadDir(), normalizedPath);
+            }
+            await fs.unlink(audioFilePath);
+            console.log(`[DeleteJob] Deleted audio file: ${audioFilePath}`);
+          } catch (error) {
+            console.warn(`[DeleteJob] Could not delete audio file: ${error.message}`);
+            // Continue even if file deletion fails
+          }
+        }
+        // Delete the sync record
+        await AudioSyncModel.delete(sync.id);
+      }
+      console.log(`[DeleteJob] Deleted ${audioSyncs.length} audio sync records`);
+    } catch (error) {
+      console.error('[DeleteJob] Error deleting audio sync data:', error);
+      // Continue even if audio sync deletion fails
+    }
+
+    // Delete the job record
     await ConversionJobModel.delete(jobId);
+    console.log(`[DeleteJob] Deleted conversion job ${jobId}`);
   }
 
   /**
