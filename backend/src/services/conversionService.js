@@ -227,6 +227,9 @@ body { margin: 0; padding: 0; }
           }
         }
         
+        // Replace image placeholders with actual img tags pointing to the PNG image
+        xhtmlContent = this.replaceImagePlaceholders(xhtmlContent, pageImage.pageNumber, pageImage.fileName);
+        
         // CRITICAL: Ensure every text element has a unique ID
         xhtmlContent = this.ensureAllTextElementsHaveIds(xhtmlContent, pageImage.pageNumber);
         
@@ -437,6 +440,160 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;')
       .replace(/'/g, '&apos;');
+  }
+
+  /**
+   * Replace image placeholders (div elements with class="image-placeholder") with actual img tags
+   * @param {string} xhtmlContent - XHTML content to process
+   * @param {number} pageNumber - Page number to construct image path
+   * @param {string} imageFileName - Optional image file name (e.g., "page_5_render.png")
+   * @returns {string} - XHTML content with placeholders replaced by img tags
+   */
+  static replaceImagePlaceholders(xhtmlContent, pageNumber, imageFileName = null) {
+    try {
+      if (!xhtmlContent || typeof xhtmlContent !== 'string') {
+        return xhtmlContent;
+      }
+
+      // Determine the image path
+      // In EPUB, images are stored at images/page_N_render.png
+      const imagePath = imageFileName 
+        ? `images/${imageFileName.replace(/^(image|images)\//, '')}`
+        : `images/page_${pageNumber}_render.png`;
+
+      // Use JSDOM to parse and manipulate XHTML
+      const dom = new JSDOM(xhtmlContent, { contentType: 'application/xhtml+xml' });
+      const document = dom.window.document;
+
+      // Find all div elements with class "image-placeholder"
+      const placeholders = document.querySelectorAll('div.image-placeholder, div[class*="image-placeholder"]');
+      
+      placeholders.forEach((placeholder) => {
+        // Get the title attribute for alt text (description of the image)
+        const title = placeholder.getAttribute('title') || `Page ${pageNumber} image`;
+        const id = placeholder.getAttribute('id') || `page${pageNumber}_img_placeholder`;
+        
+        // Create img element
+        const img = document.createElement('img');
+        img.setAttribute('src', imagePath);
+        img.setAttribute('alt', title);
+        img.setAttribute('id', id);
+        
+        // Preserve existing classes if any (except image-placeholder)
+        const existingClass = placeholder.getAttribute('class') || '';
+        const newClass = existingClass
+          .split(/\s+/)
+          .filter(c => c && c !== 'image-placeholder')
+          .join(' ');
+        if (newClass) {
+          img.setAttribute('class', newClass);
+        }
+        
+        // Preserve existing inline styles and adapt them for images
+        const existingStyle = placeholder.getAttribute('style') || '';
+        
+        // Parse and adapt styles for img element
+        // Remove background-color since images don't need it
+        let newStyle = existingStyle
+          .split(';')
+          .map(decl => decl.trim())
+          .filter(decl => {
+            // Remove background-color as images don't need it
+            if (decl.toLowerCase().startsWith('background-color')) {
+              return false;
+            }
+            return decl.length > 0;
+          })
+          .join('; ');
+        
+        // Check if we have width/height in the style or need to add object-fit
+        const hasWidth = newStyle.toLowerCase().includes('width');
+        const hasHeight = newStyle.toLowerCase().includes('height');
+        const hasObjectFit = newStyle.toLowerCase().includes('object-fit');
+        
+        // If we have both width and height (especially percentage-based), add object-fit: cover/contain
+        if ((hasWidth && hasHeight) && !hasObjectFit) {
+          // Use 'cover' to fill container while maintaining aspect ratio
+          // This ensures the image fills the space properly
+          newStyle = newStyle ? `${newStyle}; object-fit: cover; object-position: center;` : 'object-fit: cover; object-position: center;';
+        } else if (hasWidth && !hasHeight) {
+          // If only width is specified, use height: auto to maintain aspect ratio
+          if (!newStyle.toLowerCase().includes('height')) {
+            newStyle = newStyle ? `${newStyle}; height: auto;` : 'height: auto;';
+          }
+        } else if (!hasWidth && !hasHeight) {
+          // No dimensions specified, use responsive sizing
+          newStyle = newStyle ? `${newStyle}; max-width: 100%; height: auto;` : 'max-width: 100%; height: auto;';
+        }
+        
+        // Ensure display: block for proper rendering (images are inline by default)
+        if (!newStyle.toLowerCase().includes('display')) {
+          newStyle = newStyle ? `${newStyle}; display: block;` : 'display: block;';
+        }
+        
+        img.setAttribute('style', newStyle);
+        
+        // Replace the placeholder div with the img element
+        placeholder.parentNode?.replaceChild(img, placeholder);
+      });
+
+      // Update CSS in <style> tag to ensure images fit containers properly
+      const styleTags = document.querySelectorAll('style');
+      styleTags.forEach((styleTag) => {
+        let cssContent = styleTag.textContent || '';
+        
+        // Update .image-placeholder rules to also apply to img elements that replace them
+        // This ensures CSS dimensions (width, height) from placeholders apply to images
+        if (cssContent.includes('.image-placeholder')) {
+          // Replace .image-placeholder rules to work with img tags
+          // Pattern: .image-placeholder { ... } becomes img.image-placeholder, .image-placeholder { ... }
+          cssContent = cssContent.replace(
+            /\.image-placeholder\s*\{/g,
+            'img.image-placeholder, .image-placeholder {'
+          );
+          
+          // Also handle cases where image-placeholder is part of a class list
+          cssContent = cssContent.replace(
+            /\[class\*="image-placeholder"\]\s*\{/g,
+            'img[class*="image-placeholder"], [class*="image-placeholder"] {'
+          );
+          
+          // Add object-fit: cover to image-placeholder rules that have both width and height
+          // This ensures images fill their container dimensions properly
+          // Simple regex to find rules with width and height (case insensitive)
+          cssContent = cssContent.replace(
+            /(img\.image-placeholder|\.image-placeholder|img\[class\*="image-placeholder"\]|\[class\*="image-placeholder"\])\s*\{([^}]*)\}/gi,
+            (match, selector, properties) => {
+              const propsLower = properties.toLowerCase();
+              // Check if both width and height are present (but not object-fit)
+              if ((propsLower.includes('width') && propsLower.includes('height')) && !propsLower.includes('object-fit')) {
+                // Add object-fit: cover to fill container while maintaining aspect ratio
+                return `${selector} {${properties}; object-fit: cover; object-position: center;}`;
+              }
+              return match;
+            }
+          );
+          
+          styleTag.textContent = cssContent;
+        }
+      });
+
+      // Serialize back to XHTML string
+      const serializer = new dom.window.XMLSerializer();
+      let result = serializer.serializeToString(document);
+
+      // Fix DOCTYPE if needed
+      if (!result.includes('<!DOCTYPE')) {
+        const doctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+        result = doctype + '\n' + result;
+      }
+
+      return result;
+    } catch (error) {
+      console.error(`[ConversionService] Error replacing image placeholders for page ${pageNumber}:`, error.message);
+      // Return original content if processing fails
+      return xhtmlContent;
+    }
   }
 
   /**
