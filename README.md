@@ -1,4 +1,4 @@
-# PDF to EPUB Converter - MERN Stack Application
+# PDF to EPUB Converter - MERN Stack Application 
 
 A modern full-stack PDF to EPUB conversion system built with Node.js, Express, React, and MySQL.
 
