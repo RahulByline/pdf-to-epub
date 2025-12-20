@@ -2074,11 +2074,17 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
       }
     }
     
-    // STEP 2 (original): Generate XHTML pages ONLY for pages with successfully added images
-    for (let i = 0; i < pageImages.length; i++) {
-      const pageImage = pageImages[i];
-      const epubPageNum = pageImage.pageNumber;
-      const pdfPageNum = pageImage.pdfPageNumber || pageImage.pageNumber;
+    // STEP 2: Generate XHTML pages for ALL pages in the PDF
+    // Iterate through all expected pages (based on actual PDF page count) to ensure sequence is maintained
+    // This ensures pages like TOC (page 2) are included even if they don't have images
+    const expectedPageCount = Math.max(actualPdfPageCount, pageImages.length);
+    console.log(`[Job ${jobId}] Generating pages: expected ${expectedPageCount} pages (PDF: ${actualPdfPageCount}, images: ${pageImages.length})`);
+    
+    for (let pageNum = 1; pageNum <= expectedPageCount; pageNum++) {
+      // Find corresponding page image if it exists
+      const pageImage = pageImages.find(img => img.pageNumber === pageNum);
+      const epubPageNum = pageNum;
+      const pdfPageNum = pageImage?.pdfPageNumber || pageNum;
       
       // WARNING: Image may be missing, but still generate page with text content
       if (!successfullyAddedImages.has(epubPageNum)) {
@@ -2095,28 +2101,16 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
         page = textData.pages.find(p => p.pageNumber === pdfPageNum);
       }
       
-      // SECONDARY: Match by array index ONLY if page numbers match exactly
+      // SECONDARY: Match by array index (pageNum - 1) if page numbers match exactly
       // This prevents text bleeding from wrong pages
-      if (!page && i < textData.pages.length) {
-        const pageByIndex = textData.pages[i];
+      if (!page && epubPageNum > 0 && epubPageNum <= textData.pages.length) {
+        const pageByIndex = textData.pages[epubPageNum - 1];
         // STRICT: Only use if page numbers match exactly (no tolerance)
         if (pageByIndex && pageByIndex.pageNumber === epubPageNum) {
-          console.log(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): Using text from array index ${i} (exact match: textData.pageNumber=${pageByIndex.pageNumber})`);
+          console.log(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): Using text from array index ${epubPageNum - 1} (exact match: textData.pageNumber=${pageByIndex.pageNumber})`);
           page = pageByIndex;
         } else if (pageByIndex) {
-          console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Array index ${i} has pageNumber=${pageByIndex.pageNumber} (mismatch, skipping to prevent text bleeding)`);
-        }
-      }
-      
-      // TERTIARY: Try index-based fallback ONLY if pageNumber matches exactly
-      if (!page && epubPageNum > 0 && textData.pages[epubPageNum - 1]) {
-        const pageByIndex = textData.pages[epubPageNum - 1];
-        // STRICT: Only use if page numbers match exactly
-        if (pageByIndex.pageNumber === epubPageNum) {
-          console.log(`[Job ${jobId}] EPUB Page ${epubPageNum} (PDF Page ${pdfPageNum}): Using text from index ${epubPageNum - 1} (exact match: textData.pageNumber=${pageByIndex.pageNumber})`);
-          page = pageByIndex;
-        } else {
-          console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Index ${epubPageNum - 1} has pageNumber=${pageByIndex.pageNumber} (mismatch, skipping to prevent text bleeding)`);
+          console.warn(`[Job ${jobId}] EPUB Page ${epubPageNum}: Array index ${epubPageNum - 1} has pageNumber=${pageByIndex.pageNumber} (mismatch, skipping to prevent text bleeding)`);
         }
       }
       
@@ -2191,8 +2185,8 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
       
       // Generate XHTML and get ID mapping for SMIL sync
       // Use HTML-based pages with page image background for pixel-perfect layout
-      // If image failed to add, pass null for pageImage so page is still generated without image
-      const imageForGeneration = successfullyAddedImages.has(epubPageNum) ? pageImage : null;
+      // If image failed to add or doesn't exist, pass null for pageImage so page is still generated without image
+      const imageForGeneration = (pageImage && successfullyAddedImages.has(epubPageNum)) ? pageImage : null;
       const { html: rawPageXhtml, idMapping } = this.generateHtmlBasedPageXHTML(
         page,
         imageForGeneration,
