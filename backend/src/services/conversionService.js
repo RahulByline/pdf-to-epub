@@ -1217,9 +1217,42 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       const jobImagesDir = path.join(htmlIntermediateDir, `job_${jobId}`);
       await fs.mkdir(jobImagesDir, { recursive: true }).catch(() => {});
 
+      // Extract individual images from PDF pages
+      const extractedImagesDir = path.join(jobImagesDir, 'extracted_images');
+      await fs.mkdir(extractedImagesDir, { recursive: true }).catch(() => {});
+      
+      console.log(`[Job ${jobId}] Extracting individual images from PDF...`);
+      let extractedImages = [];
+      try {
+        extractedImages = await PdfExtractionService.extractImages(pdfFilePath, extractedImagesDir);
+        console.log(`[Job ${jobId}] Extracted ${extractedImages.length} individual images from PDF`);
+        
+        // Group images by page number for easier lookup
+        const imagesByPage = {};
+        extractedImages.forEach(img => {
+          if (!imagesByPage[img.pageNumber]) {
+            imagesByPage[img.pageNumber] = [];
+          }
+          imagesByPage[img.pageNumber].push(img);
+        });
+        console.log(`[Job ${jobId}] Images grouped by page:`, Object.keys(imagesByPage).map(p => `${p}: ${imagesByPage[p].length}`).join(', '));
+      } catch (extractError) {
+        console.warn(`[Job ${jobId}] Could not extract individual images:`, extractError.message);
+      }
+
       console.log(`[Job ${jobId}] Rendering PDF pages as images (fixed-layout)...`);
       const pageImagesData = await PdfExtractionService.renderPagesAsImages(pdfFilePath, jobImagesDir);
       console.log(`[Job ${jobId}] Rendered ${pageImagesData.images.length} page images`);
+      
+      // Add extracted images to pageImagesData for EPUB generation
+      pageImagesData.extractedImages = extractedImages;
+      pageImagesData.imagesByPage = {};
+      extractedImages.forEach(img => {
+        if (!pageImagesData.imagesByPage[img.pageNumber]) {
+          pageImagesData.imagesByPage[img.pageNumber] = [];
+        }
+        pageImagesData.imagesByPage[img.pageNumber].push(img);
+      });
 
       const useVisionExtraction = (process.env.GEMINI_VISION_EXTRACTION || 'true').toLowerCase() === 'true';
       if (useVisionExtraction && pageImagesData.images.length > 0) {
@@ -1977,6 +2010,9 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
     // STEP 1: Add images to EPUB FIRST and track which ones succeeded
     // This ensures we know which pages have valid images before generating XHTML
     const successfullyAddedImages = new Map(); // Map<pageNumber, epubPath>
+    const successfullyAddedExtractedImages = new Map(); // Map<pageNumber, Array<{epubPath, id}>>
+    
+    // First, add full page render images
     for (const img of pageImages) {
       try {
         // Verify image file exists before trying to add it
@@ -2008,6 +2044,43 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
       } catch (imgError) {
         console.warn(`[Job ${jobId}] Could not add page image ${img.fileName} (page ${img.pageNumber}):`, imgError.message);
         // Page will still be generated without image - don't skip it
+      }
+    }
+    
+    // Then, add extracted individual images from PDF pages
+    const extractedImages = pageImagesData.extractedImages || [];
+    const imagesByPage = pageImagesData.imagesByPage || {};
+    
+    for (const extractedImg of extractedImages) {
+      try {
+        await fs.access(extractedImg.path);
+        const imageData = await fs.readFile(extractedImg.path);
+        const imageFileName = extractedImg.fileName;
+        const imagePath = `images/${imageFileName}`;
+        zip.file(`OEBPS/${imagePath}`, imageData);
+        
+        const imageId = `extracted-img-${extractedImg.pageNumber}-${extractedImg.index}`;
+        const imageMimeType = extractedImg.format === 'jpg' || extractedImg.format === 'jpeg'
+          ? 'image/jpeg'
+          : extractedImg.format === 'jp2'
+          ? 'image/jp2'
+          : 'image/png';
+        manifestItems.push(`<item id="${imageId}" href="${imagePath}" media-type="${imageMimeType}"/>`);
+        
+        if (!successfullyAddedExtractedImages.has(extractedImg.pageNumber)) {
+          successfullyAddedExtractedImages.set(extractedImg.pageNumber, []);
+        }
+        successfullyAddedExtractedImages.get(extractedImg.pageNumber).push({
+          epubPath: imagePath,
+          id: imageId,
+          width: extractedImg.width,
+          height: extractedImg.height,
+          format: extractedImg.format
+        });
+        
+        console.log(`[Job ${jobId}] Successfully added extracted image for page ${extractedImg.pageNumber}: ${imagePath}`);
+      } catch (imgError) {
+        console.warn(`[Job ${jobId}] Could not add extracted image ${extractedImg.fileName} (page ${extractedImg.pageNumber}):`, imgError.message);
       }
     }
     
@@ -2060,7 +2133,8 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
               pageHeightPoints,
               pageWidthPoints * (300/72),
               pageHeightPoints * (300/72),
-              false
+              false,
+              [] // No extracted images in this code path
             );
             pageXhtml = html;
           } else {
@@ -2081,7 +2155,8 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
               pageHeightPoints,
               pageWidthPoints * (300/72),
               pageHeightPoints * (300/72),
-              false
+              false,
+              [] // No extracted images in this code path
             );
             pageXhtml = html;
           }
@@ -2344,6 +2419,7 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
       // Use HTML-based pages with page image background for pixel-perfect layout
       // If image failed to add or doesn't exist, pass null for pageImage so page is still generated without image
       const imageForGeneration = (pageImage && successfullyAddedImages.has(epubPageNum)) ? pageImage : null;
+      const extractedImagesForPage = successfullyAddedExtractedImages.get(actualPageNum) || [];
       const { html: rawPageXhtml, idMapping } = this.generateHtmlBasedPageXHTML(
         page,
         imageForGeneration,
@@ -2352,7 +2428,8 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
         actualPageHeightPoints,
         actualRenderedWidth,
         actualRenderedHeight,
-        hasAudio
+        hasAudio,
+        extractedImagesForPage
       );
       // Guard against accidental concatenation (trim anything after closing </html>)
       const pageXhtml = rawPageXhtml && rawPageXhtml.includes('</html>')
@@ -3325,7 +3402,7 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
    * Generate HTML-based page that recreates PDF layout exactly using HTML/CSS
    * Instead of rendering as image, creates exact HTML replica with positioned text and images
    */
-  static generateHtmlBasedPageXHTML(page, pageImage, pageNumber, pageWidthPoints, pageHeightPoints, renderedWidth, renderedHeight, hasAudio = false) {
+  static generateHtmlBasedPageXHTML(page, pageImage, pageNumber, pageWidthPoints, pageHeightPoints, renderedWidth, renderedHeight, hasAudio = false, extractedImages = []) {
     const idMapping = {};
 
     const safeRenderedWidth = renderedWidth && renderedWidth > 0
@@ -3691,6 +3768,53 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
 </body>
 </html>`;
 
+    // Replace image placeholders with actual extracted images
+    if (extractedImages.length > 0) {
+      try {
+        const dom = new JSDOM(html, { contentType: 'application/xhtml+xml' });
+        const document = dom.window.document;
+        
+        // Find all image placeholders
+        const placeholders = document.querySelectorAll('div.image-placeholder, div[class*="image-placeholder"], [data-image-placeholder]');
+        
+        placeholders.forEach((placeholder, index) => {
+          // Use extracted images in order, or match by index
+          const extractedImg = extractedImages[index] || extractedImages[0];
+          if (extractedImg) {
+            const img = document.createElement('img');
+            img.setAttribute('src', extractedImg.epubPath);
+            img.setAttribute('alt', placeholder.getAttribute('title') || placeholder.textContent || `Image ${index + 1}`);
+            img.setAttribute('id', placeholder.getAttribute('id') || `img-${pageNumber}-${index}`);
+            
+            // Preserve classes
+            const existingClass = placeholder.getAttribute('class') || '';
+            const newClass = existingClass
+              .split(/\s+/)
+              .filter(c => c && c !== 'image-placeholder')
+              .join(' ');
+            if (newClass) {
+              img.setAttribute('class', newClass);
+            }
+            
+            // Preserve styles and add image-specific styles
+            const existingStyle = placeholder.getAttribute('style') || '';
+            let newStyle = existingStyle;
+            if (extractedImg.width && extractedImg.height) {
+              newStyle += `; max-width: ${extractedImg.width}px; max-height: ${extractedImg.height}px; object-fit: contain;`;
+            }
+            img.setAttribute('style', newStyle);
+            
+            // Replace placeholder with image
+            placeholder.parentNode?.replaceChild(img, placeholder);
+          }
+        });
+        
+        html = dom.serialize();
+      } catch (replaceError) {
+        console.warn(`[Page ${pageNumber}] Could not replace image placeholders:`, replaceError.message);
+      }
+    }
+
     return { html, idMapping };
   }
   
@@ -4016,12 +4140,15 @@ body > p {
     ${smilFileNames.length > 0 ? '<meta property="media:active-class">-epub-media-overlay-active</meta>' : ''}
     ${smilFileNames.length > 0 ? '<meta property="media:playback-active-class">-epub-media-overlay-playing</meta>' : ''}
     
-    <!-- Accessibility metadata for read-aloud support -->
+    <!-- Accessibility metadata for read-aloud support (EPUB 3 compliance) -->
     <meta property="schema:accessibilityFeature">textToSpeech</meta>
+    <meta property="schema:accessibilityFeature">synchronizedAudioText</meta>
     <meta property="schema:accessibilityFeature">readingOrder</meta>
     <meta property="schema:accessibilityFeature">structuralNavigation</meta>
+    <meta property="schema:accessMode">textual</meta>
+    <meta property="schema:accessMode">auditory</meta>
     <meta property="schema:accessibilityHazard">none</meta>
-    <meta property="schema:accessibilitySummary">This EPUB contains accessible text content suitable for text-to-speech and read-aloud functionality.</meta>
+    <meta property="schema:accessibilitySummary">This EPUB contains accessible text content with synchronized audio narration suitable for text-to-speech and read-aloud functionality.</meta>
   </metadata>
   <manifest>
     <item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
