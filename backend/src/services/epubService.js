@@ -151,11 +151,16 @@ export class EpubService {
     ];
     
     let epubFilePath = null;
+    const checkedPaths = [];
+    
+    // First, try default output directory with common filename patterns
     for (const fileName of possibleNames) {
       const filePath = path.join(epubOutputDir, fileName);
+      checkedPaths.push(filePath);
       try {
         await fs.access(filePath);
         epubFilePath = filePath;
+        console.log(`[EPUB Service] Found EPUB file at: ${filePath}`);
         break;
       } catch {
         continue;
@@ -168,11 +173,24 @@ export class EpubService {
         const { ConversionJobModel } = await import('../models/ConversionJob.js');
         const job = await ConversionJobModel.findById(jobId);
         if (job && job.epub_file_path) {
+          // Try the stored path as-is
+          checkedPaths.push(job.epub_file_path);
           try {
             await fs.access(job.epub_file_path);
             epubFilePath = job.epub_file_path;
+            console.log(`[EPUB Service] Found EPUB file at stored path: ${epubFilePath}`);
           } catch {
-            // File path in DB but doesn't exist
+            // File path in DB but doesn't exist - try extracting filename and checking default dir
+            const storedFileName = path.basename(job.epub_file_path);
+            const fallbackPath = path.join(epubOutputDir, storedFileName);
+            checkedPaths.push(fallbackPath);
+            try {
+              await fs.access(fallbackPath);
+              epubFilePath = fallbackPath;
+              console.log(`[EPUB Service] Found EPUB file at fallback path: ${epubFilePath}`);
+            } catch {
+              // File not found at fallback path either
+            }
           }
         }
       } catch (error) {
@@ -181,7 +199,9 @@ export class EpubService {
     }
     
     if (!epubFilePath) {
-      throw new Error('EPUB file not found for job: ' + jobId);
+      const errorMsg = `EPUB file not found for job: ${jobId}. Checked paths: ${checkedPaths.join(', ')}. Output directory: ${epubOutputDir}`;
+      console.error(`[EPUB Service] ${errorMsg}`);
+      throw new Error(errorMsg);
     }
     
     try {

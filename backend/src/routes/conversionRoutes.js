@@ -35,6 +35,19 @@ router.post('/start/:pdfDocumentId', async (req, res) => {
   }
 });
 
+router.get('/check', async (req, res) =>
+{
+  try{
+    const a = 1;
+    const b = 2;
+    const c = 3;
+    const z = a * b + c;
+    return successResponse(res, z);
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+})
+
 // POST /api/conversions/start/bulk - Start bulk conversion
 router.post('/start/bulk', async (req, res) => {
   try {
@@ -255,7 +268,8 @@ router.post('/:jobId/regenerate', async (req, res) => {
     }
     
     if (job.status !== 'COMPLETED') {
-      return badRequestResponse(res, 'Can only regenerate EPUB for completed conversions');
+      console.log(`[Regenerate] Job ${jobId} status is '${job.status}', not 'COMPLETED'`);
+      return badRequestResponse(res, `Can only regenerate EPUB for completed conversions. Current status: ${job.status}`);
     }
     
     const { playbackSpeed } = req.body || {};
@@ -300,29 +314,51 @@ router.get('/:jobId/epub-sections', async (req, res) => {
       return notFoundResponse(res, 'Conversion job not found');
     }
 
-    // Check if EPUB file exists (even if status isn't COMPLETED, the file might exist)
-    const { getEpubOutputDir } = await import('../config/fileStorage.js');
-    const epubOutputDir = getEpubOutputDir();
-    const epubFileName = `converted_${jobId}.epub`;
-    const epubFilePath = job.epubFilePath || path.join(epubOutputDir, epubFileName);
-    
-    // Check if file actually exists
-    let epubExists = false;
-    try {
-      await fs.access(epubFilePath);
-      epubExists = true;
-    } catch (err) {
-      // File doesn't exist at the specified path
-      epubExists = false;
+    // Check job status first - provide appropriate error messages
+    if (job.status === 'IN_PROGRESS' || job.status === 'PENDING') {
+      return badRequestResponse(res, `Conversion is still in progress (Status: ${job.status}, Step: ${job.currentStep || 'N/A'}, Progress: ${job.progressPercentage || 0}%). Please wait for the conversion to complete before accessing EPUB sections.`);
     }
     
-    if (!epubExists) {
-      return badRequestResponse(res, `EPUB file not available. Status: ${job.status || 'UNKNOWN'}. Please ensure the conversion is complete.`);
+    if (job.status === 'FAILED' || job.status === 'CANCELLED') {
+      const errorMsg = job.errorMessage ? ` Error: ${job.errorMessage}` : '';
+      return badRequestResponse(res, `Conversion ${job.status.toLowerCase()}.${errorMsg} Please check the conversion status or start a new conversion.`);
     }
 
+    // Let EpubService handle file finding logic (it checks multiple possible locations)
+    // This is more robust than checking a single path
     const { EpubService } = await import('../services/epubService.js');
-    const sections = await EpubService.getEpubSections(jobId);
-    return successResponse(res, sections);
+    const { getHtmlIntermediateDir } = await import('../config/fileStorage.js');
+    
+    try {
+      const sections = await EpubService.getEpubSections(jobId);
+      return successResponse(res, sections);
+    } catch (epubError) {
+      // If EPUB file not found, check if we can regenerate it
+      console.error(`[EPUB Sections] Error for job ${jobId}:`, epubError.message);
+      
+      // Check if intermediate HTML files exist (for regeneration suggestion)
+      let canRegenerate = false;
+      try {
+        const htmlIntermediateDir = getHtmlIntermediateDir();
+        const jobHtmlDir = path.join(htmlIntermediateDir, `job_${jobId}_html`);
+        await fs.access(jobHtmlDir);
+        const files = await fs.readdir(jobHtmlDir);
+        canRegenerate = files.some(f => f.endsWith('.html') || f.endsWith('.xhtml'));
+      } catch {
+        // Intermediate files don't exist
+      }
+      
+      let errorMessage = `EPUB file not available. Status: ${job.status || 'UNKNOWN'}. ${epubError.message}`;
+      if (canRegenerate && job.status === 'COMPLETED') {
+        errorMessage += ' The EPUB file appears to be missing, but intermediate files exist. You can try regenerating the EPUB using the regenerate endpoint.';
+      } else if (job.status === 'COMPLETED') {
+        errorMessage += ' The conversion shows as completed, but the EPUB file is missing. You may need to re-run the conversion.';
+      } else {
+        errorMessage += ' Please ensure the conversion is complete.';
+      }
+      
+      return badRequestResponse(res, errorMessage);
+    }
   } catch (error) {
     console.error('Error getting EPUB sections:', error);
     return errorResponse(res, error.message, 500);
