@@ -161,6 +161,28 @@ export class ConversionService {
         // Escape bare ampersands that are not part of an entity, to avoid xmlParseEntityRef errors
         xhtmlContent = xhtmlContent.replace(/&(?!#?[a-zA-Z0-9]+;)/g, '&amp;');
         
+        // Fix meta tags to be self-closing (XHTML requirement)
+        // Convert <meta ...> to <meta .../> for all meta tags that aren't already self-closing
+        xhtmlContent = xhtmlContent.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+          // Check if already self-closing (ends with /> or has /> before the closing >)
+          if (match.includes('/>') || attrs.trim().endsWith('/')) {
+            return match; // Already self-closing
+          }
+          // Add / before the closing >
+          return `<meta${attrs}/>`;
+        });
+        
+        // Fix img tags to be self-closing (XHTML requirement)
+        // Convert <img ...> to <img .../> for all img tags that aren't already self-closing
+        xhtmlContent = xhtmlContent.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+          // Check if already self-closing (ends with /> or has /> before the closing >)
+          if (match.includes('/>') || attrs.trim().endsWith('/')) {
+            return match; // Already self-closing
+          }
+          // Add / before the closing >
+          return `<img${attrs}/>`;
+        });
+        
         // Replace placeholder divs with actual img tags if extracted images are available
         if (pageExtractedImages && pageExtractedImages.length > 0) {
           xhtmlContent = this.replacePlaceholderDivsWithImages(xhtmlContent, pageImage.pageNumber, pageExtractedImages);
@@ -1891,6 +1913,28 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       // Pattern: <img followed by whitespace, then xmlns="", then optional whitespace
       // This preserves all other attributes that come after xmlns=""
       xhtmlContent = xhtmlContent.replace(/<img(\s+)xmlns=["']{2}(\s*)/gi, '<img$1');
+      
+      // Fix meta tags to be self-closing (XHTML requirement)
+      // Convert <meta ...> to <meta .../> for all meta tags that aren't already self-closing
+      xhtmlContent = xhtmlContent.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+        // Check if already self-closing (ends with /> or has /> before the closing >)
+        if (match.includes('/>') || attrs.trim().endsWith('/')) {
+          return match; // Already self-closing
+        }
+        // Add / before the closing >
+        return `<meta${attrs}/>`;
+      });
+      
+      // Fix img tags to be self-closing (XHTML requirement)
+      // Convert <img ...> to <img .../> for all img tags that aren't already self-closing
+      xhtmlContent = xhtmlContent.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+        // Check if already self-closing (ends with /> or has /> before the closing >)
+        if (match.includes('/>') || attrs.trim().endsWith('/')) {
+          return match; // Already self-closing
+        }
+        // Add / before the closing >
+        return `<img${attrs}/>`;
+      });
 
       // Write fixed XHTML to EPUB
       const destPath = path.join(oebpsDir, page.xhtmlFileName);

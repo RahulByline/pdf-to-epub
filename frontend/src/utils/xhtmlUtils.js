@@ -151,6 +151,17 @@ export function injectImageIntoXhtml(xhtml, targetId, imageSrc, imageWidth = nul
     }
   }
   
+  // CRITICAL: Fix img tags to be self-closing (XHTML requirement)
+  // HTML5 parser's innerHTML might output <img> instead of <img/>
+  result = result.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+    // Check if already self-closing (ends with /> or has /> before the closing >)
+    if (match.includes('/>') || attrs.trim().endsWith('/')) {
+      return match; // Already self-closing
+    }
+    // Add / before the closing >
+    return `<img${attrs}/>`;
+  });
+  
   console.log('[injectImageIntoXhtml] Successfully injected image, result length:', result.length);
   console.log('[injectImageIntoXhtml] Result contains image src:', result.includes(imageSrc));
   return result;
