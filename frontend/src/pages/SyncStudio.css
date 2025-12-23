@@ -1254,3 +1254,74 @@
   background: var(--studio-text-muted);
 }
 
+/* Audio Script Modal */
+.audio-script-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.8);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: fadeIn 0.2s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.audio-script-modal {
+  background: #1a1a1a;
+  border-radius: 8px;
+  width: 90%;
+  max-width: 900px;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #444;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  animation: slideUp 0.3s ease-out;
+}
+
+@keyframes slideUp {
+  from {
+    transform: translateY(20px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.audio-script-modal > div:first-of-type {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.audio-script-modal > div:first-of-type::-webkit-scrollbar {
+  width: 8px;
+}
+
+.audio-script-modal > div:first-of-type::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+.audio-script-modal > div:first-of-type::-webkit-scrollbar-thumb {
+  background: #444;
+  border-radius: 4px;
+}
+
+.audio-script-modal > div:first-of-type::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+

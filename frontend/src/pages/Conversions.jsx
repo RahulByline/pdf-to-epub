@@ -435,13 +435,6 @@ const Conversions = () => {
                       <HiOutlineVolumeUp size={18} />
                       🎚️ Sync Studio
                     </Link>
-                    <Link
-                      to={`/audio-sync-cards/${job.id}`}
-                      className="btn btn-outline"
-                      style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', border: '1px solid #ccc' }}
-                    >
-                      📋 Card View
-                    </Link>
                   </>
                 )}
                 {job.status === 'IN_PROGRESS' && (
@@ -574,14 +567,6 @@ const Conversions = () => {
                           title="Professional Waveform Editor"
                         >
                           🎚️ Studio
-                        </Link>
-                        <Link
-                          to={`/audio-sync-cards/${job.id}`}
-                          className="btn btn-outline"
-                          style={{ padding: '6px 12px', fontSize: '14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', border: '1px solid #ccc' }}
-                          title="Card-based Editor"
-                        >
-                          📋 Cards
                         </Link>
                       </div>
                     )}
