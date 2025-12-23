@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { conversionService } from '../services/conversionService';
 import EpubImageEditor from '../components/EpubImageEditor';
@@ -37,11 +37,16 @@ const EpubImageEditorPage = () => {
   };
 
   const [regenerating, setRegenerating] = useState(false);
+  const [editorState, setEditorState] = useState(null);
 
   const handleSave = (xhtml) => {
     console.log('XHTML saved:', xhtml);
     // You can add additional logic here, like showing a success message
   };
+  
+  const handleEditorStateChange = useCallback((state) => {
+    setEditorState(state);
+  }, []);
 
   const handleSyncStudio = async () => {
     try {
@@ -104,6 +109,58 @@ const EpubImageEditorPage = () => {
                 ))}
               </select>
             </label>
+            {editorState && (
+              <>
+                <button
+                  onClick={() => editorState.setEditMode(!editorState.editMode)}
+                  style={{
+                    padding: '0.5em 1em',
+                    backgroundColor: editorState.editMode ? '#2196F3' : '#f5f5f5',
+                    color: editorState.editMode ? 'white' : '#666',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '14px'
+                  }}
+                >
+                  {editorState.editMode ? '✏️ Edit Mode ON' : '✏️ Edit Mode OFF'}
+                </button>
+                {editorState.modified && (
+                  <span style={{ color: '#ff9800', fontWeight: 'bold', fontSize: '0.9em' }}>Modified</span>
+                )}
+                <button
+                  onClick={editorState.handleReset}
+                  disabled={!editorState.modified || !editorState.editMode}
+                  style={{
+                    padding: '0.5em 1.5em',
+                    backgroundColor: '#f5f5f5',
+                    color: '#666',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: (!editorState.modified || !editorState.editMode) ? 'not-allowed' : 'pointer',
+                    opacity: (!editorState.modified || !editorState.editMode) ? 0.5 : 1
+                  }}
+                >
+                  Reset
+                </button>
+                <button
+                  onClick={editorState.handleSave}
+                  disabled={editorState.saving || !editorState.modified || !editorState.editMode}
+                  style={{
+                    padding: '0.5em 1.5em',
+                    backgroundColor: '#4CAF50',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: (editorState.saving || !editorState.modified || !editorState.editMode) ? 'not-allowed' : 'pointer',
+                    opacity: (editorState.saving || !editorState.modified || !editorState.editMode) ? 0.6 : 1,
+                    minWidth: '120px'
+                  }}
+                >
+                  {editorState.saving ? 'Saving...' : 'Save XHTML'}
+                </button>
+              </>
+            )}
             <button
               onClick={handleSyncStudio}
               disabled={regenerating}
@@ -134,6 +191,7 @@ const EpubImageEditorPage = () => {
             jobId={parseInt(jobId)}
             pageNumber={selectedPage}
             onSave={handleSave}
+            onStateChange={handleEditorStateChange}
           />
         </div>
       )}

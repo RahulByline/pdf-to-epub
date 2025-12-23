@@ -142,8 +142,11 @@
 }
 
 .btn-save:disabled {
-  opacity: 0.5;
+  opacity: 0.6;
   cursor: not-allowed;
+  /* Ensure button is still visible when disabled */
+  visibility: visible !important;
+  display: block !important;
 }
 
 .editor-content {
