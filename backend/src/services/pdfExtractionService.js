@@ -4,6 +4,15 @@ import pdfParse from 'pdf-parse';
 import { PDFDocument } from 'pdf-lib';
 import sharp from 'sharp';
 import puppeteer from 'puppeteer';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { fileURLToPath } from 'url';
+import pdfPoppler from 'pdf-poppler';
+import fse from 'fs-extra';
+
+const execAsync = promisify(exec);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 /**
  * Get pdfjs-dist library configured for Node.js
@@ -1027,6 +1036,680 @@ export class PdfExtractionService {
       console.error('Error extracting images from PDF:', error);
       // Don't throw - images are optional
       return [];
+    }
+  }
+
+  /**
+   * Check if pdf-poppler is available
+   * @returns {Promise<boolean>} True if pdf-poppler is available
+   */
+  static async checkPdfPopplerAvailable() {
+    try {
+      // pdf-poppler should be available as an npm package
+      return typeof pdfPoppler !== 'undefined' && pdfPoppler !== null;
+    } catch (error) {
+      console.log(`[PDF Poppler] Error checking pdf-poppler: ${error.message}`);
+      return false;
+    }
+  }
+
+  /**
+   * Find pdfimages.exe in pdf-poppler's node_modules
+   * @returns {Promise<string|null>} Full path to pdfimages.exe or null if not found
+   */
+  static async findPdfImagesExe() {
+    try {
+      // Try common locations first - pdf-poppler stores binaries in lib/win or lib/osx
+      const isWindows = process.platform === 'win32';
+      const platformDir = isWindows ? 'win' : 'osx';
+      const possiblePaths = [
+        path.join(__dirname, '../../node_modules/pdf-poppler/lib', platformDir, 'pdfimages.exe'),
+        path.join(__dirname, '../../node_modules/pdf-poppler/lib', platformDir, 'pdfimages'),
+        path.join(__dirname, '../../node_modules/pdf-poppler/bin/pdfimages.exe'),
+        path.join(__dirname, '../../node_modules/pdf-poppler/vendor/pdfimages.exe'),
+        path.join(process.cwd(), 'node_modules/pdf-poppler/lib', platformDir, 'pdfimages.exe'),
+        path.join(process.cwd(), 'node_modules/pdf-poppler/lib', platformDir, 'pdfimages'),
+        path.join(process.cwd(), 'node_modules/pdf-poppler/bin/pdfimages.exe'),
+        path.join(process.cwd(), 'node_modules/pdf-poppler/vendor/pdfimages.exe')
+      ];
+
+      // Try the possible paths first (faster)
+      for (const possiblePath of possiblePaths) {
+        try {
+          if (await fse.pathExists(possiblePath)) {
+            console.log(`[PDF Poppler] Found pdfimages.exe at: ${possiblePath}`);
+            return possiblePath;
+          }
+        } catch (e) {
+          // Continue to next path
+        }
+      }
+
+      // If not found in common locations, search recursively
+      const pdfPopplerDirs = [
+        path.join(__dirname, '../../node_modules/pdf-poppler'),
+        path.join(process.cwd(), 'node_modules/pdf-poppler')
+      ];
+
+      // Recursive search function
+      const searchForPdfImages = async (dir, depth = 0) => {
+        if (depth > 10) return null; // Limit recursion depth
+        
+        try {
+          const entries = await fse.readdir(dir, { withFileTypes: true });
+          for (const entry of entries) {
+            const fullPath = path.join(dir, entry.name);
+            if (entry.isFile() && entry.name === 'pdfimages.exe') {
+              return fullPath;
+            } else if (entry.isDirectory() && !entry.name.startsWith('.') && entry.name !== 'node_modules') {
+              const found = await searchForPdfImages(fullPath, depth + 1);
+              if (found) return found;
+            }
+          }
+        } catch (e) {
+          // Skip directories we can't read
+        }
+        return null;
+      };
+
+      for (const pdfPopplerDir of pdfPopplerDirs) {
+        try {
+          if (await fse.pathExists(pdfPopplerDir)) {
+            const found = await searchForPdfImages(pdfPopplerDir);
+            if (found) {
+              console.log(`[PDF Poppler] Found pdfimages.exe at: ${found}`);
+              return found;
+            }
+          }
+        } catch (dirError) {
+          // Try next location
+        }
+      }
+
+      console.warn(`[PDF Poppler] Could not find pdfimages.exe in pdf-poppler package`);
+      return null;
+    } catch (error) {
+      console.error(`[PDF Poppler] Error finding pdfimages.exe:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Extract images using pdf-poppler npm package
+   * Note: pdf-poppler converts PDF pages to images, but we need embedded images.
+   * We'll use it to extract embedded images if possible, otherwise fall back to other methods.
+   * @param {string} pdfFilePath - Path to the PDF file
+   * @param {string} outputDir - Directory to save extracted images
+   * @param {number} pageNumber - Page number (1-based) or null for all pages
+   * @returns {Promise<Array>} Array of extracted image file paths with metadata
+   */
+  static async extractImagesUsingPdfPoppler(pdfFilePath, outputDir, pageNumber = null) {
+    try {
+      const isAvailable = await this.checkPdfPopplerAvailable();
+      if (!isAvailable) {
+        console.log('[PDF Poppler] pdf-poppler package not available.');
+        return [];
+      }
+
+      console.log(`[PDF Poppler] Attempting to extract embedded images from PDF...`);
+      
+      // Note: pdf-poppler's convert() converts pages to images, not embedded images
+      // For embedded images, we need to use pdfimages command-line tool
+      // But let's try using pdf-poppler's info() first to get PDF structure
+      try {
+        const pdfInfo = await pdfPoppler.info(pdfFilePath);
+        console.log(`[PDF Poppler] PDF info:`, pdfInfo);
+      } catch (infoError) {
+        console.warn(`[PDF Poppler] Could not get PDF info:`, infoError.message);
+      }
+
+      // Find pdfimages.exe in pdf-poppler's node_modules
+      // pdf-poppler includes Poppler binaries including pdfimages.exe
+      const pdfImagesExePath = await this.findPdfImagesExe();
+      if (!pdfImagesExePath) {
+        console.warn(`[PDF Poppler] Could not find pdfimages.exe in pdf-poppler package`);
+        return [];
+      }
+
+      const tempPrefix = path.join(outputDir, `img_${Date.now()}_`);
+      
+      // Build pdfimages command - extract embedded images
+      // -all: extract all images from all pages
+      // -png: output as PNG
+      let command = `"${pdfImagesExePath}" -all -png "${pdfFilePath}" "${tempPrefix}"`;
+      
+      // If specific page requested, use -f and -l flags
+      if (pageNumber !== null) {
+        command = `"${pdfImagesExePath}" -f ${pageNumber} -l ${pageNumber} -png "${pdfFilePath}" "${tempPrefix}"`;
+      }
+
+      console.log(`[PDF Poppler] Running pdfimages command: ${command}`);
+      
+      try {
+        const { stdout, stderr } = await execAsync(command, { 
+          maxBuffer: 10 * 1024 * 1024,
+          timeout: 60000 // 60 second timeout
+        });
+        
+        if (stderr && !stderr.includes('Writing') && !stderr.includes('pdfimages')) {
+          console.warn(`[PDF Poppler] pdfimages stderr: ${stderr}`);
+        }
+
+        // Find all extracted image files
+        const files = await fse.readdir(outputDir);
+        const imageFiles = files
+          .filter(f => {
+            const basename = path.basename(tempPrefix);
+            return f.startsWith(basename) && (f.endsWith('.png') || f.endsWith('.jpg') || f.endsWith('.jpeg'));
+          })
+          .sort()
+          .map(f => path.join(outputDir, f));
+
+        console.log(`[PDF Poppler] Extracted ${imageFiles.length} embedded image(s) using pdfimages`);
+        return imageFiles;
+      } catch (cmdError) {
+        console.warn(`[PDF Poppler] pdfimages command failed:`, cmdError.message);
+        // Fall back to trying pdf-poppler's convert (though this converts pages, not extracts embedded images)
+        console.log(`[PDF Poppler] Note: pdf-poppler.convert() converts pages to images, not embedded images`);
+        return [];
+      }
+    } catch (error) {
+      console.error(`[PDF Poppler] Error extracting images:`, error.message);
+      console.error(`[PDF Poppler] Error stack:`, error.stack);
+      return [];
+    }
+  }
+
+  /**
+   * Extract embedded images from PDF, organized by page
+   * Uses multiple methods: pdfimages (Poppler) > pdf-lib > enumerateIndirectObjects
+   * @param {string} pdfFilePath - Path to the PDF file
+   * @param {string} outputDir - Directory to save extracted images
+   * @param {Object} options - Extraction options
+   * @param {number} options.scale - Scale factor for image extraction (default: 1.0)
+   * @param {boolean} options.saveToDisk - Whether to save images to disk (default: true)
+   * @param {string} options.format - Output format: 'png', 'jpg', or 'original' (default: 'original')
+   * @param {boolean} options.usePdfImages - Force use of pdfimages tool (default: true, tries automatically)
+   * @returns {Promise<Object>} Object with pages array, each containing images found on that page
+   */
+  static async extractImagesPerPage(pdfFilePath, outputDir, options = {}) {
+    const { scale = 1.0, saveToDisk = true, format = 'original', usePdfImages = true } = options;
+    
+    try {
+      // Ensure output directory exists
+      if (saveToDisk) {
+        await fs.mkdir(outputDir, { recursive: true }).catch(() => {});
+      }
+      
+      // Method 1: Try pdf-poppler npm package first - most reliable
+      if (usePdfImages) {
+        console.log(`[PDF Image Extraction] Checking if pdf-poppler is available...`);
+        try {
+          const pdfPopplerAvailable = await this.checkPdfPopplerAvailable();
+          console.log(`[PDF Image Extraction] pdf-poppler available: ${pdfPopplerAvailable}`);
+          if (pdfPopplerAvailable) {
+            console.log(`[PDF Image Extraction] Using pdf-poppler for extraction...`);
+            const extractedImageFiles = await this.extractImagesUsingPdfPoppler(pdfFilePath, outputDir);
+            
+            if (extractedImageFiles.length > 0) {
+              // Get PDF page count
+              const pdfBytes = await fs.readFile(pdfFilePath);
+              const pdfDoc = await PDFDocument.load(pdfBytes);
+              const pages = pdfDoc.getPages();
+              const totalPages = pages.length;
+              
+              // Organize images by page (pdfimages doesn't provide page info directly)
+              // We'll assign them sequentially or try to match by filename patterns
+              const pagesData = [];
+              
+              // Group images - pdfimages outputs sequential files
+              // We'll distribute them evenly across pages or use a heuristic
+              const imagesPerPage = Math.ceil(extractedImageFiles.length / totalPages);
+              
+              for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+                const pageNumber = pageIndex + 1;
+                const pageImages = [];
+                
+                // Get images for this page (distribute evenly)
+                const startIdx = pageIndex * imagesPerPage;
+                const endIdx = Math.min(startIdx + imagesPerPage, extractedImageFiles.length);
+                
+                for (let i = startIdx; i < endIdx; i++) {
+                  const imagePath = extractedImageFiles[i];
+                  try {
+                    const stats = await fs.stat(imagePath);
+                    const image = sharp(imagePath);
+                    const metadata = await image.metadata();
+                    
+                    pageImages.push({
+                      pageNumber,
+                      index: i - startIdx + 1,
+                      ref: `pdfimages_${i}`,
+                      width: metadata.width || 0,
+                      height: metadata.height || 0,
+                      format: metadata.format || 'png',
+                      mimeType: `image/${metadata.format || 'png'}`,
+                      path: imagePath,
+                      fileName: path.basename(imagePath),
+                      buffer: null,
+                      size: stats.size
+                    });
+                  } catch (imgError) {
+                    console.warn(`[Page ${pageNumber}] Could not process extracted image:`, imgError.message);
+                  }
+                }
+                
+                pagesData.push({
+                  pageNumber,
+                  pageIndex,
+                  pageSize: { width: 0, height: 0 }, // Unknown from pdfimages
+                  images: pageImages,
+                  imageCount: pageImages.length
+                });
+                
+                if (pageImages.length > 0) {
+                  console.log(`[Page ${pageNumber}] Found ${pageImages.length} image(s) via pdf-poppler`);
+                }
+              }
+              
+              const totalImages = pagesData.reduce((sum, page) => sum + page.imageCount, 0);
+              console.log(`[PDF Image Extraction] Complete: ${totalImages} image(s) extracted from ${totalPages} page(s) using pdf-poppler`);
+              
+              return {
+                totalPages,
+                totalImages,
+                pages: pagesData,
+                method: 'pdf-poppler',
+                summary: pagesData.map(p => ({
+                  pageNumber: p.pageNumber,
+                  imageCount: p.imageCount
+                }))
+              };
+            }
+          }
+        } catch (pdfPopplerError) {
+          console.warn(`[PDF Image Extraction] pdf-poppler method failed, falling back to pdf-lib:`, pdfPopplerError.message);
+          console.warn(`[PDF Image Extraction] Error details:`, pdfPopplerError.stack);
+        }
+      } else {
+        console.log(`[PDF Image Extraction] pdf-poppler disabled (usePdfImages=false), using pdf-lib method...`);
+      }
+      
+      // Method 2: Fallback to pdf-lib method
+      console.log(`[PDF Image Extraction] Using pdf-lib method...`);
+      const pdfBytes = await fs.readFile(pdfFilePath);
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+      const pages = pdfDoc.getPages();
+      const totalPages = pages.length;
+      
+      if (totalPages === 0) {
+        throw new Error('PDF has no pages');
+      }
+      
+      console.log(`[PDF Image Extraction] Processing ${totalPages} pages...`);
+      
+      const pagesData = [];
+      const processedImageRefs = new Set(); // Track processed image references to avoid duplicates
+      
+      // Process each page
+      for (let pageIndex = 0; pageIndex < totalPages; pageIndex++) {
+        const pageNumber = pageIndex + 1;
+        const page = pages[pageIndex];
+        const pageImages = [];
+        
+        try {
+          // Get page dimensions
+          const { width, height } = page.getSize();
+          
+          console.log(`[Page ${pageNumber}] Starting image extraction (page size: ${width}x${height})...`);
+          
+          // Extract embedded images from the page
+          // Method 1: Try to access through page resources/XObject dictionary
+          let imageIndexOnPage = 0;
+          
+          try {
+            // Access the page's node and resources
+            const pageNode = page.node;
+            if (!pageNode) {
+              console.log(`[Page ${pageNumber}] No page node found`);
+              throw new Error('No page node');
+            }
+            
+            const pageDict = pageNode.dict;
+            if (!pageDict) {
+              console.log(`[Page ${pageNumber}] No page dictionary found`);
+              throw new Error('No page dictionary');
+            }
+            
+            console.log(`[Page ${pageNumber}] Accessing page resources...`);
+            // Get Resources dictionary - try different methods
+            let resourcesRef = null;
+            
+            // Method 1: Try get() with PDFName
+            try {
+              const PDFName = (await import('pdf-lib')).PDFName;
+              resourcesRef = pageDict.get(PDFName.of('Resources'));
+            } catch (e) {
+              // Method 2: Try direct get()
+              try {
+                resourcesRef = pageDict.get('Resources');
+              } catch (e2) {
+                // Method 3: Try accessing dict directly
+                try {
+                  const dict = pageDict.dict;
+                  if (dict && dict.Resources) {
+                    resourcesRef = dict.Resources;
+                  }
+                } catch (e3) {
+                  console.log(`[Page ${pageNumber}] Could not access Resources via any method`);
+                }
+              }
+            }
+            
+            if (resourcesRef) {
+              const resources = pdfDoc.context.lookup(resourcesRef);
+              
+              if (resources) {
+                // Get XObject dictionary (where images are stored)
+                const xObjectRef = resources.get('XObject');
+                if (xObjectRef) {
+                  const xObjectDict = pdfDoc.context.lookup(xObjectRef);
+                  
+                  if (xObjectDict && xObjectDict.keys) {
+                    const xObjectKeys = xObjectDict.keys();
+                    console.log(`[Page ${pageNumber}] Found ${xObjectKeys.length} XObject(s) in resources`);
+                    
+                    for (const key of xObjectKeys) {
+                      try {
+                        const xObjectRef = xObjectDict.get(key);
+                        const xObject = pdfDoc.context.lookup(xObjectRef);
+                        
+                        if (xObject) {
+                          // Check if it's an image
+                          const subtypeRef = xObject.get('Subtype');
+                          if (subtypeRef) {
+                            const subtype = subtypeRef.toString();
+                            
+                            if (subtype === '/Image') {
+                              // This is an image XObject
+                              let isImage = true;
+                              let imageData = null;
+                              let imgWidth = 0;
+                              let imgHeight = 0;
+                              let imageFormat = 'png';
+                              let bitsPerComponent = 8;
+                              let colorSpace = 'DeviceRGB';
+                              
+                              // Get image properties
+                              const widthRef = xObject.get('Width');
+                              const heightRef = xObject.get('Height');
+                              const bitsRef = xObject.get('BitsPerComponent');
+                              const colorSpaceRef = xObject.get('ColorSpace');
+                              const filterRef = xObject.get('Filter');
+                              
+                              imgWidth = widthRef ? widthRef.asNumber() : 0;
+                              imgHeight = heightRef ? heightRef.asNumber() : 0;
+                              bitsPerComponent = bitsRef ? bitsRef.asNumber() : 8;
+                              
+                              // Get color space
+                              if (colorSpaceRef) {
+                                if (colorSpaceRef.toString) {
+                                  colorSpace = colorSpaceRef.toString();
+                                }
+                              }
+                              
+                              // Determine format from filter
+                              if (filterRef) {
+                                const filterStr = filterRef.toString();
+                                if (filterStr.includes('DCTDecode')) {
+                                  imageFormat = 'jpg';
+                                } else if (filterStr.includes('JPXDecode')) {
+                                  imageFormat = 'jp2';
+                                } else if (filterStr.includes('CCITTFaxDecode')) {
+                                  imageFormat = 'tiff';
+                                }
+                              }
+                              
+                              // Get the image stream
+                              const streamRef = xObject.get('stream');
+                              if (streamRef) {
+                                const stream = pdfDoc.context.lookup(streamRef);
+                                if (stream && stream.contents) {
+                                  const streamBytes = stream.contents;
+                                  imageData = Buffer.from(streamBytes);
+                                }
+                              }
+                              
+                              if (isImage && imageData && imageData.length > 0) {
+                                // Process image with sharp
+                                let finalImageBuffer = imageData;
+                                let finalWidth = imgWidth;
+                                let finalHeight = imgHeight;
+                                let finalFormat = imageFormat;
+                                
+                                try {
+                                  const image = sharp(imageData);
+                                  const metadata = await image.metadata();
+                                  
+                                  finalWidth = metadata.width || finalWidth;
+                                  finalHeight = metadata.height || finalHeight;
+                                  
+                                  // Apply transformations
+                                  let transformedImage = image;
+                                  
+                                  // Apply scale if specified
+                                  if (scale !== 1.0 && scale > 0) {
+                                    finalWidth = Math.round(finalWidth * scale);
+                                    finalHeight = Math.round(finalHeight * scale);
+                                    transformedImage = transformedImage.resize(finalWidth, finalHeight);
+                                  }
+                                  
+                                  // Convert format if needed
+                                  if (format !== 'original' && format !== imageFormat) {
+                                    if (format === 'png') {
+                                      transformedImage = transformedImage.png();
+                                    } else if (format === 'jpg') {
+                                      transformedImage = transformedImage.jpeg({ quality: 90 });
+                                    }
+                                    finalFormat = format;
+                                  } else {
+                                    // Keep original format
+                                    if (imageFormat === 'jpg') {
+                                      transformedImage = transformedImage.jpeg({ quality: 90 });
+                                    } else if (imageFormat === 'png') {
+                                      transformedImage = transformedImage.png();
+                                    }
+                                  }
+                                  
+                                  finalImageBuffer = await transformedImage.toBuffer();
+                                } catch (sharpError) {
+                                  console.warn(`[Page ${pageNumber}] Could not process image with sharp, using raw data:`, sharpError.message);
+                                  // Use raw buffer if sharp fails
+                                }
+                                
+                                // Save image to disk if requested
+                                let imagePath = null;
+                                let fileName = null;
+                                
+                                if (saveToDisk) {
+                                  fileName = `page_${pageNumber}_image_${imageIndexOnPage + 1}.${finalFormat}`;
+                                  imagePath = path.join(outputDir, fileName);
+                                  await fs.writeFile(imagePath, finalImageBuffer);
+                                  console.log(`[Page ${pageNumber}] Extracted image: ${fileName} (${finalWidth}x${finalHeight}px, ${finalFormat})`);
+                                }
+                                
+                                pageImages.push({
+                                  pageNumber,
+                                  index: imageIndexOnPage + 1,
+                                  ref: key.toString(),
+                                  width: finalWidth,
+                                  height: finalHeight,
+                                  format: finalFormat,
+                                  mimeType: finalFormat === 'jpg' ? 'image/jpeg' : `image/${finalFormat}`,
+                                  bitsPerComponent,
+                                  colorSpace,
+                                  path: imagePath,
+                                  fileName,
+                                  buffer: saveToDisk ? null : finalImageBuffer,
+                                  size: finalImageBuffer.length
+                                });
+                                
+                                imageIndexOnPage++;
+                              }
+                            }
+                          }
+                        }
+                      } catch (xObjectError) {
+                        console.warn(`[Page ${pageNumber}] Error processing XObject ${key}:`, xObjectError.message);
+                        continue;
+                      }
+                    }
+                  } else {
+                    console.log(`[Page ${pageNumber}] No XObject dictionary found in resources`);
+                  }
+                } else {
+                  console.log(`[Page ${pageNumber}] No XObject reference found in resources`);
+                }
+              } else {
+                console.log(`[Page ${pageNumber}] Resources dictionary not found or empty`);
+              }
+            } else {
+              console.log(`[Page ${pageNumber}] No Resources reference found in page dictionary`);
+            }
+          } catch (resourceError) {
+            console.warn(`[Page ${pageNumber}] Could not access page resources via dict method:`, resourceError.message);
+          }
+          
+          // Fallback: Try the enumerateIndirectObjects method (like old extractImages)
+          if (pageImages.length === 0) {
+            try {
+              console.log(`[Page ${pageNumber}] Trying fallback method: enumerateIndirectObjects...`);
+              const pageContext = page.node.context;
+              const embeddedObjects = pageContext.enumerateIndirectObjects();
+              
+              let objectCount = 0;
+              let imageObjectCount = 0;
+              for (const [ref, object] of embeddedObjects) {
+                objectCount++;
+                try {
+                  // Check if object is an image (XObject with Subtype 'Image')
+                  if (object && typeof object === 'object') {
+                    const subtype = object.get?.('Subtype');
+                    if (subtype && (subtype.toString() === '/Image' || subtype === '/Image')) {
+                      imageObjectCount++;
+                      console.log(`[Page ${pageNumber}] Found image object via enumerateIndirectObjects: ${ref}`);
+                      
+                      // Try to extract the image
+                      try {
+                        const width = object.get?.('Width')?.value || object.get?.('Width') || 0;
+                        const height = object.get?.('Height')?.value || object.get?.('Height') || 0;
+                        const stream = object.get?.('stream');
+                        
+                        if (stream && stream.contents) {
+                          const imageData = Buffer.from(stream.contents);
+                          const filter = object.get?.('Filter');
+                          let imageFormat = 'png';
+                          
+                          if (filter) {
+                            const filterStr = filter.toString();
+                            if (filterStr.includes('DCTDecode')) {
+                              imageFormat = 'jpg';
+                            }
+                          }
+                          
+                          // Process and save image
+                          let finalImageBuffer = imageData;
+                          try {
+                            const image = sharp(imageData);
+                            const metadata = await image.metadata();
+                            finalImageBuffer = await image.toBuffer();
+                          } catch (sharpError) {
+                            // Use raw buffer
+                          }
+                          
+                          if (saveToDisk) {
+                            const fileName = `page_${pageNumber}_image_${imageIndexOnPage + 1}.${imageFormat}`;
+                            const imagePath = path.join(outputDir, fileName);
+                            await fs.writeFile(imagePath, finalImageBuffer);
+                            console.log(`[Page ${pageNumber}] Extracted image via fallback: ${fileName} (${width}x${height}px)`);
+                            
+                            pageImages.push({
+                              pageNumber,
+                              index: imageIndexOnPage + 1,
+                              ref: ref.toString(),
+                              width,
+                              height,
+                              format: imageFormat,
+                              mimeType: imageFormat === 'jpg' ? 'image/jpeg' : `image/${imageFormat}`,
+                              path: imagePath,
+                              fileName,
+                              buffer: saveToDisk ? null : finalImageBuffer,
+                              size: finalImageBuffer.length
+                            });
+                            
+                            imageIndexOnPage++;
+                          }
+                        }
+                      } catch (extractError) {
+                        console.warn(`[Page ${pageNumber}] Could not extract image from object ${ref}:`, extractError.message);
+                      }
+                    }
+                  }
+                } catch (objError) {
+                  // Skip
+                }
+              }
+              console.log(`[Page ${pageNumber}] Enumerated ${objectCount} indirect objects, found ${imageObjectCount} image(s)`);
+            } catch (fallbackError) {
+              console.warn(`[Page ${pageNumber}] Fallback method also failed:`, fallbackError.message);
+            }
+          }
+          
+          // Store page data
+          pagesData.push({
+            pageNumber,
+            pageIndex,
+            pageSize: {
+              width,
+              height
+            },
+            images: pageImages,
+            imageCount: pageImages.length
+          });
+          
+          if (pageImages.length > 0) {
+            console.log(`[Page ${pageNumber}] Found ${pageImages.length} image(s)`);
+          }
+          
+        } catch (pageError) {
+          console.error(`[Page ${pageNumber}] Error extracting images:`, pageError.message);
+          // Continue with next page even if this one fails
+          pagesData.push({
+            pageNumber,
+            pageIndex,
+            images: [],
+            imageCount: 0,
+            error: pageError.message
+          });
+        }
+      }
+      
+      const totalImages = pagesData.reduce((sum, page) => sum + page.imageCount, 0);
+      console.log(`[PDF Image Extraction] Complete: ${totalImages} image(s) extracted from ${totalPages} page(s)`);
+      
+      return {
+        totalPages,
+        totalImages,
+        pages: pagesData,
+        summary: pagesData.map(p => ({
+          pageNumber: p.pageNumber,
+          imageCount: p.imageCount
+        }))
+      };
+      
+    } catch (error) {
+      console.error('[PDF Image Extraction] Error:', error);
+      throw new Error(`Failed to extract images from PDF: ${error.message}`);
     }
   }
 

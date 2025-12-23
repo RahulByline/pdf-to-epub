@@ -4,6 +4,7 @@ import fs from 'fs/promises';
 import { ConversionService } from '../services/conversionService.js';
 import { EpubService } from '../services/epubService.js';
 import { successResponse, errorResponse, notFoundResponse, badRequestResponse } from '../utils/responseHandler.js';
+import { getHtmlIntermediateDir } from '../config/fileStorage.js';
 
 const router = express.Router();
 
@@ -572,6 +573,161 @@ router.delete('/:jobId', async (req, res) => {
     if (error.message.includes('not found')) {
       return notFoundResponse(res, error.message);
     }
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// GET /api/conversions/:jobId/xhtml/:pageNumber - Get XHTML file for a specific page
+router.get('/:jobId/xhtml/:pageNumber', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const pageNumber = parseInt(req.params.pageNumber);
+    
+    const htmlIntermediateDir = getHtmlIntermediateDir();
+    const jobHtmlDir = path.join(htmlIntermediateDir, `job_${jobId}_html`);
+    const xhtmlFilePath = path.join(jobHtmlDir, `page_${pageNumber}.xhtml`);
+    
+    try {
+      await fs.access(xhtmlFilePath);
+      const xhtmlContent = await fs.readFile(xhtmlFilePath, 'utf8');
+      res.setHeader('Content-Type', 'application/xhtml+xml');
+      return res.send(xhtmlContent);
+    } catch (fileError) {
+      return notFoundResponse(res, `XHTML file for page ${pageNumber} not found`);
+    }
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// GET /api/conversions/:jobId/images - Get list of extracted images for a job
+router.get('/:jobId/images', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const htmlIntermediateDir = getHtmlIntermediateDir();
+    const jobImagesDir = path.join(htmlIntermediateDir, `job_${jobId}_images`);
+    
+    try {
+      await fs.access(jobImagesDir);
+      const files = await fs.readdir(jobImagesDir);
+      const imageFiles = files
+        .filter(f => /\.(jpg|jpeg|png|gif|webp)$/i.test(f))
+        .map(f => ({
+          fileName: f,
+          url: `/api/conversions/${jobId}/images/${f}`
+        }));
+      
+      return successResponse(res, imageFiles);
+    } catch (dirError) {
+      return successResponse(res, []); // Return empty array if directory doesn't exist
+    }
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// OPTIONS /api/conversions/:jobId/images/:fileName - Handle CORS preflight
+router.options('/:jobId/images/:fileName', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+  res.status(204).send();
+});
+
+// GET /api/conversions/:jobId/images/:fileName - Get a specific image file
+router.get('/:jobId/images/:fileName', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const fileName = req.params.fileName;
+    
+    // Security: prevent directory traversal
+    if (fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
+      return badRequestResponse(res, 'Invalid file name');
+    }
+    
+    const htmlIntermediateDir = getHtmlIntermediateDir();
+    const jobImagesDir = path.join(htmlIntermediateDir, `job_${jobId}_images`);
+    const imagePath = path.join(jobImagesDir, fileName);
+    
+    try {
+      await fs.access(imagePath);
+      const imageBuffer = await fs.readFile(imagePath);
+      
+      // Determine content type
+      const ext = path.extname(fileName).toLowerCase();
+      let contentType = 'image/png';
+      if (ext === '.jpg' || ext === '.jpeg') contentType = 'image/jpeg';
+      else if (ext === '.gif') contentType = 'image/gif';
+      else if (ext === '.webp') contentType = 'image/webp';
+      
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=31536000'); // Cache for 1 year
+      res.setHeader('Access-Control-Allow-Origin', '*'); // Allow CORS for images
+      res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type');
+      return res.send(imageBuffer);
+    } catch (fileError) {
+      return notFoundResponse(res, `Image file ${fileName} not found`);
+    }
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// GET /api/conversions/:jobId/pages - Get list of all XHTML pages for a job
+router.get('/:jobId/pages', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const htmlIntermediateDir = getHtmlIntermediateDir();
+    const jobHtmlDir = path.join(htmlIntermediateDir, `job_${jobId}_html`);
+    
+    try {
+      await fs.access(jobHtmlDir);
+      const files = await fs.readdir(jobHtmlDir);
+      const xhtmlFiles = files
+        .filter(f => f.endsWith('.xhtml'))
+        .map(f => {
+          const match = f.match(/page_(\d+)\.xhtml/);
+          return {
+            pageNumber: match ? parseInt(match[1]) : null,
+            fileName: f,
+            url: `/api/conversions/${jobId}/xhtml/${match ? match[1] : ''}`
+          };
+        })
+        .filter(f => f.pageNumber !== null)
+        .sort((a, b) => a.pageNumber - b.pageNumber);
+      
+      return successResponse(res, xhtmlFiles);
+    } catch (dirError) {
+      return successResponse(res, []); // Return empty array if directory doesn't exist
+    }
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// PUT /api/conversions/:jobId/xhtml/:pageNumber - Save modified XHTML for a page
+router.put('/:jobId/xhtml/:pageNumber', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const pageNumber = parseInt(req.params.pageNumber);
+    const { xhtml } = req.body;
+    
+    if (!xhtml || typeof xhtml !== 'string') {
+      return badRequestResponse(res, 'XHTML content is required');
+    }
+    
+    const htmlIntermediateDir = getHtmlIntermediateDir();
+    const jobHtmlDir = path.join(htmlIntermediateDir, `job_${jobId}_html`);
+    
+    // Ensure directory exists
+    await fs.mkdir(jobHtmlDir, { recursive: true });
+    
+    const xhtmlFilePath = path.join(jobHtmlDir, `page_${pageNumber}.xhtml`);
+    await fs.writeFile(xhtmlFilePath, xhtml, 'utf8');
+    
+    return successResponse(res, { message: 'XHTML saved successfully', pageNumber });
+  } catch (error) {
     return errorResponse(res, error.message, 500);
   }
 });

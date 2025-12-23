@@ -54,7 +54,33 @@ export const conversionService = {
   getTextBlocks: (jobId) =>
     api.get(`/conversions/${jobId}/text-blocks`).then(res => res.data.data),
   
+  // EPUB Image Editor APIs
+  getPageXhtml: (jobId, pageNumber) =>
+    api.get(`/conversions/${jobId}/xhtml/${pageNumber}`, { responseType: 'text' }).then(res => res.data),
+  
+  getJobImages: (jobId) =>
+    api.get(`/conversions/${jobId}/images`).then(res => res.data.data),
+  
+  getJobPages: (jobId) =>
+    api.get(`/conversions/${jobId}/pages`).then(res => res.data.data),
+  
+  savePageXhtml: (jobId, pageNumber, xhtml) =>
+    api.put(`/conversions/${jobId}/xhtml/${pageNumber}`, { xhtml }).then(res => res.data.data)(`/conversions/${jobId}/text-blocks`).then(res => res.data.data),
+  
   regenerateEpub: (jobId, options = {}) =>
-    api.post(`/conversions/${jobId}/regenerate`, options).then(res => res.data.data)
+    api.post(`/conversions/${jobId}/regenerate`, options).then(res => res.data.data),
+  
+  // EPUB Image Editor APIs
+  getPageXhtml: (jobId, pageNumber) =>
+    api.get(`/conversions/${jobId}/xhtml/${pageNumber}`, { responseType: 'text' }).then(res => res.data),
+  
+  getJobImages: (jobId) =>
+    api.get(`/conversions/${jobId}/images`).then(res => res.data.data),
+  
+  getJobPages: (jobId) =>
+    api.get(`/conversions/${jobId}/pages`).then(res => res.data.data),
+  
+  savePageXhtml: (jobId, pageNumber, xhtml) =>
+    api.put(`/conversions/${jobId}/xhtml/${pageNumber}`, { xhtml }).then(res => res.data.data)
 };
 

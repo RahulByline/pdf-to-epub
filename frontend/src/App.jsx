@@ -9,7 +9,7 @@ import Conversions from './pages/Conversions';
 import SyncStudio from './pages/SyncStudio';
 import MediaOverlaySyncEditor from './pages/MediaOverlaySyncEditor';
 import AiConfig from './pages/AiConfig';
-import AudioScript from './pages/AudioScript';
+import EpubImageEditorPage from './pages/EpubImageEditorPage';
 
 function App() {
   return (
@@ -24,6 +24,7 @@ function App() {
           <Route path="sync-studio/:jobId" element={<SyncStudio />} />
           <Route path="audio-script/:jobId" element={<AudioScript />} />
           <Route path="media-overlay-sync/:jobId/:pageNumber" element={<MediaOverlaySyncEditor />} />
+          <Route path="epub-image-editor/:jobId" element={<EpubImageEditorPage />} />
           <Route path="ai-config" element={<AiConfig />} />
         </Route>
       </Routes>
