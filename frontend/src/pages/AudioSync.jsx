@@ -517,19 +517,142 @@ const AudioSync = () => {
     setEditedText(block.text || '');
   };
 
-  const handleSaveEdit = (blockId) => {
-    setTextChunks(prev => prev.map(chunk => 
-      chunk.id === blockId 
-        ? { ...chunk, text: editedText }
-        : chunk
-    ));
-    setEditingBlockId(null);
-    setEditedText('');
+  const handleSaveEdit = async (blockId) => {
+    const block = textChunks.find(chunk => chunk.id === blockId);
+    if (!block) return;
+
+    // Check if text actually changed
+    const textChanged = editedText.trim() !== (block.text || '').trim();
+    
+    if (!textChanged) {
+      // No change, just close editing
+      setEditingBlockId(null);
+      setEditedText('');
+      return;
+    }
+
+    try {
+      setLoading(true);
+      
+      // Update the text in state
+      setTextChunks(prev => prev.map(chunk => 
+        chunk.id === blockId 
+          ? { ...chunk, text: editedText }
+          : chunk
+      ));
+      
+      setEditingBlockId(null);
+      const savedText = editedText;
+      setEditedText('');
+      
+      // If this block has audio, regenerate it with the new text
+      const existingSegment = audioSegments.find(s => s.blockId === blockId);
+      if (existingSegment && pdf) {
+        // Regenerate audio for this specific block with the new text
+        const updatedBlock = {
+          ...block,
+          text: savedText
+        };
+        
+        setError('');
+        setGenerating(true);
+        
+        // Generate audio for the edited block
+        const segments = await audioSyncService.generateAudio(
+          pdf.id,
+          parseInt(jobId),
+          selectedVoice,
+          [updatedBlock] // Pass only this block
+        );
+        
+        // Update audio segments - replace the old one or add new one
+        setAudioSegments(prev => {
+          const filtered = prev.filter(s => s.blockId !== blockId);
+          return [...filtered, ...segments];
+        });
+        
+        // Update clipTimings with new timings and ensure customText is updated
+        for (const newSegment of segments) {
+          if (newSegment.blockId === blockId || newSegment.id) {
+            // Update the audio sync record to include the edited text as customText
+            // This ensures the EPUB uses the edited text
+            try {
+              await audioSyncService.updateAudioSync(newSegment.id || existingSegment.id, {
+                customText: savedText,
+                startTime: newSegment.startTime || 0,
+                endTime: newSegment.endTime || 0,
+                notes: `Text edited and audio regenerated. Original: ${block.text?.substring(0, 50)}...`
+              });
+            } catch (updateErr) {
+              console.warn('Could not update customText in audio sync:', updateErr);
+            }
+            
+            setClipTimings(prev => ({
+              ...prev,
+              [blockId]: {
+                clipBegin: newSegment.startTime || 0,
+                clipEnd: newSegment.endTime || 0
+              }
+            }));
+          }
+        }
+        
+        setGenerating(false);
+        setError('');
+      }
+      
+      // Mark as having unsaved changes when text is edited
+      setHasUnsavedChanges(true);
+      setChangesSaved(false);
+      
+    } catch (err) {
+      console.error('Error saving edit and regenerating audio:', err);
+      setError('Failed to regenerate audio for edited text: ' + err.message);
+      // Still update the text even if audio generation fails
+      setTextChunks(prev => prev.map(chunk => 
+        chunk.id === blockId 
+          ? { ...chunk, text: editedText }
+          : chunk
+      ));
+      setEditingBlockId(null);
+      setEditedText('');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleCancelEdit = () => {
     setEditingBlockId(null);
     setEditedText('');
+  };
+
+  const handleDeleteAudioSync = async (segmentId, blockId) => {
+    if (!window.confirm('Are you sure you want to delete this audio sync? The timing will be removed.')) {
+      return;
+    }
+
+    try {
+      await audioSyncService.deleteAudioSync(segmentId);
+      
+      // Remove from audioSegments
+      setAudioSegments(prev => prev.filter(s => s.id !== segmentId));
+      
+      // Remove from clipTimings
+      setClipTimings(prev => {
+        const newTimings = { ...prev };
+        delete newTimings[blockId];
+        return newTimings;
+      });
+      
+      // Mark as having unsaved changes (need to regenerate EPUB)
+      setHasUnsavedChanges(true);
+      setChangesSaved(false);
+      
+      setError('');
+    } catch (err) {
+      console.error('Error deleting audio sync:', err);
+      setError('Failed to delete audio sync: ' + err.message);
+    }
   };
 
   const handlePlayPause = () => {
@@ -679,6 +802,31 @@ const AudioSync = () => {
       setError('');
       setLoading(true);
       
+      // Save updated clipTimings for existing audio segments
+      if (audioSegments.length > 0 && Object.keys(clipTimings).length > 0) {
+        console.log('Saving updated audio sync timings...');
+        
+        // Update each segment with edited clipTimings
+        for (const segment of audioSegments) {
+          const timing = clipTimings[segment.blockId];
+          if (timing && (timing.clipBegin !== undefined || timing.clipEnd !== undefined)) {
+            // Get current values or use segment defaults
+            const newStartTime = timing.clipBegin !== undefined ? timing.clipBegin : (segment.startTime || 0);
+            const newEndTime = timing.clipEnd !== undefined ? timing.clipEnd : (segment.endTime || 0);
+            
+            // Only update if values have changed
+            if (newStartTime !== segment.startTime || newEndTime !== segment.endTime) {
+              await audioSyncService.updateAudioSync(segment.id, {
+                startTime: newStartTime,
+                endTime: newEndTime,
+                notes: segment.notes || 'TTS-generated audio sync'
+              });
+              console.log(`Updated timing for block ${segment.blockId}: ${newStartTime}s - ${newEndTime}s`);
+            }
+          }
+        }
+      }
+      
       // If user uploaded audio and has sync blocks, save them first
       if (uploadedAudioFile && syncBlocks.length > 0) {
         console.log('Saving sync blocks with uploaded audio...');
@@ -709,7 +857,7 @@ const AudioSync = () => {
         // Delete syncs for blocks where shouldRead === false
         const activeBlockIds = syncBlocks.filter(b => b.shouldRead).map(b => b.id || b.elementId);
         
-        // Update audio syncs based on shouldRead flag
+        // Update audio syncs based on shouldRead flag and clipTimings
         // Keep all syncs but mark disabled ones in notes (don't delete - user might re-enable)
         for (const segment of audioSegments) {
           const blockId = segment.blockId;
@@ -720,12 +868,24 @@ const AudioSync = () => {
             b.id?.includes(blockId)
           );
           
+          // Check for edited timings in clipTimings
+          const timing = clipTimings[blockId];
+          const updatedStartTime = timing?.clipBegin !== undefined ? timing.clipBegin : (matchingBlock?.start || segment.startTime || 0);
+          const updatedEndTime = timing?.clipEnd !== undefined ? timing.clipEnd : (matchingBlock?.end || segment.endTime || 0);
+          
           if (matchingBlock) {
             // Update sync with shouldRead flag in notes and timings
             await audioSyncService.updateAudioSync(segment.id, {
-              startTime: matchingBlock.start || segment.startTime || 0,
-              endTime: matchingBlock.end || segment.endTime || 0,
+              startTime: updatedStartTime,
+              endTime: updatedEndTime,
               notes: `TTS-generated. Read-aloud: ${matchingBlock.shouldRead ? 'enabled' : 'disabled'}. Type: ${matchingBlock.type || 'block'}`
+            });
+          } else if (timing && (timing.clipBegin !== undefined || timing.clipEnd !== undefined)) {
+            // Update timing even if no matching block (user edited timing directly)
+            await audioSyncService.updateAudioSync(segment.id, {
+              startTime: updatedStartTime,
+              endTime: updatedEndTime,
+              notes: segment.notes || 'TTS-generated audio sync (edited)'
             });
           }
         }
@@ -1555,9 +1715,42 @@ const AudioSync = () => {
                             </span>
                             <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
                               {segment && (
-                                <span style={{ fontSize: '12px', color: '#666' }}>
-                                  {formatTime(clipBegin)} - {formatTime(clipEnd)}
-                                </span>
+                                <>
+                                  <span style={{ fontSize: '12px', color: '#666' }}>
+                                    {formatTime(clipBegin)} - {formatTime(clipEnd)}
+                                  </span>
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteAudioSync(segment.id, block.id);
+                                    }}
+                                    style={{
+                                      padding: '4px 8px',
+                                      border: '1px solid #f44336',
+                                      borderRadius: '4px',
+                                      backgroundColor: '#ffffff',
+                                      color: '#f44336',
+                                      cursor: 'pointer',
+                                      display: 'flex',
+                                      alignItems: 'center',
+                                      gap: '4px',
+                                      fontSize: '11px',
+                                      transition: 'all 0.2s ease'
+                                    }}
+                                    onMouseEnter={(e) => {
+                                      e.currentTarget.style.backgroundColor = '#ffebee';
+                                      e.currentTarget.style.borderColor = '#e91e63';
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      e.currentTarget.style.backgroundColor = '#ffffff';
+                                      e.currentTarget.style.borderColor = '#f44336';
+                                    }}
+                                    title="Delete audio sync"
+                                  >
+                                    <HiOutlineX size={14} />
+                                    Delete Sync
+                                  </button>
+                                </>
                               )}
                               <button
                                 onClick={(e) => {
@@ -1607,30 +1800,38 @@ const AudioSync = () => {
                                     e.stopPropagation();
                                     handleStartEdit(block);
                                   }}
+                                  disabled={generating || loading}
                                   style={{
-                                    padding: '4px 8px',
-                                    border: '1px solid #e0e0e0',
+                                    padding: '6px 12px',
+                                    border: '2px solid #1976d2',
                                     borderRadius: '4px',
-                                    backgroundColor: '#ffffff',
-                                    color: '#666',
-                                    cursor: 'pointer',
+                                    backgroundColor: '#e3f2fd',
+                                    color: '#1976d2',
+                                    cursor: (generating || loading) ? 'not-allowed' : 'pointer',
                                     display: 'flex',
                                     alignItems: 'center',
-                                    gap: '4px',
-                                    fontSize: '11px',
-                                    transition: 'all 0.2s ease'
+                                    gap: '6px',
+                                    fontSize: '12px',
+                                    fontWeight: '500',
+                                    transition: 'all 0.2s ease',
+                                    opacity: (generating || loading) ? 0.6 : 1
                                   }}
                                   onMouseEnter={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#f5f5f5';
-                                    e.currentTarget.style.borderColor = '#bdbdbd';
+                                    if (!generating && !loading) {
+                                      e.currentTarget.style.backgroundColor = '#bbdefb';
+                                      e.currentTarget.style.borderColor = '#1565c0';
+                                    }
                                   }}
                                   onMouseLeave={(e) => {
-                                    e.currentTarget.style.backgroundColor = '#ffffff';
-                                    e.currentTarget.style.borderColor = '#e0e0e0';
+                                    if (!generating && !loading) {
+                                      e.currentTarget.style.backgroundColor = '#e3f2fd';
+                                      e.currentTarget.style.borderColor = '#1976d2';
+                                    }
                                   }}
+                                  title={segment ? "Edit text - audio will be regenerated automatically" : "Edit text"}
                                 >
-                                  <HiOutlinePencil size={14} />
-                                  Edit
+                                  <HiOutlinePencil size={16} />
+                                  {segment ? 'Edit & Regenerate' : 'Edit Text'}
                                 </button>
                               ) : (
                                 <div style={{ display: 'flex', gap: '4px' }}>
@@ -1639,21 +1840,25 @@ const AudioSync = () => {
                                       e.stopPropagation();
                                       handleSaveEdit(block.id);
                                     }}
+                                    disabled={generating || loading}
                                     style={{
-                                      padding: '4px 8px',
+                                      padding: '6px 12px',
                                       border: '1px solid #4caf50',
                                       borderRadius: '4px',
                                       backgroundColor: '#4caf50',
                                       color: 'white',
-                                      cursor: 'pointer',
+                                      cursor: (generating || loading) ? 'not-allowed' : 'pointer',
                                       display: 'flex',
                                       alignItems: 'center',
-                                      gap: '4px',
-                                      fontSize: '11px'
+                                      gap: '6px',
+                                      fontSize: '12px',
+                                      fontWeight: '500',
+                                      opacity: (generating || loading) ? 0.7 : 1
                                     }}
+                                    title={segment ? "Save text and regenerate audio" : "Save text changes"}
                                   >
                                     <HiOutlineCheck size={14} />
-                                    Save
+                                    {segment ? (generating ? 'Saving & Regenerating...' : 'Save & Regenerate Audio') : 'Save'}
                                   </button>
                                   <button
                                     onClick={(e) => {
@@ -1681,97 +1886,144 @@ const AudioSync = () => {
                             </div>
                           </div>
                           {isEditing ? (
-                            <textarea
-                              value={editedText}
-                              onChange={(e) => setEditedText(e.target.value)}
-                              onClick={(e) => e.stopPropagation()}
-                              style={{
-                                width: '100%',
-                                minHeight: '80px',
+                            <div>
+                              <textarea
+                                value={editedText}
+                                onChange={(e) => setEditedText(e.target.value)}
+                                onClick={(e) => e.stopPropagation()}
+                                style={{
+                                  width: '100%',
+                                  minHeight: '100px',
+                                  padding: '12px',
+                                  fontSize: '14px',
+                                  lineHeight: '1.6',
+                                  border: '2px solid #ff9800',
+                                  borderRadius: '6px',
+                                  fontFamily: 'inherit',
+                                  resize: 'vertical',
+                                  marginTop: '8px',
+                                  backgroundColor: '#fffbf0'
+                                }}
+                                autoFocus
+                                placeholder="Edit the text here..."
+                              />
+                              <div style={{ 
+                                marginTop: '8px', 
+                                fontSize: '12px', 
+                                color: '#666',
                                 padding: '8px',
-                                fontSize: '14px',
-                                lineHeight: '1.6',
-                                border: '1px solid #ff9800',
+                                backgroundColor: '#fff3e0',
                                 borderRadius: '4px',
-                                fontFamily: 'inherit',
-                                resize: 'vertical',
-                                marginTop: '8px'
-                              }}
-                              autoFocus
-                            />
+                                border: '1px solid #ffb74d'
+                              }}>
+                                {segment ? (
+                                  <>💡 <strong>Note:</strong> After saving, audio will be automatically regenerated with the new text.</>
+                                ) : (
+                                  <>💡 <strong>Tip:</strong> Generate audio after editing to create audio for this block.</>
+                                )}
+                              </div>
+                            </div>
                           ) : (
-                            <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.6', paddingRight: isSelected ? '32px' : '0' }}>
+                            <p style={{ margin: 0, fontSize: '14px', lineHeight: '1.6', paddingRight: isSelected ? '32px' : '0', whiteSpace: 'pre-wrap' }}>
                               {block.text || '(Empty block)'}
                             </p>
                           )}
-                          {/* CLIPBEGIN/CLIPEND timing inputs - Auto-populated from audio segments */}
-                          <div style={{ marginTop: '12px', display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <label style={{ fontSize: '12px', fontWeight: '500', color: '#666', minWidth: '100px' }}>
-                                CLIPBEGIN (S):
-                              </label>
-                              <input
-                                type="number"
-                                step="0.01"
-                                value={clipTimings[block.id]?.clipBegin?.toFixed(2) || segment?.startTime?.toFixed(2) || '0.00'}
-                                onChange={(e) => {
-                                  const value = parseFloat(e.target.value) || 0;
-                                  setClipTimings(prev => ({
-                                    ...prev,
-                                    [block.id]: {
-                                      ...prev[block.id],
-                                      clipBegin: value
-                                    }
-                                  }));
-                                }}
-                                onClick={(e) => e.stopPropagation()}
-                                style={{
-                                  width: '80px',
-                                  padding: '4px 8px',
-                                  border: '1px solid #ddd',
-                                  borderRadius: '4px',
-                                  fontSize: '12px',
-                                  fontFamily: 'monospace'
-                                }}
-                                placeholder="0.00"
-                              />
+                          {/* CLIPBEGIN/CLIPEND timing inputs - Editable timing controls */}
+                          {segment && (
+                            <div style={{ marginTop: '12px', padding: '12px', backgroundColor: '#f5f5f5', borderRadius: '6px', border: '1px solid #e0e0e0' }}>
+                              <div style={{ fontSize: '12px', fontWeight: '600', color: '#1976d2', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                <HiOutlineCode size={14} />
+                                Audio Sync Timings (Editable)
+                              </div>
+                              <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <label style={{ fontSize: '12px', fontWeight: '500', color: '#666', minWidth: '100px' }}>
+                                    Start Time (s):
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={clipTimings[block.id]?.clipBegin?.toFixed(2) || segment?.startTime?.toFixed(2) || '0.00'}
+                                    onChange={(e) => {
+                                      const value = parseFloat(e.target.value) || 0;
+                                      setClipTimings(prev => ({
+                                        ...prev,
+                                        [block.id]: {
+                                          ...prev[block.id],
+                                          clipBegin: value
+                                        }
+                                      }));
+                                      // Mark as having unsaved changes
+                                      setHasUnsavedChanges(true);
+                                      setChangesSaved(false);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{
+                                      width: '80px',
+                                      padding: '4px 8px',
+                                      border: '1px solid #ddd',
+                                      borderRadius: '4px',
+                                      fontSize: '12px',
+                                      fontFamily: 'monospace'
+                                    }}
+                                    placeholder="0.00"
+                                  />
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                  <label style={{ fontSize: '12px', fontWeight: '500', color: '#666', minWidth: '90px' }}>
+                                    End Time (s):
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    value={clipTimings[block.id]?.clipEnd?.toFixed(2) || segment?.endTime?.toFixed(2) || '0.00'}
+                                    onChange={(e) => {
+                                      const value = parseFloat(e.target.value) || 0;
+                                      setClipTimings(prev => ({
+                                        ...prev,
+                                        [block.id]: {
+                                          ...prev[block.id],
+                                          clipEnd: value
+                                        }
+                                      }));
+                                      // Mark as having unsaved changes
+                                      setHasUnsavedChanges(true);
+                                      setChangesSaved(false);
+                                    }}
+                                    onClick={(e) => e.stopPropagation()}
+                                    style={{
+                                      width: '80px',
+                                      padding: '4px 8px',
+                                      border: '1px solid #ddd',
+                                      borderRadius: '4px',
+                                      fontSize: '12px',
+                                      fontFamily: 'monospace'
+                                    }}
+                                    placeholder="0.00"
+                                  />
+                                </div>
+                                {segment && clipTimings[block.id] && (
+                                  <span style={{ fontSize: '11px', color: '#ff9800', fontStyle: 'italic' }}>
+                                    ⚠ Edited (not saved)
+                                  </span>
+                                )}
+                                {segment && !clipTimings[block.id] && (
+                                  <span style={{ fontSize: '11px', color: '#4caf50', fontStyle: 'italic' }}>
+                                    ✓ Auto-detected
+                                  </span>
+                                )}
+                              </div>
+                              <div style={{ fontSize: '11px', color: '#666', marginTop: '8px', fontStyle: 'italic' }}>
+                                💡 Tip: Edit timings to fix sync issues. Click "Save Changes" to persist edits.
+                              </div>
                             </div>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                              <label style={{ fontSize: '12px', fontWeight: '500', color: '#666', minWidth: '90px' }}>
-                                CLIPEND (S):
-                              </label>
-                              <input
-                                type="number"
-                                step="0.01"
-                                value={clipTimings[block.id]?.clipEnd?.toFixed(2) || segment?.endTime?.toFixed(2) || '0.00'}
-                                onChange={(e) => {
-                                  const value = parseFloat(e.target.value) || 0;
-                                  setClipTimings(prev => ({
-                                    ...prev,
-                                    [block.id]: {
-                                      ...prev[block.id],
-                                      clipEnd: value
-                                    }
-                                  }));
-                                }}
-                                onClick={(e) => e.stopPropagation()}
-                                style={{
-                                  width: '80px',
-                                  padding: '4px 8px',
-                                  border: '1px solid #ddd',
-                                  borderRadius: '4px',
-                                  fontSize: '12px',
-                                  fontFamily: 'monospace'
-                                }}
-                                placeholder="0.00"
-                              />
+                          )}
+                          {/* Show timing info even when no segment exists */}
+                          {!segment && (
+                            <div style={{ marginTop: '12px', fontSize: '11px', color: '#999', fontStyle: 'italic' }}>
+                              No audio sync - Generate audio or upload audio file first
                             </div>
-                            {segment && (
-                              <span style={{ fontSize: '11px', color: '#4caf50', fontStyle: 'italic' }}>
-                                ✓ Auto-detected
-                              </span>
-                            )}
-                          </div>
+                          )}
                           
                           {/* Display coordinates and size information */}
                           {(block.x !== undefined || block.normalizedX !== undefined) && (

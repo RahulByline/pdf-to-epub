@@ -50,11 +50,8 @@ const PdfList = () => {
       setError('');
       const job = await conversionService.startConversion(pdfId);
       
-      // Redirect to conversions page
-      // Wait a moment for conversion to initialize, then redirect
-      setTimeout(() => {
-        navigate('/conversions');
-      }, 500);
+      // Redirect to conversions page to track progress
+      navigate('/conversions');
     } catch (err) {
       setError(err.message || 'Failed to start conversion');
     }
