@@ -399,7 +399,7 @@ export class GeminiService {
    * @param {number} pageNumber - Page number
    * @returns {Promise<{xhtml: string, css: string}|null>} XHTML and CSS or null if failed
    */
-  static async convertPngToXhtml(imagePath, pageNumber) {
+  static async convertPngToXhtml(imagePath, pageNumber, extractedImages = []) {
     const client = this.getClient();
     if (!client) {
       return null;
@@ -464,12 +464,85 @@ export class GeminiService {
         console.log(`[Page ${pageNumber}] Reading PNG image for XHTML conversion...`);
         const imageBuffer = await fs.readFile(imagePath);
         
+        // Read extracted images if provided
+        const extractedImageBuffers = [];
+        if (extractedImages && extractedImages.length > 0) {
+          console.log(`[Page ${pageNumber}] Including ${extractedImages.length} extracted image(s) from PDF...`);
+          for (const img of extractedImages) {
+            try {
+              if (img.path && await fs.access(img.path).then(() => true).catch(() => false)) {
+                const imgBuffer = await fs.readFile(img.path);
+                extractedImageBuffers.push({
+                  buffer: imgBuffer,
+                  mimeType: img.mimeType || `image/${img.format || 'png'}`,
+                  fileName: img.fileName || `image_${img.index || 'unknown'}.${img.format || 'png'}`,
+                  width: img.width,
+                  height: img.height
+                });
+                console.log(`[Page ${pageNumber}] Loaded extracted image: ${img.fileName} (${img.width}x${img.height}px)`);
+              } else if (img.buffer) {
+                // Image buffer already provided
+                extractedImageBuffers.push({
+                  buffer: img.buffer,
+                  mimeType: img.mimeType || `image/${img.format || 'png'}`,
+                  fileName: img.fileName || `image_${img.index || 'unknown'}.${img.format || 'png'}`,
+                  width: img.width,
+                  height: img.height
+                });
+              }
+            } catch (imgError) {
+              console.warn(`[Page ${pageNumber}] Could not load extracted image ${img.fileName || img.path}:`, imgError.message);
+            }
+          }
+        }
+        
         const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
         const model = client.getGenerativeModel({ model: modelName });
+
+        // Build prompt with image instructions if extracted images are provided
+        const imageFileList = extractedImageBuffers.map((img, idx) => 
+          `  ${idx + 1}. ${img.fileName} (${img.width}x${img.height}px, ${img.mimeType})`
+        ).join('\n');
+        
+        
 
         const prompt = `Analyze the provided image of the worksheet page(s) and generate complete XHTML with ALL CSS embedded inside.
 
         **THIS IS PAGE ${pageNumber}** - Use this page number in ALL element IDs to ensure global uniqueness.
+
+        
+ **EPUB 3 REFLOWABLE STRATEGY (CRITICAL):**
+
+        1) This is a REFLOWABLE EPUB. DO NOT use position: absolute or fixed px units for layout.
+
+        2) Recreate the visual "look and feel" (colors, typography, spacing) using semantic HTML5 and Flexbox.
+
+        3) Use background colors on <div> wrappers to replicate banners and colored sections found in the PDF.
+
+
+
+
+        **IMAGE HANDLING & ASSET FITTING (CRITICAL - MANDATORY CLASSES):**
+
+1) **FOR EVERY illustration, icon, logo, photo, graphic, or visual element in the PDF, you MUST create an empty <div> with ONE of these classes:**
+   - class="image-drop-zone" (preferred for main images)
+   - class="image-placeholder" (alternative, also acceptable)
+
+2) **ID FORMAT:** id="page${pageNumber}_dropzone_[N]" OR id="page${pageNumber}_img[N]" OR id="page${pageNumber}_div[N]"
+   - Use consistent naming: prefer page${pageNumber}_img[N] for images
+   - Example: id="page1_img1", id="page1_img2", etc.
+
+3) **TITLE ATTRIBUTE:** ALWAYS include a detailed description of the image for the user.
+   - Example: title="A brown horse with its mouth wide open, showing its teeth, against a blue sky"
+
+4) **CSS FOR DROP ZONES:** Must use 'aspect-ratio' to reserve space and 'object-fit: contain' for future images to ensure they fit the container without distortion.
+
+5) **CRITICAL:** NEVER create a <div> for an image without adding class="image-drop-zone" or class="image-placeholder". 
+   - If you create a div with a title describing an image, it MUST have one of these classes.
+   - Empty divs with image descriptions but no class will NOT work in the editor.
+
+
+
 
         **LAYOUT DECISION:**
         1) **TWO-COLUMN (Multi-Page Split):** Use ONLY if the image shows a visible divider line or two distinct page numbers. Use .container with two .page children.
@@ -479,6 +552,21 @@ export class GeminiService {
         - **CRITICAL: ALL text elements must use NESTED hierarchical structure to support word/sentence/paragraph granularity**
         - **STRUCTURE: Parent Element → Sentences → Words (nested hierarchy)**
         - **ID FORMAT: page${pageNumber}_[type][number]_[subtype][number]...**
+
+        **VISUAL STYLING & COLOR SAMPLING:**
+
+        1) **Colors:** Identify the specific hex colors in the PDF (e.g., the red in the TIME logo, the tan/brown background of horse sections, the blue TOC border). Apply these to 'background-color' or 'color' in CSS.
+
+        2) **Typography:** Identify if text is Serif or Sans-Serif and apply globally.
+
+        3) **Borders:** Recreate decorative borders (like the TOC box on page 3) using CSS 'border' and 'border-radius'.
+
+
+
+       
+
+
+
         
         **HIERARCHICAL STRUCTURE (MANDATORY FOR ALL TEXT ELEMENTS):**
         - **Paragraphs**: <p id="page${pageNumber}_p1" class="paragraph-block" data-read-aloud="true">
@@ -548,17 +636,92 @@ export class GeminiService {
         - **Even if text appears multiple times (duplicates), each occurrence must have a unique ID**
         - **Page numbers, headers, footers, titles, captions, labels - ALL must have unique IDs**
 
+        **BACKROUND & CANVAS LOGIC (CRITICAL):**
+1) **The Background:** For the primary visual, use a <div class="canvas-background" id="page${pageNumber}_bg">. 
+2) **The Drop Zone:** Inside the background div, place the <div class="image-drop-zone" title="..."> representing the main horse photo.
+   - **MANDATORY:** This div MUST have class="image-drop-zone" or class="image-placeholder".
+3) **The Text Layer:** All text must be treated as "overlays." Wrap text blocks in:
+   <div class="draggable-text-block" style="top: [N]%; left: [N]%; width: [N]%;">
+     [Standard Nested Audio-Sync Structure: Parent > Sentence > Word]
+   </div>
+
+**REMINDER - ALL IMAGE PLACEHOLDERS MUST HAVE CLASSES:**
+- Every <div> that represents an image, illustration, icon, logo, or graphic MUST have either:
+  - class="image-drop-zone" OR
+  - class="image-placeholder"
+- Do NOT create image divs without these classes. They will not be detected by the editor.
+
+**VISUAL ACCURACY:**
+- Replicate the layout of the PDF exactly by using percentage-based positioning.
+- If text is inside a colored box (like the red "TIME" banner), apply that 'background-color' directly to the draggable-text-block.
+
+**CSS REQUIREMENTS (EMBEDDED):**
+- .page { position: relative; width: 100%; min-height: 100vh; display: block; }
+- .canvas-background { 
+    position: absolute; 
+    top: 0; left: 0; width: 100%; height: 100%; 
+    z-index: 1; 
+  }
+- .draggable-text-block { 
+    position: absolute; 
+    z-index: 10; 
+    cursor: move; 
+    padding: 0.5em;
+  }
+- .image-drop-zone { 
+    width: 100%; height: 100%; 
+    background: #f0f0f0; 
+    display: flex; align-items: center; justify-content: center; 
+  }
+
+
         **XHTML 1.0 STRICT REQUIREMENTS:**
         - DOCTYPE: <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
         - All tags lowercase, properly nested, self-closing tags end with />
         - Use relative units (em, rem, %, vw, vh) - NO px units for layout
         - Represent graphics as <div> placeholders with title attributes
+        - **CRITICAL: When using <img> tags, DO NOT include xmlns="" attribute. Use: <img src="..." alt="..." /> NOT <img xmlns="" src="..." />**
 
         **CSS REQUIREMENTS - CRITICAL:**
         - ALL CSS MUST be inside a <style type="text/css"> tag within <head>
         - Include: .-epub-media-overlay-active { background-color: #ffff00; }
         - Preserve text hierarchy (h1, h2, h3)
         - Use flexbox for layouts
+        - CSS: Embedded in <head>. Include 
+
+         - .image-drop-zone { 
+
+            width: 100%; 
+
+            background: #f4f4f4; 
+
+            border: 2px dashed #007bff; 
+
+            margin: 1em 0; 
+
+            display: flex; 
+
+            align-items: center; 
+
+            justify-content: center;
+
+            aspect-ratio: 16/9; /* Or appropriate ratio based on image shape */
+
+          }
+
+        - .image-drop-zone img, .image-placeholder img { 
+            width: 100%; 
+            height: 100%; 
+            object-fit: contain; 
+          }
+
+**CRITICAL REMINDER:** When you create ANY div that represents an image (illustration, photo, icon, logo, graphic), you MUST add class="image-drop-zone" or class="image-placeholder" to it. Do not create image divs without these classes.
+
+- Use relative units (em, rem, %) for all text and spacing.
+
+
+
+
 
         **OUTPUT FORMAT - CRITICAL:**
         Return ONLY the raw XHTML content. 
@@ -635,6 +798,10 @@ export class GeminiService {
                 </td>
               </tr>
             </table>
+            <!-- Image placeholder - MUST have class="image-drop-zone" or class="image-placeholder" -->
+            <div id="page${pageNumber}_img1" class="image-drop-zone" title="Description of the image for accessibility"></div>
+            <!-- Another image placeholder example -->
+            <div id="page${pageNumber}_img2" class="image-placeholder" title="Another image description"></div>
             <!-- Footer with NESTED sentences and words -->
             <footer id="page${pageNumber}_footer1" data-read-aloud="true">
               <span class="sync-sentence" id="page${pageNumber}_footer1_s1" data-read-aloud="true">
@@ -664,7 +831,8 @@ export class GeminiService {
             timeoutId = setTimeout(() => reject(new Error('API call timeout after 90s')), apiTimeout);
           });
 
-          const apiCallPromise = model.generateContent([
+          // Build content array with main page image and extracted images
+          const contentArray = [
             { text: prompt },
             {
               inlineData: {
@@ -672,7 +840,19 @@ export class GeminiService {
                 mimeType: 'image/png'
               }
             }
-          ]);
+          ];
+          
+          // Add extracted images to the content array
+          for (const extractedImg of extractedImageBuffers) {
+            contentArray.push({
+              inlineData: {
+                data: extractedImg.buffer.toString('base64'),
+                mimeType: extractedImg.mimeType
+              }
+            });
+          }
+          
+          const apiCallPromise = model.generateContent(contentArray);
 
           // Store reference to track late responses
           pendingApiCall = apiCallPromise;

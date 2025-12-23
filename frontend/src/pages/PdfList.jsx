@@ -50,10 +50,10 @@ const PdfList = () => {
       setError('');
       const job = await conversionService.startConversion(pdfId);
       
-      // Redirect to audio-sync/preview page
+      // Redirect to conversions page
       // Wait a moment for conversion to initialize, then redirect
       setTimeout(() => {
-        navigate(`/audio-sync-cards/${job.id}`);
+        navigate('/conversions');
       }, 500);
     } catch (err) {
       setError(err.message || 'Failed to start conversion');

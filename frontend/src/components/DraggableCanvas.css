@@ -1,0 +1,138 @@
+/* DraggableCanvas Styles */
+
+.draggable-canvas-container {
+  position: relative;
+  width: 100%;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+.draggable-canvas-container .draggable-text-block {
+  position: absolute;
+  z-index: 10;
+  cursor: move;
+  padding: 0.5em;
+  transition: box-shadow 0.2s ease;
+  user-select: none;
+  touch-action: none; /* Prevent touch scrolling while dragging */
+}
+
+/* Ensure placeholders inside draggable blocks are still accessible */
+.draggable-canvas-container .draggable-text-block .image-drop-zone,
+.draggable-canvas-container .draggable-text-block .image-placeholder {
+  z-index: 101; /* Higher than draggable block */
+  pointer-events: auto; /* Always allow pointer events */
+  position: relative; /* Ensure they're positioned correctly */
+}
+
+.draggable-canvas-container .draggable-text-block.draggable-enabled {
+  cursor: move;
+}
+
+.draggable-canvas-container .draggable-text-block:not(.draggable-enabled) {
+  cursor: default;
+}
+
+.draggable-canvas-container .draggable-text-block:hover {
+  box-shadow: 0 2px 8px rgba(33, 150, 243, 0.3);
+  outline: 2px dashed rgba(33, 150, 243, 0.5);
+}
+
+.draggable-canvas-container .draggable-text-block.dragging {
+  opacity: 0.8;
+  z-index: 1000;
+  cursor: grabbing;
+}
+
+.draggable-canvas-container .canvas-background {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 1;
+}
+
+.draggable-canvas-container .image-drop-zone,
+.draggable-canvas-container .image-placeholder {
+  width: 100%;
+  height: 100%;
+  /* Override any transparent backgrounds - make placeholders visible */
+  background: #f0f0f0 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Override any border: none - make placeholders visible */
+  border: 2px dashed #007bff !important;
+  position: relative;
+  /* Ensure placeholders are always accessible for drops, even when nested */
+  z-index: 100;
+  pointer-events: auto;
+  /* Make sure they're visible and interactive */
+  min-height: 50px;
+  min-width: 50px;
+  /* Ensure they're visible even if CSS says transparent */
+  opacity: 1 !important;
+}
+
+/* When dragging over, highlight placeholders */
+.draggable-canvas-container .image-drop-zone.drag-over,
+.draggable-canvas-container .image-placeholder.drag-over {
+  background: rgba(33, 150, 243, 0.2);
+  border-color: #2196F3;
+  border-width: 3px;
+}
+
+.draggable-canvas-container .image-drop-zone img,
+.draggable-canvas-container img {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: relative !important;
+  z-index: 10 !important;
+}
+
+/* Ensure images with specific IDs are visible */
+.draggable-canvas-container img[id^="page"] {
+  max-width: 100% !important;
+  height: auto !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Edit Mode Styles */
+.draggable-canvas-container.edit-mode .sync-word {
+  cursor: text;
+  outline: 1px dashed rgba(33, 150, 243, 0.3);
+  padding: 2px;
+  margin: 0 1px;
+}
+
+.draggable-canvas-container.edit-mode .sync-word:focus {
+  outline: 2px solid rgba(33, 150, 243, 0.8);
+  background-color: rgba(33, 150, 243, 0.1);
+}
+
+.draggable-canvas-container.edit-mode .draggable-text-block {
+  cursor: default;
+}
+
+/* Visual feedback for draggable elements */
+.draggable-canvas-container:not(.edit-mode) .draggable-text-block::before {
+  content: '⋮⋮';
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  font-size: 12px;
+  color: rgba(33, 150, 243, 0.5);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.draggable-canvas-container:not(.edit-mode) .draggable-text-block:hover::before {
+  opacity: 1;
+}
+
