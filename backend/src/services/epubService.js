@@ -63,6 +63,28 @@ export class EpubService {
       }
     }
     
+    // Fix meta tags to be self-closing (XHTML requirement)
+    // Convert <meta ...> to <meta .../> for all meta tags that aren't already self-closing
+    sanitized = sanitized.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+      // Check if already self-closing (ends with /> or has /> before the closing >)
+      if (match.includes('/>') || attrs.trim().endsWith('/')) {
+        return match; // Already self-closing
+      }
+      // Add / before the closing >
+      return `<meta${attrs}/>`;
+    });
+    
+    // Fix img tags to be self-closing (XHTML requirement)
+    // Convert <img ...> to <img .../> for all img tags that aren't already self-closing
+    sanitized = sanitized.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+      // Check if already self-closing (ends with /> or has /> before the closing >)
+      if (match.includes('/>') || attrs.trim().endsWith('/')) {
+        return match; // Already self-closing
+      }
+      // Add / before the closing >
+      return `<img${attrs}/>`;
+    });
+    
     // Fix common DOCTYPE URL typo
     sanitized = sanitized.replace(
       /http:\/\/www\.w3\.org\/TR\/xhtml\/DTD\/xhtml1-strict\.dtd/gi,
