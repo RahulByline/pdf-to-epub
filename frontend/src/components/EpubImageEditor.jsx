@@ -777,7 +777,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       
       // Get auth token for image URLs if needed
       const token = localStorage.getItem('token');
-      const baseURL = api.defaults.baseURL || 'http://localhost:8081/api';
+      const baseURL = api.defaults.baseURL || 'http://localhost:8082/api';
       console.log('[EpubImageEditor] API baseURL:', baseURL);
       
       // Convert relative URLs to absolute API URLs

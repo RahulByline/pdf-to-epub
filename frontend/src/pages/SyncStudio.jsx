@@ -995,7 +995,7 @@ const SyncStudio = () => {
         const sectionsData = await conversionService.getEpubSections(parseInt(jobId));
         if (sectionsData && sectionsData.length > 0) {
           // Convert relative image paths to absolute URLs for browser preview
-          const baseURL = api.defaults.baseURL || 'http://localhost:8081/api';
+          const baseURL = api.defaults.baseURL || 'http://localhost:8082/api';
           const processedSections = sectionsData.map(section => {
             let processedXhtml = section.xhtml || section.content || '';
             
