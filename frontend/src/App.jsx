@@ -8,6 +8,7 @@ import PdfUpload from './pages/PdfUpload';
 import Conversions from './pages/Conversions';
 import SyncStudio from './pages/SyncStudio';
 import MediaOverlaySyncEditor from './pages/MediaOverlaySyncEditor';
+import AudioScript from './pages/AudioScript';
 import AiConfig from './pages/AiConfig';
 import EpubImageEditorPage from './pages/EpubImageEditorPage';
 
