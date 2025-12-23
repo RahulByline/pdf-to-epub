@@ -40,9 +40,19 @@ const DraggableImage = ({ image, pageNumber }) => {
         window.__imageDragging = false;
       }
     },
-    collect: (monitor) => ({
-      isDragging: monitor.isDragging(),
-    }),
+    collect: (monitor) => {
+      if (!monitor || typeof monitor.isDragging !== 'function') {
+        return { isDragging: false };
+      }
+      try {
+        return {
+          isDragging: monitor.isDragging(),
+        };
+      } catch (error) {
+        console.error('[DraggableImage] collect - Error:', error);
+        return { isDragging: false };
+      }
+    },
   });
 
   // Load image - try multiple approaches
@@ -233,6 +243,12 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
       }
     },
     drop: (item, monitor) => {
+      console.log('[XhtmlCanvas] ===== DROP HANDLER CALLED =====', {
+        item: item?.image?.fileName,
+        dropResult: monitor?.getDropResult(),
+        didDrop: monitor?.didDrop()
+      });
+      
       // Safety check: ensure monitor exists
       if (!monitor) {
         console.error('[XhtmlCanvas] drop - monitor is undefined');
@@ -521,7 +537,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
       }
     },
     collect: (monitor) => {
-      // Safety check: ensure monitor exists
+      // Safety check: ensure monitor exists and has required methods
       if (!monitor) {
         console.error('[XhtmlCanvas] collect - monitor is undefined');
         return {
@@ -532,33 +548,54 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
       }
       
       try {
-        const item = monitor.getItem();
-        const itemType = monitor.getItemType();
+        // Safely get monitor values with fallbacks
+        const item = (monitor && typeof monitor.getItem === 'function') ? monitor.getItem() : null;
+        const itemType = (monitor && typeof monitor.getItemType === 'function') ? monitor.getItemType() : null;
         const isImageDrag = itemType === DRAG_TYPE;
-        const isOverDrop = monitor.isOver();
-        const isDraggingNow = monitor.isDragging();
+        const isOverDrop = (monitor && typeof monitor.isOver === 'function') ? monitor.isOver() : false;
+        const isDraggingNow = (monitor && typeof monitor.isDragging === 'function') ? monitor.isDragging() : false;
+        const canDropValue = (monitor && typeof monitor.canDrop === 'function') ? monitor.canDrop() : false;
+        
+        // Always check global flag as fallback - even if monitor says not dragging
+        const globalFlag = typeof window !== 'undefined' ? (window.__imageDragging || false) : false;
+        const actuallyDragging = isDraggingNow || (globalFlag && isImageDrag);
+        
+        // If monitor methods aren't available but global flag is set, use it
+        if ((!monitor || typeof monitor.isDragging !== 'function') && globalFlag) {
+          console.warn('[XhtmlCanvas] collect - Using global flag as fallback (monitor methods not available)');
+          return {
+            isOver: false, // Can't determine without monitor
+            isDragging: true, // Use global flag
+            canDrop: true, // Assume we can drop if dragging
+          };
+        }
         
         // Log when dragging starts/stops
-        if (isDraggingNow && isImageDrag) {
+        if (actuallyDragging && isImageDrag) {
           console.log('[XhtmlCanvas] collect - Image being dragged:', {
             itemType,
             fileName: item?.image?.fileName,
             isOver: isOverDrop,
-            canDrop: monitor.canDrop()
+            canDrop: canDropValue,
+            isDraggingNow,
+            globalFlag,
+            actuallyDragging
           });
         }
         
         return {
           isOver: isOverDrop,
-          isDragging: isImageDrag && isDraggingNow, // Only true when dragging an image
-          canDrop: monitor.canDrop(),
+          isDragging: isImageDrag && actuallyDragging, // Use combined check (monitor + global flag)
+          canDrop: canDropValue || (globalFlag && isImageDrag), // Allow drop if global flag is set
         };
       } catch (error) {
         console.error('[XhtmlCanvas] collect - Error:', error);
+        // On error, check global flag as last resort
+        const globalFlag = typeof window !== 'undefined' ? (window.__imageDragging || false) : false;
         return {
           isOver: false,
-          isDragging: false,
-          canDrop: false,
+          isDragging: globalFlag, // Use global flag on error
+          canDrop: globalFlag, // Allow drop if global flag is set
         };
       }
     },
@@ -586,7 +623,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
   }, [isOver, canvasRef]);
 
   // This is a transparent overlay for drop handling
-  // react-dnd needs this to always be present to detect drops
+  // react-dnd needs this to always be present and active to detect drops
   // Check both local state and global flag to ensure we detect drags
   // Safe access to window object
   const globalFlag = typeof window !== 'undefined' ? (window.__imageDragging || false) : false;
@@ -597,12 +634,19 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
     isOver, 
     canDrop: canDrop || false,
     globalFlag,
-    isAnyImageDragging
+    isAnyImageDragging,
+    dropRefType: typeof drop,
+    dropRefValue: drop ? 'exists' : 'null'
   });
   
+  // CRITICAL: react-dnd requires the drop target to always accept pointer events
+  // Setting pointerEvents to 'none' prevents react-dnd from detecting drops
+  // Instead, we'll make it always active but transparent when not dragging
   return (
     <div 
       ref={drop}
+      data-drop-zone="true"
+      data-testid="xhtml-canvas-drop-zone"
       style={{
         position: 'absolute',
         top: 0,
@@ -611,29 +655,20 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
         bottom: 0,
         width: '100%',
         height: '100%',
-        // CRITICAL: Must always accept pointer events when an image is being dragged
-        // react-dnd needs this to detect drops
-        // Use both local state and global flag to ensure we detect drags
-        pointerEvents: isAnyImageDragging ? 'auto' : 'none',
-        zIndex: isAnyImageDragging ? 2000 : 100, // High z-index when dragging, but still present when not dragging
+        // CRITICAL: react-dnd requires the drop target to always accept pointer events
+        // Setting pointerEvents to 'none' prevents react-dnd from detecting drops
+        // react-dnd will only intercept drag events, not regular clicks
+        pointerEvents: 'auto', // Always active so react-dnd can detect drops
+        zIndex: isAnyImageDragging ? 2000 : 100, // High z-index when dragging
         backgroundColor: isOver ? 'rgba(33, 150, 243, 0.2)' : (isAnyImageDragging ? 'rgba(33, 150, 243, 0.05)' : 'transparent'),
         border: isAnyImageDragging ? '2px dashed rgba(33, 150, 243, 0.5)' : 'none', // Visual indicator
         transition: 'background-color 0.2s ease',
         // Debug: Make overlay visible when dragging
         outline: isAnyImageDragging ? '2px solid rgba(33, 150, 243, 0.3)' : 'none',
       }}
-      onDragOver={(e) => {
-        // Prevent default to allow drop
-        e.preventDefault();
-        e.stopPropagation();
-        console.log('[XhtmlCanvas] Native onDragOver event - allowing drop');
-      }}
-      onDrop={(e) => {
-        // Fallback native drop handler - this shouldn't be needed with react-dnd
-        e.preventDefault();
-        e.stopPropagation();
-        console.log('[XhtmlCanvas] Native onDrop event (fallback) - this should not happen with react-dnd');
-      }}
+      // REMOVED: Native onDragOver and onDrop handlers
+      // These were interfering with react-dnd's event handling
+      // react-dnd handles all drag/drop events internally
     />
   );
 };
@@ -641,7 +676,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
 /**
  * Main EpubImageEditor Component
  */
-const EpubImageEditor = ({ jobId, pageNumber, onSave }) => {
+const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const [xhtml, setXhtml] = useState('');
   const [originalXhtml, setOriginalXhtml] = useState('');
   const [images, setImages] = useState([]);
@@ -991,7 +1026,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave }) => {
     }
   }, [xhtml, jobId]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     try {
       setSaving(true);
       setError('');
@@ -1046,9 +1081,9 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave }) => {
     } finally {
       setSaving(false);
     }
-  };
+  }, [xhtml, jobId, pageNumber, onSave]);
 
-  const handleReset = () => {
+  const handleReset = useCallback(() => {
     if (window.confirm('Are you sure you want to reset all changes?')) {
       // Convert relative paths in originalXhtml to absolute URLs for preview
       let resetXhtml = originalXhtml;
@@ -1069,7 +1104,23 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave }) => {
       setModified(false);
       extractPlaceholdersFromXhtml(resetXhtml);
     }
-  };
+  }, [originalXhtml, jobId]);
+
+  // Expose state to parent component (after functions are defined)
+  // Only include state values in dependencies, not functions (they're memoized with useCallback)
+  useEffect(() => {
+    if (onStateChange) {
+      onStateChange({ 
+        editMode, 
+        modified, 
+        saving, 
+        handleSave, 
+        handleReset, 
+        setEditMode 
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editMode, modified, saving]); // Functions are stable (useCallback), onStateChange should be stable in parent
 
   if (loading) {
     return (
@@ -1078,6 +1129,14 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave }) => {
       </div>
     );
   }
+
+  // Debug: Log button visibility state
+  console.log('[EpubImageEditor] Render state:', {
+    editMode,
+    modified,
+    saving,
+    saveButtonDisabled: saving || !modified || !editMode
+  });
 
   return (
     <DndProvider backend={HTML5Backend}>
@@ -1089,9 +1148,9 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave }) => {
           </div>
         )}
         
-        <div className="editor-header">
+        <div className="editor-header" style={{ position: 'relative', zIndex: 10, minHeight: '60px' }}>
           <h2>EPUB Image Editor - Page {pageNumber}</h2>
-          <div className="header-actions">
+          <div className="header-actions" style={{ display: 'flex', gap: '1em', alignItems: 'center', flexWrap: 'nowrap', minWidth: '400px' }}>
             <button
               onClick={() => setEditMode(!editMode)}
               className={`btn-toggle-edit ${editMode ? 'active' : ''}`}
@@ -1104,15 +1163,23 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave }) => {
             )}
             <button
               onClick={handleReset}
-              disabled={!modified}
+              disabled={!modified || !editMode}
               className="btn-reset"
+              style={{ display: 'block', visibility: 'visible' }}
             >
               Reset
             </button>
             <button
               onClick={handleSave}
-              disabled={saving || !modified}
+              disabled={saving || !modified || !editMode}
               className="btn-save"
+              style={{ 
+                display: 'inline-block', 
+                visibility: 'visible', 
+                minWidth: '120px',
+                opacity: (saving || !modified || !editMode) ? 0.6 : 1
+              }}
+              title={!editMode ? 'Enable Edit Mode to save' : (!modified ? 'No changes to save' : 'Save XHTML')}
             >
               {saving ? 'Saving...' : 'Save XHTML'}
             </button>
