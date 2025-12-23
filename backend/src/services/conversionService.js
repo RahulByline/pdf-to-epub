@@ -46,6 +46,33 @@ export class ConversionService {
 
     console.log(`[Job ${jobId}] Converted ${pageImages.length} pages to PNG`);
 
+    // Extract images per page from PDF
+    const jobImagesDir = path.join(htmlIntermediateDir, `job_${jobId}_images`);
+    await fs.mkdir(jobImagesDir, { recursive: true }).catch(() => {});
+    
+    console.log(`[Job ${jobId}] Extracting embedded images from PDF per page...`);
+    let extractedImagesPerPage = {};
+    try {
+      const extractedImagesResult = await PdfExtractionService.extractImagesPerPage(pdfFilePath, jobImagesDir, {
+        saveToDisk: true,
+        format: 'original'
+      });
+      
+      // Organize images by page number for easy lookup
+      if (extractedImagesResult && extractedImagesResult.pages) {
+        extractedImagesResult.pages.forEach(pageData => {
+          if (pageData.images && pageData.images.length > 0) {
+            extractedImagesPerPage[pageData.pageNumber] = pageData.images;
+            console.log(`[Job ${jobId}] Page ${pageData.pageNumber}: ${pageData.images.length} image(s) extracted`);
+          }
+        });
+      }
+      console.log(`[Job ${jobId}] Total images extracted: ${extractedImagesResult.totalImages} across ${extractedImagesResult.totalPages} pages`);
+    } catch (extractError) {
+      console.warn(`[Job ${jobId}] Could not extract images per page:`, extractError.message);
+      // Continue without extracted images
+    }
+
     // Step 2: Process each PNG through Gemini to get XHTML and CSS
     await ConversionJobModel.update(jobId, {
       currentStep: steps[2].step,
@@ -64,6 +91,13 @@ export class ConversionService {
     const xhtmlPages = [];
     
     for (let i = 0; i < pageImages.length; i++) {
+      // Check if job was cancelled before processing each page
+      const currentJob = await ConversionJobModel.findById(jobId);
+      if (currentJob && currentJob.status === 'CANCELLED') {
+        console.log(`[Job ${jobId}] Job was cancelled during page processing, aborting`);
+        throw new Error('Conversion cancelled by user');
+      }
+
       const pageImage = pageImages[i];
       const progress = steps[2].progress + Math.floor((steps[3].progress - steps[2].progress) * (i + 1) / pageImages.length);
       
@@ -74,7 +108,17 @@ export class ConversionService {
 
       console.log(`[Job ${jobId}] Processing page ${pageImage.pageNumber}/${pageImages.length} through Gemini...`);
       
-      const xhtmlResult = await GeminiService.convertPngToXhtml(pageImage.path, pageImage.pageNumber);
+      // Get extracted images for this page
+      const pageExtractedImages = extractedImagesPerPage[pageImage.pageNumber] || [];
+      if (pageExtractedImages.length > 0) {
+        console.log(`[Job ${jobId}] Including ${pageExtractedImages.length} extracted image(s) for page ${pageImage.pageNumber}`);
+      }
+      
+      const xhtmlResult = await GeminiService.convertPngToXhtml(
+        pageImage.path, 
+        pageImage.pageNumber,
+        pageExtractedImages
+      );
       
       if (xhtmlResult && xhtmlResult.xhtml && (xhtmlResult.css !== undefined)) {
         // Save XHTML file
@@ -116,6 +160,11 @@ export class ConversionService {
         
         // Escape bare ampersands that are not part of an entity, to avoid xmlParseEntityRef errors
         xhtmlContent = xhtmlContent.replace(/&(?!#?[a-zA-Z0-9]+;)/g, '&amp;');
+        
+        // Replace placeholder divs with actual img tags if extracted images are available
+        if (pageExtractedImages && pageExtractedImages.length > 0) {
+          xhtmlContent = this.replacePlaceholderDivsWithImages(xhtmlContent, pageImage.pageNumber, pageExtractedImages);
+        }
         
         // Add viewport meta tag for fixed-layout (must be before other meta tags)
         const viewportMeta = useFixedLayout
@@ -274,7 +323,8 @@ body { margin: 0; padding: 0; }
         pageWidth: pageWidthPoints,
         pageHeight: pageHeightPoints,
         renderedWidth: renderedWidth,
-        renderedHeight: renderedHeight
+        renderedHeight: renderedHeight,
+        extractedImagesDir: jobImagesDir // Pass the extracted images directory
       }
     );
 
@@ -286,7 +336,7 @@ body { margin: 0; padding: 0; }
    * @param {Array} xhtmlPages - Array of {pageNumber, xhtmlPath, xhtmlFileName, css, pageWidth, pageHeight, renderedWidth, renderedHeight}
    * @param {string} outputDir - Output directory
    * @param {string} jobId - Job ID
-   * @param {Object} options - Options {title, fixedLayout, pageWidth, pageHeight, renderedWidth, renderedHeight}
+   * @param {Object} options - Options {title, fixedLayout, pageWidth, pageHeight, renderedWidth, renderedHeight, extractedImagesDir}
    * @returns {Promise<string>} Path to generated EPUB file
    */
   static async generateEpubFromXhtmlPages(xhtmlPages, outputDir, jobId, options = {}) {
@@ -295,11 +345,46 @@ body { margin: 0; padding: 0; }
     const pageHeight = options.pageHeight || 792;
     const tempEpubDir = path.join(outputDir, `temp_${jobId}`);
     const oebpsDir = path.join(tempEpubDir, 'OEBPS');
+    const imagesDir = path.join(oebpsDir, 'images');
     const metaInfDir = path.join(tempEpubDir, 'META-INF');
     
     // Create directories
     await fs.mkdir(oebpsDir, { recursive: true });
+    await fs.mkdir(imagesDir, { recursive: true });
     await fs.mkdir(metaInfDir, { recursive: true });
+    
+    // Copy extracted images to EPUB images directory if provided
+    const imageManifestItems = [];
+    if (options.extractedImagesDir) {
+      try {
+        const extractedImages = await fs.readdir(options.extractedImagesDir, { withFileTypes: true });
+        for (const entry of extractedImages) {
+          if (entry.isFile() && /\.(jpg|jpeg|png|gif|webp)$/i.test(entry.name)) {
+            const srcPath = path.join(options.extractedImagesDir, entry.name);
+            const destPath = path.join(imagesDir, entry.name);
+            await fs.copyFile(srcPath, destPath);
+            
+            // Determine media type
+            const ext = path.extname(entry.name).toLowerCase();
+            let mediaType = 'image/png';
+            if (ext === '.jpg' || ext === '.jpeg') mediaType = 'image/jpeg';
+            else if (ext === '.gif') mediaType = 'image/gif';
+            else if (ext === '.webp') mediaType = 'image/webp';
+            
+            imageManifestItems.push({
+              id: `img-${entry.name.replace(/[^a-zA-Z0-9]/g, '-')}`,
+              href: `OEBPS/images/${entry.name}`,
+              mediaType: mediaType
+            });
+          }
+        }
+        if (imageManifestItems.length > 0) {
+          console.log(`[Job ${jobId}] Copied ${imageManifestItems.length} extracted image(s) to EPUB`);
+        }
+      } catch (imgError) {
+        console.warn(`[Job ${jobId}] Could not copy extracted images to EPUB:`, imgError.message);
+      }
+    }
     
     // Copy XHTML files to OEBPS directory
     const xhtmlFiles = [];
@@ -333,6 +418,7 @@ ${fixedLayoutMeta}
   <manifest>
     <item id="nav" href="OEBPS/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
 ${xhtmlFiles.map(f => `    <item id="${f.id}" href="${f.href}" media-type="${f.mediaType}"/>`).join('\n')}
+${imageManifestItems.map(img => `    <item id="${img.id}" href="${img.href}" media-type="${img.mediaType}"/>`).join('\n')}
   </manifest>
   <spine toc="nav"${useFixedLayout ? ' page-progression-direction="ltr"' : ''}>
 ${xhtmlFiles.map(f => `    <itemref idref="${f.id}"/>`).join('\n')}
@@ -593,6 +679,98 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       console.error(`[ConversionService] Error replacing image placeholders for page ${pageNumber}:`, error.message);
       // Return original content if processing fails
       return xhtmlContent;
+    }
+  }
+
+  /**
+   * Replace placeholder divs with actual img tags using extracted images
+   * @param {string} xhtmlContent - XHTML content to process
+   * @param {number} pageNumber - Page number for ID prefix
+   * @param {Array} extractedImages - Array of extracted image objects with fileName, width, height, etc.
+   * @returns {string} - XHTML content with placeholder divs replaced by img tags
+   */
+  static replacePlaceholderDivsWithImages(xhtmlContent, pageNumber, extractedImages) {
+    if (!extractedImages || extractedImages.length === 0) {
+      return xhtmlContent;
+    }
+
+    try {
+      // Use regex to find all placeholder divs
+      // Pattern: <div id="page{N}_img{N}" class="image-placeholder" [title="..."]></div>
+      const placeholderPattern = /<div\s+id="page\d+_img\d+"\s+class="image-placeholder"(?:\s+title="([^"]*)")?\s*><\/div>/gi;
+      
+      let imageIndex = 0;
+      let replacedCount = 0;
+      
+      xhtmlContent = xhtmlContent.replace(placeholderPattern, (match, titleAttr) => {
+        if (imageIndex >= extractedImages.length) {
+          console.warn(`[Page ${pageNumber}] More placeholder divs than extracted images, skipping replacement for: ${match.substring(0, 50)}...`);
+          return match; // Return original if we run out of images
+        }
+        
+        const img = extractedImages[imageIndex];
+        const altText = titleAttr || `Image ${imageIndex + 1}`;
+        const imgId = match.match(/id="([^"]+)"/)?.[1] || `page${pageNumber}_img${imageIndex + 1}`;
+        
+        // Extract width and height from the div's style if present, otherwise use image dimensions
+        const width = img.width ? `width="${img.width}"` : '';
+        const height = img.height ? `height="${img.height}"` : '';
+        const src = `../images/${img.fileName}`;
+        
+        const imgTag = `<img id="${imgId}" src="${src}" alt="${altText.replace(/"/g, '&quot;')}" ${width} ${height}/>`;
+        
+        imageIndex++;
+        replacedCount++;
+        
+        return imgTag;
+      });
+      
+      if (replacedCount > 0) {
+        console.log(`[Page ${pageNumber}] Replaced ${replacedCount} placeholder div(s) with actual img tags`);
+      }
+      
+      // Also handle divs without the exact pattern but with image-placeholder class
+      const loosePattern = /<div([^>]*)\s+class="[^"]*image-placeholder[^"]*"([^>]*)><\/div>/gi;
+      let looseReplacedCount = 0;
+      let looseImageIndex = replacedCount; // Continue from where we left off
+      
+      xhtmlContent = xhtmlContent.replace(loosePattern, (match, beforeClass, afterClass) => {
+        // Skip if this was already replaced by the first pattern
+        if (match.includes('<img')) {
+          return match;
+        }
+        
+        if (looseImageIndex >= extractedImages.length) {
+          return match;
+        }
+        
+        const img = extractedImages[looseImageIndex];
+        const fullMatch = beforeClass + afterClass;
+        const titleMatch = fullMatch.match(/title="([^"]*)"/);
+        const idMatch = fullMatch.match(/id="([^"]+)"/);
+        const altText = titleMatch ? titleMatch[1] : `Image ${looseImageIndex + 1}`;
+        const imgId = idMatch ? idMatch[1] : `page${pageNumber}_img${looseImageIndex + 1}`;
+        
+        const width = img.width ? `width="${img.width}"` : '';
+        const height = img.height ? `height="${img.height}"` : '';
+        const src = `../images/${img.fileName}`;
+        
+        const imgTag = `<img id="${imgId}" src="${src}" alt="${altText.replace(/"/g, '&quot;')}" ${width} ${height}/>`;
+        
+        looseImageIndex++;
+        looseReplacedCount++;
+        
+        return imgTag;
+      });
+      
+      if (looseReplacedCount > 0) {
+        console.log(`[Page ${pageNumber}] Replaced ${looseReplacedCount} additional placeholder div(s) with img tags`);
+      }
+      
+      return xhtmlContent;
+    } catch (error) {
+      console.warn(`[Page ${pageNumber}] Error replacing placeholder divs with images:`, error.message);
+      return xhtmlContent; // Return original on error
     }
   }
 
@@ -994,6 +1172,13 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
         throw new Error('Conversion job not found');
       }
 
+      // Check if job was cancelled before starting
+      if (job.status === 'CANCELLED') {
+        console.log(`[Job ${jobId}] Job was cancelled, aborting conversion`);
+        JobConcurrencyService.release(jobId);
+        return;
+      }
+
       const pdf = await PdfDocumentModel.findById(job.pdf_document_id);
       if (!pdf || !pdf.file_path) {
         throw new Error('PDF document not found or file path missing');
@@ -1046,6 +1231,15 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
         console.log(`[Job ${jobId}] Using PNG-to-XHTML conversion flow...`);
         try {
           const result = await this.convertPdfToXhtmlViaPng(jobId, pdfFilePath, steps);
+          
+          // Check if job was cancelled after conversion
+          const jobAfterConversion = await ConversionJobModel.findById(jobId);
+          if (jobAfterConversion && jobAfterConversion.status === 'CANCELLED') {
+            console.log(`[Job ${jobId}] Job was cancelled after conversion, not marking as completed`);
+            JobConcurrencyService.release(jobId);
+            return;
+          }
+          
           await ConversionJobModel.update(jobId, {
             status: 'COMPLETED',
             currentStep: steps[steps.length - 1].step,
@@ -1055,6 +1249,12 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
           console.log(`[Job ${jobId}] PNG-to-XHTML conversion completed: ${result.epubPath}`);
           return;
         } catch (pngError) {
+          // If error is due to cancellation, don't fall through
+          if (pngError.message && pngError.message.includes('cancelled')) {
+            console.log(`[Job ${jobId}] Conversion cancelled: ${pngError.message}`);
+            JobConcurrencyService.release(jobId);
+            return;
+          }
           console.error(`[Job ${jobId}] PNG-to-XHTML flow failed, falling back to standard conversion:`, pngError.message);
           // Fall through to standard conversion
         }
@@ -1163,6 +1363,14 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       }
 
       for (const page of textData.pages) {
+        // Check if job was cancelled before processing each page
+        const currentJob = await ConversionJobModel.findById(jobId);
+        if (currentJob && currentJob.status === 'CANCELLED') {
+          console.log(`[Job ${jobId}] Job was cancelled during text processing, aborting`);
+          JobConcurrencyService.release(jobId);
+          return;
+        }
+
         if (!page || !page.text || page.text.trim().length === 0) continue;
         const hasBlocks = Array.isArray(page.textBlocks) && page.textBlocks.length > 0;
         if (hasBlocks) continue;
@@ -1266,6 +1474,14 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
         const totalPages = pageImagesData.images.length;
         
         for (let i = 0; i < pageImagesData.images.length; i++) {
+          // Check if job was cancelled before processing each page
+          const currentJob = await ConversionJobModel.findById(jobId);
+          if (currentJob && currentJob.status === 'CANCELLED') {
+            console.log(`[Job ${jobId}] Job was cancelled during vision extraction, aborting`);
+            JobConcurrencyService.release(jobId);
+            return;
+          }
+
           const image = pageImagesData.images[i];
           const pageNumber = i + 1;
           
@@ -1409,6 +1625,14 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       await fs.writeFile(epubFilePath, epubBuffer);
       console.log(`[Job ${jobId}] EPUB file generated: ${epubFilePath} (${(epubBuffer.length / 1024 / 1024).toFixed(2)} MB)`);
 
+      // Check if job was cancelled before marking as completed
+      const jobBeforeCompletion = await ConversionJobModel.findById(jobId);
+      if (jobBeforeCompletion && jobBeforeCompletion.status === 'CANCELLED') {
+        console.log(`[Job ${jobId}] Job was cancelled before completion, not marking as completed`);
+        JobConcurrencyService.release(jobId);
+        return;
+      }
+
       await ConversionJobModel.update(jobId, {
         status: 'COMPLETED',
         currentStep: steps[8].step,
@@ -1424,6 +1648,14 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       }
 
     } catch (error) {
+      // Check if job was cancelled - don't mark as failed if it was cancelled
+      const jobAfterError = await ConversionJobModel.findById(jobId);
+      if (jobAfterError && jobAfterError.status === 'CANCELLED') {
+        console.log(`[Job ${jobId}] Conversion was cancelled: ${error.message}`);
+        // Don't update status - it's already CANCELLED
+        return;
+      }
+
       console.error(`[Job ${jobId}] Conversion error:`, error);
       await ConversionJobModel.update(jobId, {
         status: 'FAILED',
@@ -1644,9 +1876,25 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
     console.log(`[Job ${jobId}] Syncs by page:`, Object.entries(syncsByPage).map(([p, s]) => `Page ${p}: ${s.length} syncs`).join(', '));
     
     for (const page of xhtmlFiles) {
-      // Copy XHTML file
+      // Read and fix XHTML file (fix image paths from ../images/ to images/)
+      let xhtmlContent = await fs.readFile(page.xhtmlPath, 'utf8');
+      
+      // Fix image paths: ../images/ -> images/ (correct EPUB path)
+      // EPUB structure: OEBPS/page_1.xhtml and OEBPS/images/file.jpg
+      // So from page_1.xhtml, path should be "images/file.jpg"
+      xhtmlContent = xhtmlContent.replace(/src=["']\.\.\/images\/([^"']+)["']/gi, (match, fileName) => {
+        return `src="images/${fileName}"`;
+      });
+      
+      // Remove empty xmlns attributes on img tags (can break XHTML rendering)
+      // Match: <img xmlns="" or <img xmlns='' or <img  xmlns="" (with spaces)
+      // Pattern: <img followed by whitespace, then xmlns="", then optional whitespace
+      // This preserves all other attributes that come after xmlns=""
+      xhtmlContent = xhtmlContent.replace(/<img(\s+)xmlns=["']{2}(\s*)/gi, '<img$1');
+
+      // Write fixed XHTML to EPUB
       const destPath = path.join(oebpsDir, page.xhtmlFileName);
-      await fs.copyFile(page.xhtmlPath, destPath);
+      await fs.writeFile(destPath, xhtmlContent, 'utf8');
       
       const pageId = `page-${page.pageNumber}`;
       const pageSyncs = syncsByPage[page.pageNumber] || [];
@@ -1705,6 +1953,43 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       } catch (err) {
         console.warn(`[Job ${jobId}] Could not add audio file: ${err.message}`);
       }
+    }
+    
+    // Copy extracted images to EPUB images directory
+    const jobImagesDir = path.join(htmlIntermediateDir, `job_${jobId}_images`);
+    const epubImagesDir = path.join(oebpsDir, 'images');
+    try {
+      await fs.mkdir(epubImagesDir, { recursive: true });
+      const imageFiles = await fs.readdir(jobImagesDir).catch(() => []);
+      const imageManifestItems = [];
+      
+      for (const imageFile of imageFiles) {
+        if (/\.(jpg|jpeg|png|gif|webp)$/i.test(imageFile)) {
+          const srcPath = path.join(jobImagesDir, imageFile);
+          const destPath = path.join(epubImagesDir, imageFile);
+          await fs.copyFile(srcPath, destPath);
+          
+          // Determine media type
+          const ext = path.extname(imageFile).toLowerCase();
+          let mediaType = 'image/png';
+          if (ext === '.jpg' || ext === '.jpeg') mediaType = 'image/jpeg';
+          else if (ext === '.gif') mediaType = 'image/gif';
+          else if (ext === '.webp') mediaType = 'image/webp';
+          
+          const imageId = `img-${imageFile.replace(/[^a-zA-Z0-9]/g, '-')}`;
+          imageManifestItems.push({
+            id: imageId,
+            href: `images/${imageFile}`,
+            mediaType: mediaType
+          });
+        }
+      }
+      
+      // Add image manifest items
+      manifestItems.push(...imageManifestItems);
+      console.log(`[Job ${jobId}] Copied ${imageManifestItems.length} image(s) to EPUB`);
+    } catch (imgError) {
+      console.warn(`[Job ${jobId}] Could not copy images to EPUB: ${imgError.message}`);
     }
     
     // Add SMIL files to manifest

@@ -6,6 +6,7 @@ import TimelinePlugin from 'wavesurfer.js/dist/plugins/timeline.esm.js';
 import { HiOutlineDownload, HiOutlineCheck } from 'react-icons/hi';
 import { audioSyncService } from '../services/audioSyncService';
 import { conversionService } from '../services/conversionService';
+import api from '../services/api';
 import './SyncStudio.css';
 
 /**
@@ -809,12 +810,39 @@ const SyncStudio = () => {
         // Load EPUB sections
         const sectionsData = await conversionService.getEpubSections(parseInt(jobId));
         if (sectionsData && sectionsData.length > 0) {
-          setSections(sectionsData);
-          setXhtmlContent(sectionsData[0]?.xhtml || '');
+          // Convert relative image paths to absolute URLs for browser preview
+          const baseURL = api.defaults.baseURL || 'http://localhost:8081/api';
+          const processedSections = sectionsData.map(section => {
+            let processedXhtml = section.xhtml || section.content || '';
+            
+            // Pattern: src="images/filename.ext" or src="../images/filename.ext" -> absolute URL
+            const relativeImagePattern1 = /src=["']images\/([^"']+)["']/gi;
+            const relativeImagePattern2 = /src=["']\.\.\/images\/([^"']+)["']/gi;
+            
+            processedXhtml = processedXhtml.replace(relativeImagePattern1, (match, fileName) => {
+              const absoluteUrl = `${baseURL}/conversions/${jobId}/images/${fileName}`;
+              console.log('[SyncStudio] Converting image path (images/):', match, '->', absoluteUrl);
+              return `src="${absoluteUrl}"`;
+            });
+            
+            processedXhtml = processedXhtml.replace(relativeImagePattern2, (match, fileName) => {
+              const absoluteUrl = `${baseURL}/conversions/${jobId}/images/${fileName}`;
+              console.log('[SyncStudio] Converting image path (../images/):', match, '->', absoluteUrl);
+              return `src="${absoluteUrl}"`;
+            });
+            
+            return {
+              ...section,
+              xhtml: processedXhtml
+            };
+          });
+          
+          setSections(processedSections);
+          setXhtmlContent(processedSections[0]?.xhtml || '');
 
-          // Parse elements from all sections
+          // Parse elements from all sections (use processed sections with absolute URLs)
           const allElements = [];
-          sectionsData.forEach((section, idx) => {
+          processedSections.forEach((section, idx) => {
             const elements = parseXhtmlElements(section.xhtml, idx);
             console.log(`[SyncStudio] Parsed ${elements.length} elements from section ${idx + 1}:`, 
               elements.map(el => ({ id: el.id, type: el.type, text: el.text?.substring(0, 30) }))
@@ -834,9 +862,9 @@ const SyncStudio = () => {
                 setAudioUrl(url);
               }
 
-              // Build a map of ID -> pageNumber from XHTML sections
+              // Build a map of ID -> pageNumber from XHTML sections (use processed sections)
               const idToPageMap = {};
-              sectionsData.forEach((section, idx) => {
+              processedSections.forEach((section, idx) => {
                 const pageNum = idx + 1;
                 const xhtml = section.xhtml || section.content || '';
                 // Extract all IDs from this section
@@ -1770,7 +1798,7 @@ const SyncStudio = () => {
       {/* Header */}
       <header className="studio-header">
         <div className="header-left">
-          <button onClick={() => navigate('/conversions')} className="btn-back">
+          <button onClick={() => navigate(`/epub-image-editor/${jobId}`)} className="btn-back">
             ← Back
           </button>
           <h1>Sync Studio</h1>

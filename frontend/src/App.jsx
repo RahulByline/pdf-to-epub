@@ -11,6 +11,7 @@ import AudioSyncCards from './pages/AudioSyncCards';
 import SyncStudio from './pages/SyncStudio';
 import MediaOverlaySyncEditor from './pages/MediaOverlaySyncEditor';
 import AiConfig from './pages/AiConfig';
+import EpubImageEditorPage from './pages/EpubImageEditorPage';
 
 function App() {
   return (
@@ -26,6 +27,7 @@ function App() {
           <Route path="audio-sync-cards/:jobId" element={<AudioSyncCards />} />
           <Route path="audio-sync/:jobId" element={<AudioSync />} />
           <Route path="media-overlay-sync/:jobId/:pageNumber" element={<MediaOverlaySyncEditor />} />
+          <Route path="epub-image-editor/:jobId" element={<EpubImageEditorPage />} />
           <Route path="ai-config" element={<AiConfig />} />
         </Route>
       </Routes>

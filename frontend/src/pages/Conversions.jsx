@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { conversionService } from '../services/conversionService';
 import { pdfService } from '../services/pdfService';
-import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineVolumeUp, HiOutlineAdjustments, HiOutlineDownload, HiOutlineTrash } from 'react-icons/hi';
+import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineAdjustments, HiOutlineTrash, HiOutlinePhotograph } from 'react-icons/hi';
 import { Link } from 'react-router-dom';
 
 const Conversions = () => {
@@ -418,31 +418,14 @@ const Conversions = () => {
 
               <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 {job.status === 'COMPLETED' && (
-                  <>
-                    <button
-                      onClick={() => handleDownload(job.id)}
-                      className="btn btn-primary"
-                      style={{ flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-                    >
-                      <HiOutlineDownload size={18} />
-                      Download EPUB
-                    </button>
-                    <Link
-                      to={`/sync-studio/${job.id}`}
-                      className="btn btn-secondary"
-                      style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
-                    >
-                      <HiOutlineVolumeUp size={18} />
-                      🎚️ Sync Studio
-                    </Link>
-                    <Link
-                      to={`/audio-sync-cards/${job.id}`}
-                      className="btn btn-outline"
-                      style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px', border: '1px solid #ccc' }}
-                    >
-                      📋 Card View
-                    </Link>
-                  </>
+                  <Link
+                    to={`/epub-image-editor/${job.id}`}
+                    className="btn btn-primary"
+                    style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                  >
+                    <HiOutlinePhotograph size={18} />
+                    Image Editor
+                  </Link>
                 )}
                 {job.status === 'IN_PROGRESS' && (
                   <button
@@ -566,24 +549,15 @@ const Conversions = () => {
                   <td>{new Date(job.createdAt).toLocaleString()}</td>
                   <td>
                     {job.status === 'COMPLETED' && (
-                      <div style={{ display: 'flex', gap: '6px' }}>
-                        <Link
-                          to={`/sync-studio/${job.id}`}
-                          className="btn btn-primary"
-                          style={{ padding: '6px 12px', fontSize: '14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                          title="Professional Waveform Editor"
-                        >
-                          🎚️ Studio
-                        </Link>
-                        <Link
-                          to={`/audio-sync-cards/${job.id}`}
-                          className="btn btn-outline"
-                          style={{ padding: '6px 12px', fontSize: '14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px', border: '1px solid #ccc' }}
-                          title="Card-based Editor"
-                        >
-                          📋 Cards
-                        </Link>
-                      </div>
+                      <Link
+                        to={`/epub-image-editor/${job.id}`}
+                        className="btn btn-primary"
+                        style={{ padding: '6px 12px', fontSize: '14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                        title="Edit Images in EPUB"
+                      >
+                        <HiOutlinePhotograph size={14} />
+                        Images
+                      </Link>
                     )}
                     {job.status === 'IN_PROGRESS' && (
                       <button
@@ -601,16 +575,6 @@ const Conversions = () => {
                         style={{ padding: '6px 12px', fontSize: '14px' }}
                       >
                         Retry
-                      </button>
-                    )}
-                    {job.status === 'COMPLETED' && (
-                      <button
-                        onClick={() => handleDownload(job.id)}
-                        className="btn btn-primary"
-                        style={{ marginRight: '5px', padding: '6px 12px', fontSize: '14px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
-                      >
-                        <HiOutlineDownload size={14} />
-                        Download
                       </button>
                     )}
                     {job.status === 'PENDING' && (
