@@ -569,11 +569,74 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
         // Ensure placeholder is visible and has proper styling
         placeholder.style.setProperty('border', '2px dashed #007bff', 'important');
         placeholder.style.setProperty('background-color', '#f0f0f0', 'important');
-        placeholder.style.setProperty('min-height', '50px', 'important');
+        placeholder.style.setProperty('min-height', '100px', 'important');
         placeholder.style.setProperty('min-width', '50px', 'important');
         placeholder.style.setProperty('opacity', '1', 'important');
         placeholder.style.setProperty('pointer-events', 'auto', 'important');
         placeholder.style.setProperty('z-index', '100', 'important');
+        // Ensure structured layout - prevent scattering
+        placeholder.style.setProperty('position', 'relative', 'important');
+        placeholder.style.setProperty('display', 'flex', 'important');
+        placeholder.style.setProperty('flex-direction', 'column', 'important');
+        placeholder.style.setProperty('align-items', 'center', 'important');
+        placeholder.style.setProperty('justify-content', 'center', 'important');
+        placeholder.style.setProperty('width', '100%', 'important');
+        placeholder.style.setProperty('max-width', '100%', 'important');
+        placeholder.style.setProperty('box-sizing', 'border-box', 'important');
+        placeholder.style.setProperty('left', 'auto', 'important');
+        placeholder.style.setProperty('top', 'auto', 'important');
+        placeholder.style.setProperty('right', 'auto', 'important');
+        placeholder.style.setProperty('bottom', 'auto', 'important');
+        placeholder.style.setProperty('float', 'none', 'important');
+        placeholder.style.setProperty('padding', '1.5em', 'important');
+        placeholder.style.setProperty('text-align', 'center', 'important');
+        
+        // Add "Drop image here" text if placeholder is empty
+        if (!placeholder.querySelector('.placeholder-text') && !placeholder.querySelector('img')) {
+          const existingText = placeholder.textContent?.trim();
+          if (!existingText || existingText === '') {
+            // Create placeholder content structure
+            const placeholderContent = document.createElement('div');
+            placeholderContent.className = 'placeholder-content';
+            placeholderContent.style.cssText = `
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: center;
+              gap: 0.5em;
+            `;
+            
+            const icon = document.createElement('div');
+            icon.className = 'placeholder-icon';
+            icon.innerHTML = '📷';
+            icon.style.cssText = 'font-size: 2.5em; opacity: 0.5;';
+            
+            const text = document.createElement('div');
+            text.className = 'placeholder-text';
+            text.textContent = 'Drop image here';
+            text.style.cssText = `
+              font-size: 1em;
+              font-weight: 600;
+              color: #666;
+              margin: 0;
+            `;
+            
+            const subtitle = document.createElement('div');
+            subtitle.className = 'placeholder-subtitle';
+            subtitle.textContent = 'Drag an image from the gallery';
+            subtitle.style.cssText = `
+              font-size: 0.85em;
+              color: #999;
+              font-style: italic;
+              margin: 0;
+            `;
+            
+            placeholderContent.appendChild(icon);
+            placeholderContent.appendChild(text);
+            placeholderContent.appendChild(subtitle);
+            placeholder.appendChild(placeholderContent);
+          }
+        }
         
         // Add delete overlay for placeholders (only if onDeletePlaceholder is provided)
         if (onDeletePlaceholder && placeholder.id && /^page\d+_(?:div|img)\d+$/.test(placeholder.id)) {
