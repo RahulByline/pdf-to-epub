@@ -3,7 +3,7 @@ import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import api from '../services/api';
 import { imageDescriptionService } from '../services/imageDescriptionService';
-import { injectImageIntoXhtml, injectBackgroundImageIntoXhtml, applyReflowableCss } from '../utils/xhtmlUtils';
+import { injectImageIntoXhtml, applyReflowableCss } from '../utils/xhtmlUtils';
 import DraggableCanvas from './DraggableCanvas';
 import './EpubImageEditor.css';
 
@@ -459,7 +459,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
       
       if (targetPlaceholder && targetPlaceholder.id) {
         console.log(`[XhtmlCanvas] ✓ Selected placeholder: ${targetPlaceholder.id}`);
-        onDrop(targetPlaceholder.id, item.image, false); // Regular image by default
+        onDrop(targetPlaceholder.id, item.image);
       } else {
         // Fallback: Use elementFromPoint to find what's actually at the drop location
         console.warn('[XhtmlCanvas] ✗ No placeholder found at drop point, trying elementFromPoint fallback');
@@ -471,7 +471,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
         if (placeholderAtPoint && placeholderAtPoint.id) {
           console.log(`[XhtmlCanvas] ✓ Found placeholder via elementFromPoint: ${placeholderAtPoint.id}`);
             if (onDrop && typeof onDrop === 'function') {
-              onDrop(placeholderAtPoint.id, item.image, false);
+              onDrop(placeholderAtPoint.id, item.image);
             }
           return;
         }
@@ -481,7 +481,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
           if (placeholder.contains(elementAtPoint) && placeholder.id) {
             console.log(`[XhtmlCanvas] ✓ Found placeholder containing element: ${placeholder.id}`);
             if (onDrop && typeof onDrop === 'function') {
-              onDrop(placeholder.id, item.image, false);
+              onDrop(placeholder.id, item.image);
             }
             return;
           }
@@ -520,7 +520,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
           if (closestPlaceholder && closestPlaceholder.id) {
             console.log(`[XhtmlCanvas] ✓ Using closest placeholder as final fallback: ${closestPlaceholder.id}, distance: ${closestDistance.toFixed(2)}px`);
             if (onDrop && typeof onDrop === 'function') {
-              onDrop(closestPlaceholder.id, item.image, false);
+              onDrop(closestPlaceholder.id, item.image);
             }
             return;
           }
@@ -729,7 +729,6 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const canvasRef = useRef(null);
   const [modified, setModified] = useState(false);
   const [editMode, setEditMode] = useState(false);
-  const [backgroundImageMode, setBackgroundImageMode] = useState(false); // Toggle for background image mode
 
   // Load XHTML and images
   // Only reload if pageNumber or jobId changes, NOT if we're just modifying XHTML
@@ -966,7 +965,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
     setPlaceholders(found);
   };
 
-  const handleDrop = useCallback(async (placeholderId, image, isBackgroundImage = false) => {
+  const handleDrop = useCallback(async (placeholderId, image) => {
     try {
       // For EPUB, use relative path: images/filename (not ../images/)
       // In EPUB structure: OEBPS/page_1.xhtml and OEBPS/images/file.jpg
@@ -978,8 +977,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         placeholderId,
         fileName: image.fileName,
         relativePath,
-        absoluteUrl,
-        isBackgroundImage
+        absoluteUrl
       });
 
       // Get image description using AI
@@ -1002,13 +1000,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       
       // Inject image into XHTML with relative path (for EPUB)
       // Include description as alt text if available
-      // Use isBackgroundImage flag to determine if it should be a background image
-      let modifiedXhtml;
-      if (isBackgroundImage) {
-        modifiedXhtml = injectBackgroundImageIntoXhtml(currentXhtml, placeholderId, relativePath, imageDescription);
-      } else {
-        modifiedXhtml = injectImageIntoXhtml(currentXhtml, placeholderId, relativePath, null, null, imageDescription, false);
-      }
+      let modifiedXhtml = injectImageIntoXhtml(currentXhtml, placeholderId, relativePath, imageDescription);
       
       console.log('[handleDrop] After injection - modifiedXhtml length:', modifiedXhtml.length);
       console.log('[handleDrop] After injection - contains img tag:', modifiedXhtml.includes('<img'));
@@ -1016,20 +1008,10 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       
       // For browser preview, replace relative paths with absolute URLs
       // This allows images to display in the preview while keeping EPUB-compatible paths
-      let previewXhtml = modifiedXhtml;
-      if (isBackgroundImage) {
-        // For background images, replace background-image URLs
-        previewXhtml = previewXhtml.replace(
-          new RegExp(`background-image:\\s*url\\(["']?images/${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']?\\)`, 'g'),
-          `background-image: url("${absoluteUrl}")`
-        );
-      } else {
-        // For regular images, replace src URLs
-        previewXhtml = previewXhtml.replace(
-          new RegExp(`src=["']images/${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'g'),
-          `src="${absoluteUrl}"`
-        );
-      }
+      const previewXhtml = modifiedXhtml.replace(
+        new RegExp(`src=["']images/${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'g'),
+        `src="${absoluteUrl}"`
+      );
       
       console.log('[handleDrop] Modified XHTML length:', previewXhtml.length);
       console.log('[handleDrop] Checking if image was injected:', previewXhtml.includes(image.fileName));
@@ -1039,24 +1021,20 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         Math.min(previewXhtml.length, previewXhtml.indexOf('page1_img2') + 200)
       ));
       
-      // Verify the image was injected (either as img tag or background-image)
+      // Verify the img tag exists and placeholder was replaced
       const imgTagPattern = new RegExp(`<img[^>]*id=["']${placeholderId}["'][^>]*>`, 'i');
       const imgTagMatch = previewXhtml.match(imgTagPattern);
-      const backgroundImagePattern = new RegExp(`background-image:\\s*url\\(["']?${absoluteUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']?\\)`, 'i');
-      const backgroundImageMatch = previewXhtml.match(backgroundImagePattern);
       const placeholderDivPattern = new RegExp(`<div[^>]*id=["']${placeholderId}["'][^>]*class=["'][^"]*image-drop-zone[^"]*["']`, 'i');
       const placeholderStillExists = previewXhtml.match(placeholderDivPattern);
       
       console.log('[handleDrop] Verification:', {
         imgTagFound: !!imgTagMatch,
-        backgroundImageFound: !!backgroundImageMatch,
         placeholderStillExists: !!placeholderStillExists,
         hasAbsoluteUrl: previewXhtml.includes(absoluteUrl),
-        hasRelativePath: previewXhtml.includes(`images/${image.fileName}`),
-        isBackgroundImage
+        hasRelativePath: previewXhtml.includes(`images/${image.fileName}`)
       });
       
-        if ((imgTagMatch || backgroundImageMatch) && !placeholderStillExists) {
+        if (imgTagMatch && !placeholderStillExists) {
           console.log('[handleDrop] ✓ Image successfully injected - updating XHTML state');
           setModified(true);
           
@@ -1923,18 +1901,6 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             >
               {editMode ? '✏️ Edit Mode ON' : '✏️ Edit Mode OFF'}
             </button>
-            <button
-              onClick={() => setBackgroundImageMode(!backgroundImageMode)}
-              className={`btn-toggle-edit ${backgroundImageMode ? 'active' : ''}`}
-              style={{ 
-                background: backgroundImageMode ? '#ff9800' : '#f5f5f5',
-                color: backgroundImageMode ? 'white' : '#666',
-                border: `1px solid ${backgroundImageMode ? '#ff9800' : '#ddd'}`
-              }}
-              title={backgroundImageMode ? 'Switch to Foreground Image' : 'Switch to Background Image (for PDF backgrounds with text)'}
-            >
-              {backgroundImageMode ? '🖼️ Background Mode ON' : '🖼️ Background Mode OFF'}
-            </button>
             {modified && (
               <span className="modified-indicator">Modified</span>
             )}
@@ -2040,7 +2006,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
               <XhtmlCanvas
                 xhtml=""
                 placeholders={placeholders}
-                onDrop={(placeholderId, image) => handleDrop(placeholderId, image, backgroundImageMode)}
+                onDrop={handleDrop}
                 canvasRef={canvasRef}
                 editMode={editMode}
               />
