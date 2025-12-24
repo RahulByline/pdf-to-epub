@@ -1,8 +1,12 @@
 import express from 'express';
 import { AiConfigService } from '../services/aiConfigService.js';
+import { GeminiService } from '../services/geminiService.js';
 import { successResponse, errorResponse, badRequestResponse } from '../utils/responseHandler.js';
+import multer from 'multer';
+import fs from 'fs/promises';
 
 const router = express.Router();
+const upload = multer({ storage: multer.memoryStorage() });
 
 // GET /api/ai/config/current - Get current AI configuration
 router.get('/config/current', async (req, res) => {
@@ -113,6 +117,71 @@ router.post('/test', async (req, res) => {
       }
       
       return badRequestResponse(res, userFriendlyMessage);
+    }
+  } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// POST /api/ai/describe-image - Describe an image using Gemini Vision
+router.post('/describe-image', upload.single('image'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return badRequestResponse(res, 'Image file is required');
+    }
+
+    const imageBuffer = req.file.buffer;
+    const imageMimeType = req.file.mimetype || 'image/png';
+
+    // Check if AI is configured
+    const config = await AiConfigService.getCurrentConfiguration();
+    if (!config || !config.api_key) {
+      return errorResponse(res, 'AI service is not configured. Please configure AI settings first.', 400);
+    }
+
+    try {
+      const { GoogleGenerativeAI } = await import('@google/generative-ai');
+      const genAI = new GoogleGenerativeAI(config.api_key);
+      const modelName = config.model_name || 'gemini-2.5-flash';
+      const model = genAI.getGenerativeModel({ model: modelName });
+
+      const prompt = `Describe this image in detail. Include:
+1. What objects, people, or scenes are visible
+2. Colors, composition, and visual style
+3. Any text that appears in the image
+4. The overall context or purpose of the image
+
+Provide a clear, concise description that would be useful for accessibility and understanding the image content.`;
+
+      const result = await model.generateContent([
+        { text: prompt },
+        {
+          inlineData: {
+            data: imageBuffer.toString('base64'),
+            mimeType: imageMimeType
+          }
+        }
+      ]);
+
+      const response = await result.response;
+      const description = await response.text();
+
+      return successResponse(res, {
+        description: description.trim(),
+        model: modelName,
+        timestamp: new Date().toISOString()
+      });
+    } catch (apiError) {
+      console.error('Error describing image with Gemini:', apiError);
+      const errorMessage = apiError.message || 'Unknown error';
+      
+      if (errorMessage.includes('API_KEY_INVALID') || errorMessage.includes('401')) {
+        return errorResponse(res, 'Invalid API key. Please check your AI configuration.', 401);
+      } else if (errorMessage.includes('QUOTA') || errorMessage.includes('429')) {
+        return errorResponse(res, 'API quota exceeded. Please try again later.', 429);
+      } else {
+        return errorResponse(res, `Failed to describe image: ${errorMessage}`, 500);
+      }
     }
   } catch (error) {
     return errorResponse(res, error.message, 500);
