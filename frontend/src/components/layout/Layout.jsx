@@ -15,8 +15,9 @@ const Layout = () => {
   const navigate = useNavigate();
   const location = useLocation();
 
-  // Hide sidebar for full-screen pages like Sync Studio
-  const isFullScreenPage = location.pathname.startsWith('/sync-studio');
+  // Hide sidebar for full-screen pages like Sync Studio and EPUB Image Editor
+  const isFullScreenPage = location.pathname.startsWith('/sync-studio') || 
+                           location.pathname.startsWith('/epub-image-editor');
 
   const handleLogout = () => {
     localStorage.removeItem('token');

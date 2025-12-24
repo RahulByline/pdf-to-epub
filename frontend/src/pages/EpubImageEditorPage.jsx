@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { conversionService } from '../services/conversionService';
 import EpubImageEditor from '../components/EpubImageEditor';
+import TextFormattingToolbar from '../components/TextFormattingToolbar';
 import { HiOutlineVolumeUp } from 'react-icons/hi';
 
 const EpubImageEditorPage = () => {
@@ -184,6 +185,10 @@ const EpubImageEditorPage = () => {
           </div>
         </div>
       </div>
+      
+      {editorState && editorState.editMode && (
+        <TextFormattingToolbar editMode={editorState.editMode} />
+      )}
       
       {selectedPage && (
         <div style={{ flex: 1, overflow: 'hidden' }}>
