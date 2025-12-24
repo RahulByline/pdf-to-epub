@@ -205,7 +205,7 @@ const DraggableImage = ({ image, pageNumber }) => {
  * Drop Zone Overlay Component (for image drops only)
  * This is a transparent overlay that handles image drops
  */
-const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
+const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false }) => {
   const [{ isOver, isDragging, canDrop = false }, drop] = useDrop({
     accept: DRAG_TYPE,
     canDrop: (item, monitor) => {
@@ -629,19 +629,47 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
   const globalFlag = typeof window !== 'undefined' ? (window.__imageDragging || false) : false;
   const isAnyImageDragging = isDragging || globalFlag;
   
+  // When edit mode is ON and no image is being dragged, allow pointer events to pass through
+  // so text elements can be clicked and edited
+  // When an image is being dragged, we need pointer events to detect drops
+  // BUT: Always allow pointer events to pass through for image-with-options overlays (z-index 3000)
+  const shouldBlockPointerEvents = isAnyImageDragging || !editMode;
+  
+  // Check if mouse is over an image-with-options wrapper (which has the clear button overlay)
+  // If so, don't block pointer events so the button can be clicked
+  const [isOverImageOptions, setIsOverImageOptions] = useState(false);
+  
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      const target = e.target;
+      const imageWrapper = target.closest('.image-with-options');
+      setIsOverImageOptions(!!imageWrapper);
+    };
+    
+    if (canvasRef?.current) {
+      canvasRef.current.addEventListener('mousemove', handleMouseMove);
+      return () => {
+        if (canvasRef?.current) {
+          canvasRef.current.removeEventListener('mousemove', handleMouseMove);
+        }
+      };
+    }
+  }, [canvasRef]);
+  
   console.log('[XhtmlCanvas] Rendering overlay:', { 
     isDragging, 
     isOver, 
     canDrop: canDrop || false,
     globalFlag,
     isAnyImageDragging,
+    editMode,
+    shouldBlockPointerEvents,
     dropRefType: typeof drop,
     dropRefValue: drop ? 'exists' : 'null'
   });
   
-  // CRITICAL: react-dnd requires the drop target to always accept pointer events
-  // Setting pointerEvents to 'none' prevents react-dnd from detecting drops
-  // Instead, we'll make it always active but transparent when not dragging
+  // CRITICAL: react-dnd requires the drop target to accept pointer events when dragging
+  // But when edit mode is ON and not dragging, we want clicks to pass through to text elements
   return (
     <div 
       ref={drop}
@@ -655,11 +683,12 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
         bottom: 0,
         width: '100%',
         height: '100%',
-        // CRITICAL: react-dnd requires the drop target to always accept pointer events
-        // Setting pointerEvents to 'none' prevents react-dnd from detecting drops
-        // react-dnd will only intercept drag events, not regular clicks
-        pointerEvents: 'auto', // Always active so react-dnd can detect drops
-        zIndex: isAnyImageDragging ? 2000 : 100, // High z-index when dragging
+        // Allow pointer events to pass through when edit mode is ON and not dragging
+        // This enables text editing. When dragging, we need pointer events to detect drops
+        // When hovering over image options overlay, allow clicks to pass through
+        // Image overlay has z-index 3000, so it's always on top
+        pointerEvents: (shouldBlockPointerEvents && !isOverImageOptions) ? 'auto' : 'none',
+        zIndex: isAnyImageDragging ? 2000 : (editMode ? 50 : 100), // Lower z-index in edit mode when not dragging (image overlay is 3000)
         backgroundColor: isOver ? 'rgba(33, 150, 243, 0.2)' : (isAnyImageDragging ? 'rgba(33, 150, 243, 0.05)' : 'transparent'),
         border: isAnyImageDragging ? '2px dashed rgba(33, 150, 243, 0.5)' : 'none', // Visual indicator
         transition: 'background-color 0.2s ease',
@@ -835,12 +864,19 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
 
   const extractPlaceholdersFromXhtml = (xhtmlContent) => {
     const parser = new DOMParser();
-    const doc = parser.parseFromString(xhtmlContent, 'application/xml');
+    let doc = parser.parseFromString(xhtmlContent, 'text/html');
     
-    const parserError = doc.querySelector('parsererror');
+    let parserError = doc.querySelector('parsererror');
+    if (parserError) {
+      doc = parser.parseFromString(xhtmlContent, 'application/xml');
+      parserError = doc.querySelector('parsererror');
+    }
+    
+    const found = [];
+    
     if (parserError) {
       // Fallback to regex - also look for divs with title attributes (image placeholders)
-      const found = [];
+      console.log('[EpubImageEditor] Using regex fallback for placeholder detection');
       
       // Find divs with image-placeholder or image-drop-zone class
       const classRegex = /<div[^>]*class=["'][^"]*(?:image-placeholder|image-drop-zone)[^"]*["'][^>]*id=["']([^"']+)["'][^>]*>/gi;
@@ -849,31 +885,52 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         found.push({ id: match[1] });
       }
       
-      // Also find divs with title attributes that look like image placeholders
-      // Pattern: div with title attribute, no text content, ID like pageX_divY or pageX_imgY
-      const titleRegex = /<div[^>]*id=["'](page\d+_(?:div|img)\d+)["'][^>]*title=["']([^"']+)["'][^>]*>/gi;
-      while ((match = titleRegex.exec(xhtmlContent)) !== null) {
+      // Also find img tags with IDs matching placeholder pattern (these are placed images)
+      const imgRegex = /<img[^>]*id=["'](page\d+_(?:div|img)\d+)["'][^>]*>/gi;
+      while ((match = imgRegex.exec(xhtmlContent)) !== null) {
         const id = match[1];
-        // Check if not already added
         if (!found.find(p => p.id === id)) {
           found.push({ id });
         }
       }
       
+      // Also find divs with title attributes that look like image placeholders
+      const titleRegex = /<div[^>]*id=["'](page\d+_(?:div|img)\d+)["'][^>]*title=["']([^"']+)["'][^>]*>/gi;
+      while ((match = titleRegex.exec(xhtmlContent)) !== null) {
+        const id = match[1];
+        if (!found.find(p => p.id === id)) {
+          found.push({ id });
+        }
+      }
+      
+      console.log(`[EpubImageEditor] Found ${found.length} placeholders via regex`);
       setPlaceholders(found);
       return;
     }
     
-    // Find placeholders with the class
+    // Find placeholders with the class (divs)
     const placeholderElements = doc.querySelectorAll('.image-placeholder, .image-drop-zone');
-    const found = Array.from(placeholderElements).map((el) => ({
-      id: el.id || `placeholder_${Math.random()}`,
-      title: el.getAttribute('title') || '',
-    }));
+    placeholderElements.forEach((el) => {
+      const id = el.id || `placeholder_${Math.random()}`;
+      if (!found.find(p => p.id === id)) {
+        found.push({ id, title: el.getAttribute('title') || '' });
+      }
+    });
+    
+    // Also find img tags with IDs matching placeholder pattern (these are placed images)
+    const imgElements = doc.querySelectorAll('img[id]');
+    imgElements.forEach((img) => {
+      const id = img.id;
+      // Check if ID matches placeholder pattern (pageX_divY or pageX_imgY)
+      if (id && /^page\d+_(?:div|img)\d+$/.test(id)) {
+        if (!found.find(p => p.id === id)) {
+          found.push({ id, title: img.getAttribute('alt') || img.getAttribute('title') || '' });
+        }
+      }
+    });
     
     // Also find divs with title attributes that look like image placeholders
-    // These are divs that should be placeholders but don't have the class
-    const allDivs = doc.querySelectorAll('div[title]');
+    const allDivs = doc.querySelectorAll('div[title], div[id]');
     allDivs.forEach((div) => {
       const id = div.id;
       const title = div.getAttribute('title') || '';
@@ -891,6 +948,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       }
     });
     
+    console.log(`[EpubImageEditor] Found ${found.length} placeholders total:`, found.map(p => p.id));
     setPlaceholders(found);
   };
 
@@ -906,13 +964,13 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         placeholderId,
         fileName: image.fileName,
         relativePath,
-        absoluteUrl,
-        currentXhtmlLength: xhtml.length
+        absoluteUrl
       });
       
-      // Use the current xhtml state - but ensure we're using the latest version
-      // Get the current xhtml from state at the time of drop
-      const currentXhtml = xhtml;
+      // CRITICAL FIX: Use functional update to get the latest xhtml state
+      // This ensures we're working with the most recent version, including all previous edits
+      setXhtml((currentXhtml) => {
+        console.log('[handleDrop] Using latest XHTML state, length:', currentXhtml.length);
       console.log('[handleDrop] Current XHTML contains placeholder:', currentXhtml.includes(placeholderId));
       console.log('[handleDrop] Current XHTML contains image-drop-zone:', currentXhtml.includes('image-drop-zone'));
       
@@ -952,14 +1010,13 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         hasRelativePath: previewXhtml.includes(`images/${image.fileName}`)
       });
       
-      if (imgTagMatch && !placeholderStillExists) {
-        console.log('[handleDrop] ✓ Image successfully injected - updating XHTML state');
-        setXhtml(previewXhtml);
-        setModified(true);
-        
-        // Re-extract placeholders after modification
-        setTimeout(() => {
-          extractPlaceholdersFromXhtml(previewXhtml);
+        if (imgTagMatch && !placeholderStillExists) {
+          console.log('[handleDrop] ✓ Image successfully injected - updating XHTML state');
+          setModified(true);
+          
+          // Re-extract placeholders after modification (async, outside the setState callback)
+          setTimeout(() => {
+            extractPlaceholdersFromXhtml(previewXhtml);
           
           // Verify image persists in DOM after state update
           // Use multiple timeouts to catch the image at different render stages
@@ -1011,20 +1068,499 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                 }
               }
             }, delay);
-          });
-        }, 100);
-        
-        console.log('[handleDrop] Image inserted successfully');
-      } else {
-        console.error('[handleDrop] ✗ Image injection verification failed');
-        setError(`Failed to inject image: ${!imgTagMatch ? 'Image tag not found' : 'Placeholder still exists'}`);
-      }
-      
+            });
+          }, 100);
+          
+          return previewXhtml;
+        } else {
+          console.error('[handleDrop] ✗ Image injection verification failed');
+          setError(`Failed to inject image: ${!imgTagMatch ? 'Image tag not found' : 'Placeholder still exists'}`);
+          return currentXhtml; // Return unchanged on failure
+        }
+      });
     } catch (err) {
       console.error('Error handling drop:', err);
       setError('Failed to insert image: ' + err.message);
     }
-  }, [xhtml, jobId]);
+  }, [jobId, extractPlaceholdersFromXhtml, canvasRef]);
+
+  // Allow clearing a dropped image (restore placeholder div so it can be replaced)
+  const handleClearImage = useCallback((placeholderId) => {
+    console.log('[EpubImageEditor] handleClearImage called with:', placeholderId);
+    if (!placeholderId) {
+      console.warn('[EpubImageEditor] handleClearImage called without placeholderId');
+      return;
+    }
+    
+    // Confirm before clearing
+    if (!window.confirm(`Are you sure you want to clear the image from placeholder "${placeholderId}"? You can drop a new image to replace it.`)) {
+      console.log('[EpubImageEditor] User cancelled clearing image');
+      return;
+    }
+    
+    console.log('[EpubImageEditor] User confirmed clearing image for:', placeholderId);
+    
+    // CRITICAL FIX: Use functional update to get the latest xhtml state
+    // This ensures we're working with the most recent version, including all previous edits
+    setXhtml((currentXhtml) => {
+      if (!currentXhtml) {
+        console.warn('[EpubImageEditor] No XHTML to clear from');
+        return currentXhtml;
+      }
+      
+      try {
+        console.log(`[EpubImageEditor] Clearing image for placeholder: ${placeholderId}`);
+        const parser = new DOMParser();
+        let doc = parser.parseFromString(currentXhtml, 'text/html');
+      
+        // Check for parsing errors
+        let parserError = doc.querySelector('parsererror');
+        if (parserError) {
+          console.warn('[EpubImageEditor] HTML parsing failed, trying XML');
+          doc = parser.parseFromString(currentXhtml, 'application/xml');
+          parserError = doc.querySelector('parsererror');
+          if (parserError) {
+            console.error('[EpubImageEditor] Both HTML and XML parsing failed');
+            alert('Failed to parse XHTML. Please try again.');
+            return currentXhtml; // Return unchanged on error
+          }
+        }
+        
+        // Try multiple methods to find the target element
+        let target = doc.getElementById(placeholderId);
+        if (!target) {
+          target = doc.querySelector(`#${placeholderId}`);
+        }
+        if (!target) {
+          target = doc.querySelector(`[id="${placeholderId}"]`);
+        }
+        if (!target && doc.body) {
+          target = doc.body.querySelector(`#${placeholderId}`) || doc.body.querySelector(`[id="${placeholderId}"]`);
+        }
+        
+        if (!target) {
+          console.error(`[EpubImageEditor] Placeholder ${placeholderId} not found in XHTML`);
+          alert(`Placeholder "${placeholderId}" not found. The image may have already been cleared.`);
+          return currentXhtml; // Return unchanged
+        }
+        
+        const targetTag = target.tagName ? target.tagName.toLowerCase() : '';
+        
+        if (targetTag !== 'img') {
+          console.log(`[EpubImageEditor] Target ${placeholderId} is not an img tag, it's a ${targetTag}`);
+          // Check if it's already a placeholder div
+          if (targetTag === 'div' && (target.classList.contains('image-placeholder') || target.classList.contains('image-drop-zone'))) {
+            console.log(`[EpubImageEditor] Placeholder ${placeholderId} is already a placeholder div, nothing to clear`);
+            alert('This placeholder already has no image. You can drop a new image on it.');
+            return currentXhtml; // Return unchanged
+          }
+          alert(`Cannot clear: Element "${placeholderId}" is not an image. It's a ${targetTag}.`);
+          return currentXhtml; // Return unchanged
+        }
+        
+        // Create a new placeholder div with both classes for proper detection
+        const placeholderDiv = doc.createElement('div');
+        placeholderDiv.setAttribute('id', placeholderId);
+        placeholderDiv.setAttribute('class', 'image-placeholder image-drop-zone');
+        placeholderDiv.setAttribute('title', 'Drop image here');
+        placeholderDiv.textContent = 'Drop image here';
+        
+        // Copy any style attributes from the img to preserve dimensions
+        if (target.hasAttribute('style')) {
+          const imgStyle = target.getAttribute('style');
+          if (imgStyle) {
+            placeholderDiv.setAttribute('style', imgStyle);
+          }
+        }
+        
+        // Copy width/height attributes if present
+        if (target.hasAttribute('width')) {
+          placeholderDiv.style.width = target.getAttribute('width') + (target.getAttribute('width').includes('%') ? '' : 'px');
+        }
+        if (target.hasAttribute('height')) {
+          placeholderDiv.style.height = target.getAttribute('height') + (target.getAttribute('height').includes('%') ? '' : 'px');
+        }
+        
+        // Set default styles if not present
+        if (!placeholderDiv.style.minHeight) {
+          placeholderDiv.style.minHeight = '80px';
+        }
+        if (!placeholderDiv.style.minWidth) {
+          placeholderDiv.style.minWidth = '80px';
+        }
+        
+        // Ensure placeholder is visible
+        placeholderDiv.style.display = 'flex';
+        placeholderDiv.style.alignItems = 'center';
+        placeholderDiv.style.justifyContent = 'center';
+        
+        // Replace the img with the placeholder div
+        // If the img is inside an image-with-options wrapper, replace the wrapper entirely
+        // Otherwise, just replace the img
+        if (target.parentNode) {
+          const parent = target.parentNode;
+          // Check if parent is an image-with-options wrapper
+          if (parent.classList && parent.classList.contains('image-with-options')) {
+            // Replace the entire wrapper with the placeholder div
+            parent.parentNode.replaceChild(placeholderDiv, parent);
+            console.log(`[EpubImageEditor] Replaced wrapper containing image ${placeholderId} with placeholder div`);
+          } else {
+            // Just replace the img with the placeholder div
+            parent.replaceChild(placeholderDiv, target);
+            console.log(`[EpubImageEditor] Replaced image ${placeholderId} with placeholder div`);
+          }
+        } else {
+          console.error(`[EpubImageEditor] Target ${placeholderId} has no parent node`);
+          alert('Failed to clear image: Element has no parent.');
+          return currentXhtml; // Return unchanged
+        }
+
+        const serializer = new XMLSerializer();
+        let updated = serializer.serializeToString(doc.documentElement);
+        
+        // Handle HTML5 parser output (might wrap in <html><body>)
+        if (doc.documentElement.tagName === 'HTML' && doc.body) {
+          const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
+          const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
+          const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
+          const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
+          
+          const headContent = doc.head ? doc.head.innerHTML : '';
+          const bodyContent = doc.body ? doc.body.innerHTML : '';
+          
+          updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
+          if (headContent) {
+            updated += `<head>\n${headContent}\n</head>\n`;
+          }
+          updated += `<body>\n${bodyContent}\n</body>\n</html>`;
+        }
+        
+        // Ensure self-closing tags for meta and img after DOM manipulation
+        updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<meta${attrs}/>`;
+        });
+        updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<img${attrs}/>`;
+        });
+        
+        console.log(`[EpubImageEditor] ✓ Image cleared for ${placeholderId}, placeholder restored`);
+        console.log(`[EpubImageEditor] Updated XHTML length: ${updated.length}`);
+        console.log(`[EpubImageEditor] Placeholder div exists in updated XHTML:`, updated.includes(`id="${placeholderId}"`) && updated.includes('image-drop-zone'));
+        
+        setModified(true);
+        
+        // Re-extract placeholders to update the UI immediately (async, outside the setState callback)
+        setTimeout(() => {
+          extractPlaceholdersFromXhtml(updated);
+          
+          // Also verify in DOM after a short delay
+          if (canvasRef?.current) {
+            const draggableCanvas = canvasRef.current.querySelector('[data-draggable-canvas="true"]') || 
+                                     canvasRef.current.querySelector('.draggable-canvas-container');
+            if (draggableCanvas) {
+              const restoredPlaceholder = draggableCanvas.querySelector(`#${placeholderId}`);
+              if (restoredPlaceholder) {
+                console.log(`[EpubImageEditor] ✓ Placeholder ${placeholderId} verified in DOM:`, {
+                  tag: restoredPlaceholder.tagName,
+                  classes: restoredPlaceholder.className,
+                  hasText: restoredPlaceholder.textContent.trim().length > 0
+                });
+              } else {
+                console.warn(`[EpubImageEditor] ⚠ Placeholder ${placeholderId} not found in DOM after clearing`);
+              }
+            }
+          }
+        }, 200);
+        
+        return updated;
+      } catch (err) {
+        console.error('[EpubImageEditor] Failed to clear image for placeholder', placeholderId, err);
+        alert('Failed to clear image: ' + (err.message || 'Unknown error'));
+        return currentXhtml; // Return unchanged on error
+      }
+    });
+  }, [extractPlaceholdersFromXhtml, canvasRef]);
+
+  // Handle placeholder deletion
+  const handleDeletePlaceholder = useCallback((placeholderId) => {
+    if (!placeholderId) {
+      console.warn('[EpubImageEditor] handleDeletePlaceholder called without placeholderId');
+      return;
+    }
+
+    const confirmed = window.confirm(`Are you sure you want to delete this placeholder? This action cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+
+    console.log('[EpubImageEditor] User confirmed deleting placeholder:', placeholderId);
+
+    // Use functional update to get the latest xhtml state
+    setXhtml((currentXhtml) => {
+      if (!currentXhtml) {
+        console.warn('[EpubImageEditor] No XHTML to delete from');
+        return currentXhtml;
+      }
+
+      try {
+        console.log(`[EpubImageEditor] Deleting placeholder: ${placeholderId}`);
+        const parser = new DOMParser();
+        let doc = parser.parseFromString(currentXhtml, 'text/html');
+
+        // Check for parsing errors
+        let parserError = doc.querySelector('parsererror');
+        if (parserError) {
+          console.warn('[EpubImageEditor] HTML parsing failed, trying XML');
+          doc = parser.parseFromString(currentXhtml, 'application/xml');
+          parserError = doc.querySelector('parsererror');
+          if (parserError) {
+            console.error('[EpubImageEditor] Both HTML and XML parsing failed');
+            alert('Failed to parse XHTML. Please try again.');
+            return currentXhtml;
+          }
+        }
+
+        // Try multiple methods to find the target element
+        let target = doc.getElementById(placeholderId);
+        if (!target) {
+          target = doc.querySelector(`#${placeholderId}`);
+        }
+        if (!target) {
+          target = doc.querySelector(`[id="${placeholderId}"]`);
+        }
+        if (!target && doc.body) {
+          target = doc.body.querySelector(`#${placeholderId}`) || doc.body.querySelector(`[id="${placeholderId}"]`);
+        }
+
+        if (!target) {
+          console.error(`[EpubImageEditor] Placeholder ${placeholderId} not found in XHTML`);
+          alert(`Placeholder "${placeholderId}" not found. It may have already been deleted.`);
+          return currentXhtml;
+        }
+
+        const targetTag = target.tagName ? target.tagName.toLowerCase() : '';
+        const isPlaceholder = targetTag === 'div' && (target.classList.contains('image-placeholder') || target.classList.contains('image-drop-zone'));
+        const isImage = targetTag === 'img';
+
+        // Only allow deletion of placeholders (divs) or images that were placed
+        if (!isPlaceholder && !isImage) {
+          alert(`Cannot delete: Element "${placeholderId}" is not a placeholder or image. It's a ${targetTag}.`);
+          return currentXhtml;
+        }
+
+        // Remove the element from the DOM
+        if (target.parentNode) {
+          const parent = target.parentNode;
+          
+          // Check if parent is an image-with-options or placeholder-with-options wrapper
+          if (parent.classList && (parent.classList.contains('image-with-options') || parent.classList.contains('placeholder-with-options'))) {
+            // Remove the entire wrapper (including any overlay elements)
+            if (parent.parentNode) {
+              parent.parentNode.removeChild(parent);
+              console.log(`[EpubImageEditor] Removed wrapper containing ${placeholderId}`);
+            } else {
+              // Fallback: just remove the target if wrapper has no parent
+              parent.removeChild(target);
+              console.log(`[EpubImageEditor] Removed ${placeholderId} from wrapper`);
+            }
+          } else {
+            // Just remove the element itself
+            parent.removeChild(target);
+            console.log(`[EpubImageEditor] Removed ${placeholderId}`);
+          }
+        } else {
+          console.error(`[EpubImageEditor] Target ${placeholderId} has no parent node`);
+          alert('Failed to delete placeholder: Element has no parent.');
+          return currentXhtml;
+        }
+
+        const serializer = new XMLSerializer();
+        let updated = serializer.serializeToString(doc.documentElement);
+
+        // Handle HTML5 parser output (might wrap in <html><body>)
+        if (doc.documentElement.tagName === 'HTML' && doc.body) {
+          const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
+          const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
+          const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
+          const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
+
+          const headContent = doc.head ? doc.head.innerHTML : '';
+          const bodyContent = doc.body ? doc.body.innerHTML : '';
+
+          updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
+          if (headContent) {
+            updated += `<head>\n${headContent}\n</head>\n`;
+          }
+          updated += `<body>\n${bodyContent}\n</body>\n</html>`;
+        }
+
+        // Ensure self-closing tags for meta and img after DOM manipulation
+        updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<meta${attrs}/>`;
+        });
+        updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<img${attrs}/>`;
+        });
+
+        console.log(`[EpubImageEditor] ✓ Placeholder ${placeholderId} deleted`);
+        console.log(`[EpubImageEditor] Updated XHTML length: ${updated.length}`);
+
+        setModified(true);
+
+        // Re-extract placeholders to update the UI immediately
+        setTimeout(() => {
+          extractPlaceholdersFromXhtml(updated);
+        }, 200);
+
+        return updated;
+      } catch (err) {
+        console.error('[EpubImageEditor] Failed to delete placeholder', placeholderId, err);
+        alert('Failed to delete placeholder: ' + (err.message || 'Unknown error'));
+        return currentXhtml;
+      }
+    });
+  }, [extractPlaceholdersFromXhtml]);
+
+  // Handle image editing operations (zoom, crop, fit)
+  const handleImageEdit = useCallback((placeholderId, operation, value = null) => {
+    console.log('[EpubImageEditor] handleImageEdit called:', { placeholderId, operation, value });
+    if (!placeholderId) {
+      console.warn('[EpubImageEditor] handleImageEdit called without placeholderId');
+      return;
+    }
+
+    setXhtml((currentXhtml) => {
+      if (!currentXhtml) {
+        console.warn('[EpubImageEditor] No XHTML to edit');
+        return currentXhtml;
+      }
+
+      try {
+        const parser = new DOMParser();
+        let doc = parser.parseFromString(currentXhtml, 'text/html');
+
+        // Check for parsing errors
+        let parserError = doc.querySelector('parsererror');
+        if (parserError) {
+          console.warn('[EpubImageEditor] HTML parsing failed, trying XML');
+          doc = parser.parseFromString(currentXhtml, 'application/xml');
+          parserError = doc.querySelector('parsererror');
+          if (parserError) {
+            console.error('[EpubImageEditor] Both HTML and XML parsing failed');
+            return currentXhtml;
+          }
+        }
+
+        // Find the target image
+        let target = doc.getElementById(placeholderId);
+        if (!target) {
+          target = doc.querySelector(`#${placeholderId}`);
+        }
+        if (!target && doc.body) {
+          target = doc.body.querySelector(`#${placeholderId}`);
+        }
+
+        if (!target || target.tagName?.toLowerCase() !== 'img') {
+          console.error(`[EpubImageEditor] Image ${placeholderId} not found`);
+          return currentXhtml;
+        }
+
+        // Get current styles
+        const currentStyle = target.getAttribute('style') || '';
+        const currentWidth = target.getAttribute('width') || '';
+        const currentHeight = target.getAttribute('height') || '';
+        
+        // Parse current transform if exists
+        let currentScale = 1;
+        const transformMatch = currentStyle.match(/transform\s*:\s*scale\(([^)]+)\)/i);
+        if (transformMatch) {
+          currentScale = parseFloat(transformMatch[1]) || 1;
+        }
+
+        // Apply operation
+        let newStyle = currentStyle;
+        let newWidth = currentWidth;
+        let newHeight = currentHeight;
+
+        switch (operation) {
+          case 'zoom-in':
+            const zoomInScale = Math.min(currentScale * 1.2, 5); // Max 5x zoom
+            newStyle = currentStyle.replace(/transform\s*:\s*scale\([^)]+\)/i, '');
+            newStyle = (newStyle.trim() ? newStyle + '; ' : '') + `transform: scale(${zoomInScale})`;
+            target.setAttribute('style', newStyle);
+            break;
+
+          case 'zoom-out':
+            const zoomOutScale = Math.max(currentScale / 1.2, 0.1); // Min 0.1x zoom
+            newStyle = currentStyle.replace(/transform\s*:\s*scale\([^)]+\)/i, '');
+            newStyle = (newStyle.trim() ? newStyle + '; ' : '') + `transform: scale(${zoomOutScale})`;
+            target.setAttribute('style', newStyle);
+            break;
+
+          case 'fit-container':
+            // Remove transform and set width/height to fit container
+            newStyle = currentStyle.replace(/transform\s*:\s*scale\([^)]+\)/gi, '').trim();
+            if (newStyle.endsWith(';')) {
+              newStyle = newStyle.slice(0, -1);
+            }
+            newStyle = (newStyle ? newStyle + '; ' : '') + 'width: 100%; height: auto; max-width: 100%;';
+            target.setAttribute('style', newStyle);
+            target.removeAttribute('width');
+            target.removeAttribute('height');
+            break;
+
+          case 'crop':
+            // For crop, we'll use object-fit: cover and object-position
+            // This is a simplified crop - full crop would need a more complex UI
+            newStyle = currentStyle.replace(/object-fit\s*:[^;]+/gi, '');
+            newStyle = currentStyle.replace(/object-position\s*:[^;]+/gi, '');
+            newStyle = (newStyle.trim() ? newStyle + '; ' : '') + 'object-fit: cover; object-position: center;';
+            target.setAttribute('style', newStyle);
+            break;
+
+          default:
+            console.warn(`[EpubImageEditor] Unknown operation: ${operation}`);
+            return currentXhtml;
+        }
+
+        // Serialize back to XHTML
+        const serializer = new XMLSerializer();
+        let updated = serializer.serializeToString(doc.documentElement);
+
+        // Handle HTML5 parser output
+        if (doc.documentElement.tagName === 'HTML' && doc.body) {
+          const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
+          const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
+          const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
+          const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
+
+          const headContent = doc.head ? doc.head.innerHTML : '';
+          const bodyContent = doc.body ? doc.body.innerHTML : '';
+
+          updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
+          if (headContent) {
+            updated += `<head>\n${headContent}\n</head>\n`;
+          }
+          updated += `<body>\n${bodyContent}\n</body>\n</html>`;
+        }
+
+        // Ensure self-closing tags
+        updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<meta${attrs}/>`;
+        });
+        updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<img${attrs}/>`;
+        });
+
+        console.log(`[EpubImageEditor] ✓ Image ${operation} applied to ${placeholderId}`);
+        setModified(true);
+        return updated;
+      } catch (err) {
+        console.error('[EpubImageEditor] Failed to edit image:', err);
+        return currentXhtml;
+      }
+    });
+  }, []);
 
   const handleSave = useCallback(async () => {
     try {
@@ -1051,6 +1587,138 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       xhtmlToSave = xhtmlToSave.replace(/src=["']\.\.\/images\/([^"']+)["']/gi, (match, fileName) => {
         return `src="images/${fileName}"`;
       });
+      
+      // Clean up editor-specific elements (wrappers, overlays) before saving
+      // Parse the XHTML to remove editor UI elements
+      try {
+        const parser = new DOMParser();
+        let doc = parser.parseFromString(xhtmlToSave, 'text/html');
+        
+        // Check for parsing errors
+        let parserError = doc.querySelector('parsererror');
+        if (parserError) {
+          console.warn('[EpubImageEditor] HTML parsing failed in cleanup, trying XML');
+          doc = parser.parseFromString(xhtmlToSave, 'application/xml');
+          parserError = doc.querySelector('parsererror');
+          if (parserError) {
+            console.warn('[EpubImageEditor] Both HTML and XML parsing failed in cleanup, skipping cleanup');
+          }
+        }
+        
+        if (!parserError) {
+          // Remove all editor-specific overlay elements
+          const overlays = doc.querySelectorAll('.placeholder-options-overlay, .image-options-overlay');
+          overlays.forEach(overlay => {
+            overlay.remove();
+          });
+          
+          // Remove wrapper divs but keep their content
+          const wrappers = doc.querySelectorAll('.placeholder-with-options, .image-with-options');
+          wrappers.forEach(wrapper => {
+            // Move all children out of the wrapper before removing it
+            const children = Array.from(wrapper.childNodes);
+            const parent = wrapper.parentNode;
+            if (parent) {
+              // Find the placeholder/image inside (skip overlay)
+              const content = wrapper.querySelector('.image-placeholder, .image-drop-zone, img');
+              if (content) {
+                // Replace wrapper with its content
+                parent.replaceChild(content, wrapper);
+                // Copy any attributes from wrapper to content if needed
+                if (wrapper.hasAttribute('style')) {
+                  const wrapperStyle = wrapper.getAttribute('style');
+                  const contentStyle = content.getAttribute('style') || '';
+                  // Merge styles (simple approach - just append)
+                  if (contentStyle && !contentStyle.includes('position')) {
+                    content.setAttribute('style', contentStyle + '; ' + wrapperStyle);
+                  }
+                }
+              } else {
+                // No content found, just remove the wrapper
+                wrapper.remove();
+              }
+            }
+          });
+          
+          // Serialize back to string
+          const serializer = new XMLSerializer();
+          let cleanedXhtml = serializer.serializeToString(doc.documentElement);
+          
+          // Handle HTML5 parser output
+          if (doc.documentElement.tagName === 'HTML' && doc.body) {
+            const doctypeMatch = xhtmlToSave.match(/<!DOCTYPE[^>]*>/i);
+            const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
+            const xmlnsMatch = xhtmlToSave.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
+            const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
+            
+            const headContent = doc.head ? doc.head.innerHTML : '';
+            const bodyContent = doc.body ? doc.body.innerHTML : '';
+            
+            cleanedXhtml = `${doctype}\n<html xmlns="${xmlns}">\n`;
+            if (headContent) {
+              cleanedXhtml += `<head>\n${headContent}\n</head>\n`;
+            }
+            cleanedXhtml += `<body>\n${bodyContent}\n</body>\n</html>`;
+          }
+          
+          // Ensure self-closing tags
+          cleanedXhtml = cleanedXhtml.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+            return attrs.includes('/') ? match : `<meta${attrs}/>`;
+          });
+          cleanedXhtml = cleanedXhtml.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+            return attrs.includes('/') ? match : `<img${attrs}/>`;
+          });
+          
+          xhtmlToSave = cleanedXhtml;
+          console.log('[EpubImageEditor] Cleaned editor-specific elements from XHTML');
+        }
+      } catch (cleanupError) {
+        console.warn('[EpubImageEditor] Error during cleanup, trying regex fallback:', cleanupError);
+        // Fallback: Use regex to remove editor-specific elements
+        // Remove wrapper divs (but keep their content)
+        xhtmlToSave = xhtmlToSave.replace(/<div[^>]*class=["'][^"']*(?:placeholder-with-options|image-with-options)[^"']*["'][^>]*>/gi, '');
+        xhtmlToSave = xhtmlToSave.replace(/<\/div>/gi, (match, offset, str) => {
+          // Count opening divs before this closing tag to avoid removing legitimate divs
+          const before = str.substring(0, offset);
+          const openDivs = (before.match(/<div[^>]*>/gi) || []).length;
+          const closeDivs = (before.match(/<\/div>/gi) || []).length;
+          // If this closing tag matches an editor wrapper, remove it
+          // Simple heuristic: if there are more open divs than closed, this might be a wrapper closing tag
+          if (openDivs > closeDivs) {
+            return ''; // Remove this closing tag
+          }
+          return match; // Keep it
+        });
+        // Remove overlay elements
+        xhtmlToSave = xhtmlToSave.replace(/<div[^>]*class=["'][^"']*(?:placeholder-options-overlay|image-options-overlay)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi, '');
+        xhtmlToSave = xhtmlToSave.replace(/<button[^>]*>[\s\S]*?Delete Placeholder[\s\S]*?<\/button>/gi, '');
+        console.log('[EpubImageEditor] Applied regex cleanup fallback');
+      }
+      
+      // Additional regex cleanup to catch any remaining editor elements
+      // This is a safety net in case DOM parsing missed something
+      // Remove wrapper divs and their contents (but we want to preserve the inner content)
+      // First, try to extract content from wrappers before removing them
+      xhtmlToSave = xhtmlToSave.replace(
+        /<div[^>]*class=["'][^"']*(?:placeholder-with-options|image-with-options)[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi,
+        (match, content) => {
+          // Extract the actual placeholder/image from the wrapper content
+          const placeholderMatch = content.match(/<div[^>]*(?:class=["'][^"']*(?:image-placeholder|image-drop-zone)[^"']*["']|id=["']page\d+_(?:div|img)\d+["'])[^>]*>[\s\S]*?<\/div>/i);
+          const imageMatch = content.match(/<img[^>]*id=["']page\d+_(?:div|img)\d+["'][^>]*\/?>/i);
+          if (placeholderMatch) {
+            return placeholderMatch[0]; // Return the placeholder div
+          } else if (imageMatch) {
+            return imageMatch[0]; // Return the image tag
+          }
+          return ''; // Remove wrapper if no valid content found
+        }
+      );
+      
+      // Remove overlay divs completely
+      xhtmlToSave = xhtmlToSave.replace(/<div[^>]*class=["'][^"']*(?:placeholder-options-overlay|image-options-overlay)[^"']*["'][^>]*>[\s\S]*?<\/div>/gi, '');
+      
+      // Remove any buttons with "Delete" text (safety net)
+      xhtmlToSave = xhtmlToSave.replace(/<button[^>]*>[\s\S]*?(?:Delete|🗑️)[\s\S]*?<\/button>/gi, '');
       
       console.log('Saving XHTML with relative image paths');
       
@@ -1105,6 +1773,25 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       extractPlaceholdersFromXhtml(resetXhtml);
     }
   }, [originalXhtml, jobId]);
+
+  // Determine which placeholders currently have images (by id)
+  const placeholdersWithStatus = useMemo(() => {
+    if (!xhtml || !placeholders) {
+      console.log('[EpubImageEditor] placeholdersWithStatus: No xhtml or placeholders', { xhtml: !!xhtml, placeholders: placeholders?.length });
+      return [];
+    }
+    const result = placeholders.map((p) => {
+      const hasImg = new RegExp(`<img[^>]*id=["']${p.id}["']`, 'i').test(xhtml);
+      return { ...p, hasImg };
+    });
+    console.log('[EpubImageEditor] placeholdersWithStatus:', {
+      total: result.length,
+      withImages: result.filter(p => p.hasImg).length,
+      withoutImages: result.filter(p => !p.hasImg).length,
+      placeholders: result.map(p => ({ id: p.id, hasImg: p.hasImg }))
+    });
+    return result;
+  }, [xhtml, placeholders]);
 
   // Expose state to parent component (after functions are defined)
   // Only include state values in dependencies, not functions (they're memoized with useCallback)
@@ -1224,7 +1911,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
           </div>
 
           {/* Right Canvas - XHTML Display (70%) */}
-          <div className="xhtml-canvas-wrapper">
+          <div className="xhtml-canvas-wrapper" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div className="canvas-header">
               <h3>XHTML Canvas</h3>
               {placeholders.length > 0 && (
@@ -1233,16 +1920,31 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                 </div>
               )}
             </div>
-            <div className="canvas-wrapper" ref={canvasRef} style={{ position: 'relative' }}>
+            <div className="canvas-wrapper" ref={canvasRef} style={{ position: 'relative', flex: '1 1 auto', minHeight: 0 }}>
               <DraggableCanvas
                 key={`canvas-${pageNumber}-${modified ? Date.now() : 'initial'}`} // Force re-render when XHTML changes
                 xhtml={xhtml}
                 onXhtmlChange={(updatedXhtml) => {
-                  setXhtml(updatedXhtml);
+                  // Use functional update to ensure we're working with latest state
+                  // This prevents overwriting changes when multiple edits happen quickly
+                  setXhtml((currentXhtml) => {
+                    // If the updated XHTML is based on DOM reading, use it directly
+                    // Otherwise, merge changes intelligently
+                    console.log('[EpubImageEditor] XHTML update:', {
+                      currentLength: currentXhtml.length,
+                      updatedLength: updatedXhtml.length,
+                      currentImgCount: (currentXhtml.match(/<img[^>]*>/gi) || []).length,
+                      updatedImgCount: (updatedXhtml.match(/<img[^>]*>/gi) || []).length
+                    });
+                    return updatedXhtml;
+                  });
                   setModified(true);
                 }}
                 editMode={editMode}
                 onEditModeChange={setEditMode}
+                onClearImage={handleClearImage}
+                onImageEdit={handleImageEdit}
+                onDeletePlaceholder={handleDeletePlaceholder}
               />
               {/* Transparent drop zone overlay for image drops - only active when dragging images */}
               <XhtmlCanvas
@@ -1250,6 +1952,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                 placeholders={placeholders}
                 onDrop={handleDrop}
                 canvasRef={canvasRef}
+                editMode={editMode}
               />
             </div>
           </div>

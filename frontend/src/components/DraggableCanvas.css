@@ -57,30 +57,46 @@
 .draggable-canvas-container .image-placeholder {
   width: 100%;
   height: 100%;
-  /* Override any transparent backgrounds - make placeholders visible */
-  background: #f0f0f0 !important;
+  background: #fffaf0 !important; /* soft warm highlight by default */
   display: flex;
   align-items: center;
   justify-content: center;
-  /* Override any border: none - make placeholders visible */
-  border: 2px dashed #007bff !important;
+  border: 2px dashed #ff9800 !important; /* stronger orange border */
   position: relative;
-  /* Ensure placeholders are always accessible for drops, even when nested */
   z-index: 100;
   pointer-events: auto;
-  /* Make sure they're visible and interactive */
-  min-height: 50px;
-  min-width: 50px;
-  /* Ensure they're visible even if CSS says transparent */
+  min-height: 60px;
+  min-width: 60px;
   opacity: 1 !important;
+  box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.18);
+  transition: border-color 0.15s ease, background-color 0.15s ease,
+    box-shadow 0.15s ease, transform 0.15s ease;
 }
 
 /* When dragging over, highlight placeholders */
 .draggable-canvas-container .image-drop-zone.drag-over,
 .draggable-canvas-container .image-placeholder.drag-over {
-  background: rgba(33, 150, 243, 0.2);
-  border-color: #2196F3;
+  background: rgba(76, 175, 80, 0.15);
+  border-color: #4caf50;
   border-width: 3px;
+  box-shadow: 0 0 0 3px rgba(76, 175, 80, 0.25);
+  transform: scale(1.01);
+}
+
+/* Add a clear label on hover/drag-over */
+.draggable-canvas-container .image-drop-zone.drag-over::after,
+.draggable-canvas-container .image-placeholder.drag-over::after {
+  content: 'Drop image here';
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: #2e7d32;
+  pointer-events: none;
+  text-shadow: 0 1px 2px rgba(255, 255, 255, 0.8);
 }
 
 .draggable-canvas-container .image-drop-zone img,
@@ -134,5 +150,107 @@
 
 .draggable-canvas-container:not(.edit-mode) .draggable-text-block:hover::before {
   opacity: 1;
+}
+
+/* Image Options Overlay */
+.image-with-options {
+  position: relative;
+  display: inline-block;
+  z-index: 3000 !important;
+  pointer-events: auto !important;
+}
+
+.image-with-options:hover .image-options-overlay {
+  display: flex !important;
+}
+
+.image-options-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 3000 !important;
+  border-radius: 4px;
+  backdrop-filter: blur(2px);
+  pointer-events: auto !important;
+}
+
+.image-options-overlay button {
+  padding: 10px 20px;
+  background: #d32f2f;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s ease;
+}
+
+.image-options-overlay button:hover {
+  background: #b71c1c;
+  transform: scale(1.1);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+}
+
+.image-options-overlay button:active {
+  transform: scale(0.95);
+}
+
+/* Placeholder Options Overlay */
+.placeholder-with-options {
+  position: relative;
+  display: inline-block;
+  z-index: 3000 !important;
+  pointer-events: auto !important;
+}
+
+.placeholder-with-options:hover .placeholder-options-overlay {
+  display: flex !important;
+}
+
+.placeholder-options-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 3000 !important;
+  border-radius: 4px;
+  backdrop-filter: blur(2px);
+  pointer-events: auto !important;
+}
+
+.placeholder-options-overlay button {
+  padding: 10px 20px;
+  background: #d32f2f;
+  color: white;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  transition: all 0.2s ease;
+}
+
+.placeholder-options-overlay button:hover {
+  background: #b71c1c;
+  transform: scale(1.1);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.5);
+}
+
+.placeholder-options-overlay button:active {
+  transform: scale(0.95);
 }
 
