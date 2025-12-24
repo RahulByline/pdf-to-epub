@@ -179,38 +179,76 @@ router.get('/:id/download', async (req, res) => {
 // GET /api/pdfs/:id/thumbnail - Get PDF thumbnail (first page preview)
 router.get('/:id/thumbnail', async (req, res) => {
   try {
-    const pdf = await PdfService.getPdfDocument(parseInt(req.params.id));
+    const pdfId = parseInt(req.params.id);
     
-    // For now, return a placeholder image
-    // In production, this would generate an actual thumbnail from the first page of the PDF
-    // using libraries like pdf-lib, pdf2pic, or similar
+    // Validate PDF ID
+    if (isNaN(pdfId)) {
+      throw new Error('Invalid PDF ID');
+    }
+
+    let pdf = null;
+    let fileName = `PDF-${pdfId}`;
+    
+    try {
+      pdf = await PdfService.getPdfDocument(pdfId);
+      if (pdf && pdf.originalFileName) {
+        // Truncate long filenames and escape for SVG
+        const safeFileName = pdf.originalFileName
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&apos;');
+        fileName = safeFileName.length > 30 
+          ? safeFileName.substring(0, 30) + '...' 
+          : safeFileName;
+      }
+    } catch (dbError) {
+      // If PDF not found in database, still return a default thumbnail
+      console.warn(`PDF ${pdfId} not found, returning default thumbnail:`, dbError.message);
+    }
     
     // Create a simple SVG placeholder representing a PDF document
+    // This always returns a valid image, even if PDF doesn't exist
     const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="400" height="600" xmlns="http://www.w3.org/2000/svg">
-  <rect width="400" height="600" fill="#ffffff" stroke="#e0e0e0" stroke-width="2"/>
-  <rect x="20" y="20" width="360" height="80" fill="#e3f2fd"/>
-  <rect x="20" y="120" width="360" height="20" fill="#f5f5f5"/>
-  <rect x="20" y="160" width="280" height="20" fill="#f5f5f5"/>
-  <rect x="20" y="200" width="320" height="20" fill="#f5f5f5"/>
-  <rect x="20" y="240" width="240" height="20" fill="#f5f5f5"/>
-  <rect x="20" y="280" width="360" height="300" fill="#fafafa" stroke="#e0e0e0" stroke-width="1"/>
-  <text x="200" y="60" text-anchor="middle" font-family="Arial" font-size="24" fill="#1976d2">PDF Preview</text>
-  <text x="200" y="320" text-anchor="middle" font-family="Arial" font-size="16" fill="#757575">${pdf.originalFileName}</text>
+  <defs>
+    <linearGradient id="grad1" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#e3f2fd;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#bbdefb;stop-opacity:1" />
+    </linearGradient>
+  </defs>
+  <rect width="400" height="600" fill="#ffffff" stroke="#e0e0e0" stroke-width="2" rx="4"/>
+  <rect x="20" y="20" width="360" height="80" fill="url(#grad1)" rx="2"/>
+  <rect x="20" y="120" width="360" height="20" fill="#f5f5f5" rx="2"/>
+  <rect x="20" y="160" width="280" height="20" fill="#f5f5f5" rx="2"/>
+  <rect x="20" y="200" width="320" height="20" fill="#f5f5f5" rx="2"/>
+  <rect x="20" y="240" width="240" height="20" fill="#f5f5f5" rx="2"/>
+  <rect x="20" y="280" width="360" height="300" fill="#fafafa" stroke="#e0e0e0" stroke-width="1" rx="2"/>
+  <text x="200" y="50" text-anchor="middle" font-family="Arial, sans-serif" font-size="20" font-weight="bold" fill="#1976d2">PDF</text>
+  <text x="200" y="75" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="#1976d2">Document Preview</text>
+  <text x="200" y="320" text-anchor="middle" font-family="Arial, sans-serif" font-size="14" fill="#757575">${fileName}</text>
+  <text x="200" y="350" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#999">ID: ${pdfId}</text>
 </svg>`;
     
     res.setHeader('Content-Type', 'image/svg+xml');
     res.setHeader('Cache-Control', 'public, max-age=3600');
     return res.send(svg);
   } catch (error) {
-    // Return a simple error placeholder if PDF not found
-    const errorSvg = `<?xml version="1.0" encoding="UTF-8"?>
+    // Always return a valid default thumbnail, even on unexpected errors
+    console.error(`Error generating thumbnail for PDF ${req.params.id}:`, error.message);
+    const pdfId = req.params.id || '?';
+    const defaultSvg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg width="400" height="600" xmlns="http://www.w3.org/2000/svg">
-  <rect width="400" height="600" fill="#f5f5f5" stroke="#e0e0e0" stroke-width="2"/>
-  <text x="200" y="300" text-anchor="middle" font-family="Arial" font-size="18" fill="#999">No Preview Available</text>
+  <rect width="400" height="600" fill="#f5f5f5" stroke="#e0e0e0" stroke-width="2" rx="4"/>
+  <circle cx="200" cy="250" r="40" fill="#e0e0e0"/>
+  <path d="M 180 240 L 200 260 L 220 240" stroke="#999" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="200" y="320" text-anchor="middle" font-family="Arial, sans-serif" font-size="16" fill="#999">No Preview</text>
+  <text x="200" y="345" text-anchor="middle" font-family="Arial, sans-serif" font-size="12" fill="#bbb">Available</text>
 </svg>`;
     res.setHeader('Content-Type', 'image/svg+xml');
-    return res.send(errorSvg);
+    res.setHeader('Cache-Control', 'public, max-age=300'); // Shorter cache for error thumbnails
+    return res.status(200).send(defaultSvg); // Return 200 with error placeholder instead of 500
   }
 });
 
