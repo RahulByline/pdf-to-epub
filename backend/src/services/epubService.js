@@ -85,6 +85,34 @@ export class EpubService {
       return `<img${attrs}/>`;
     });
     
+    // Fix br tags to be self-closing (XHTML requirement)
+    // Convert <br> or <br ...> to <br /> or <br .../> for all br tags that aren't already self-closing
+    sanitized = sanitized.replace(/<br\s*([^>]*?)>/gi, (match, attrs) => {
+      // Check if already self-closing (ends with /> or has /> before the closing >)
+      if (match.includes('/>') || attrs.trim().endsWith('/')) {
+        return match; // Already self-closing
+      }
+      // Add / before the closing >, or just <br /> if no attributes
+      if (!attrs || attrs.trim() === '') {
+        return '<br />';
+      }
+      return `<br ${attrs.trim()}/>`;
+    });
+    
+    // Fix hr tags to be self-closing (XHTML requirement)
+    // Convert <hr> or <hr ...> to <hr /> or <hr .../> for all hr tags that aren't already self-closing
+    sanitized = sanitized.replace(/<hr\s*([^>]*?)>/gi, (match, attrs) => {
+      // Check if already self-closing (ends with /> or has /> before the closing >)
+      if (match.includes('/>') || attrs.trim().endsWith('/')) {
+        return match; // Already self-closing
+      }
+      // Add / before the closing >, or just <hr /> if no attributes
+      if (!attrs || attrs.trim() === '') {
+        return '<hr />';
+      }
+      return `<hr ${attrs.trim()}/>`;
+    });
+    
     // Fix common DOCTYPE URL typo
     sanitized = sanitized.replace(
       /http:\/\/www\.w3\.org\/TR\/xhtml\/DTD\/xhtml1-strict\.dtd/gi,

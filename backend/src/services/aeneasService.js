@@ -942,9 +942,10 @@ class AeneasService {
     const wordResults = [];
     
     // ISSUE #3 FIX: Configuration for word timing
-    const MIN_WORD_DURATION = 0.15; // Minimum 150ms per word
-    const WORD_PADDING = 0.05; // 50ms padding between words
-    const PUNCTUATION_PAUSE = 0.1; // 100ms pause after punctuation
+    // FIXED: Increased durations to prevent reading too fast in EPUB player
+    const MIN_WORD_DURATION = 0.25; // Minimum 250ms per word (was 150ms - too fast)
+    const WORD_PADDING = 0.12; // 120ms padding between words (was 50ms - too fast)
+    const PUNCTUATION_PAUSE = 0.2; // 200ms pause after punctuation (was 100ms)
 
     for (const sentence of sentenceResults) {
       const sentenceEl = doc.getElementById(sentence.id);

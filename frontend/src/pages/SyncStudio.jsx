@@ -366,7 +366,10 @@ const SyncStudio = () => {
    * Highlight element in XHTML viewer
    */
   const highlightElement = useCallback((elementId) => {
-    if (!viewerRef.current) return;
+    if (!viewerRef.current) {
+      console.warn('[Highlight] viewerRef.current is null');
+      return;
+    }
 
     // Remove previous highlights
     const highlighted = viewerRef.current.querySelectorAll('.studio-highlight');
@@ -374,10 +377,38 @@ const SyncStudio = () => {
 
     // Add new highlight
     if (elementId) {
-      const el = viewerRef.current.querySelector(`#${CSS.escape(elementId)}`);
+      // Try multiple selector strategies
+      let el = viewerRef.current.querySelector(`#${CSS.escape(elementId)}`);
+      
+      // If not found, try without escaping (in case elementId already has special chars)
+      if (!el) {
+        el = viewerRef.current.querySelector(`#${elementId}`);
+      }
+      
+      // If still not found, try searching by attribute
+      if (!el) {
+        el = viewerRef.current.querySelector(`[id="${elementId}"]`);
+      }
+      
+      // If still not found, try searching all elements with that ID (case-insensitive)
+      if (!el) {
+        const allElements = viewerRef.current.querySelectorAll('[id]');
+        for (const elem of allElements) {
+          if (elem.id === elementId || elem.id.toLowerCase() === elementId.toLowerCase()) {
+            el = elem;
+            break;
+          }
+        }
+      }
+      
       if (el) {
         el.classList.add('studio-highlight');
         el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        console.log(`[Highlight] ✓ Highlighted element: ${elementId}`);
+      } else {
+        console.warn(`[Highlight] ✗ Element not found: ${elementId}. Available IDs:`, 
+          Array.from(viewerRef.current.querySelectorAll('[id]')).slice(0, 10).map(e => e.id)
+        );
       }
     }
   }, []);
@@ -542,7 +573,7 @@ const SyncStudio = () => {
     // Destroy existing instance
     if (wavesurferRef.current) {
       try {
-        wavesurferRef.current.destroy();
+      wavesurferRef.current.destroy();
       } catch (err) {
         // Ignore errors during cleanup
         console.warn('[SyncStudio] Error destroying WaveSurfer:', err.message);
@@ -596,8 +627,8 @@ const SyncStudio = () => {
         const duration = wavesurferRef.current.getDuration();
         if (duration && duration > 0) {
           setDuration(duration);
-          setIsReady(true);
-          console.log('[WaveSurfer] Ready');
+      setIsReady(true);
+      console.log('[WaveSurfer] Ready');
           
           // Recreate any pending regions after audio reload
           if (pendingRegionUpdatesRef.current.size > 0 && regionsPluginRef.current) {
@@ -702,9 +733,16 @@ const SyncStudio = () => {
       if (!isProgrammaticPlayRef.current && regionsPluginRef.current) {
         const regions = regionsPluginRef.current.getRegions();
         const active = regions.find(r => time >= r.start && time < r.end);
-        if (active && active.id !== activeRegionId) {
+        if (active) {
+          // Always update highlight even if activeRegionId hasn't changed (in case DOM was re-rendered)
+          if (active.id !== activeRegionId) {
           setActiveRegionId(active.id);
+          }
           highlightElement(active.id);
+        } else if (activeRegionId) {
+          // Clear highlight if no active region
+          setActiveRegionId(null);
+          highlightElement(null);
         }
       }
     });
@@ -746,7 +784,7 @@ const SyncStudio = () => {
         try {
           // Reset ready state before destroying
           setIsReady(false);
-          wavesurferRef.current.destroy();
+        wavesurferRef.current.destroy();
         } catch (err) {
           // Ignore errors during cleanup
           console.warn('[SyncStudio] Error during WaveSurfer cleanup:', err.message);
@@ -764,7 +802,7 @@ const SyncStudio = () => {
         // Check if audio is actually loaded before zooming
         const duration = wavesurferRef.current.getDuration();
         if (duration && duration > 0) {
-          wavesurferRef.current.zoom(zoom);
+      wavesurferRef.current.zoom(zoom);
         }
       } catch (err) {
         // Audio not loaded yet, skip zoom
@@ -995,7 +1033,7 @@ const SyncStudio = () => {
         const sectionsData = await conversionService.getEpubSections(parseInt(jobId));
         if (sectionsData && sectionsData.length > 0) {
           // Convert relative image paths to absolute URLs for browser preview
-          const baseURL = api.defaults.baseURL || 'http://localhost:8082/api';
+          const baseURL = api.defaults.baseURL || 'http://localhost:8081/api';
           const processedSections = sectionsData.map(section => {
             let processedXhtml = section.xhtml || section.content || '';
             
@@ -3197,14 +3235,14 @@ const SyncStudio = () => {
               </button>
             </div>
           ) : (
-            <button onClick={handleSave} className="btn-save" disabled={loading}>
+          <button onClick={handleSave} className="btn-save" disabled={loading}>
               {loading ? 'Saving...' : (
                 <>
                   <HiOutlineSave size={18} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
                   Save & Export
                 </>
               )}
-            </button>
+          </button>
           )}
         </div>
       </header>
@@ -3312,7 +3350,7 @@ const SyncStudio = () => {
             </div>
 
             <div className="playback-controls">
-              <button
+              <button 
                 onClick={() => {
                   // Clear segment playback when using main controls
                   if (playingSegmentId) {
@@ -3336,7 +3374,7 @@ const SyncStudio = () => {
                   </>
                 )}
               </button>
-              <button
+              <button 
                 onClick={() => wavesurferRef.current?.stop()}
                 disabled={!isReady}
               >
@@ -3367,10 +3405,10 @@ const SyncStudio = () => {
 
             <div className="zoom-control">
               <span>Zoom:</span>
-              <input
-                type="range"
-                min="10"
-                max="200"
+              <input 
+                type="range" 
+                min="10" 
+                max="200" 
                 value={zoom}
                 onChange={(e) => setZoom(parseInt(e.target.value))}
               />

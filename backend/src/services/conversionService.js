@@ -183,6 +183,34 @@ export class ConversionService {
           return `<img${attrs}/>`;
         });
         
+        // Fix br tags to be self-closing (XHTML requirement)
+        // Convert <br> or <br ...> to <br /> or <br .../> for all br tags that aren't already self-closing
+        xhtmlContent = xhtmlContent.replace(/<br\s*([^>]*?)>/gi, (match, attrs) => {
+          // Check if already self-closing (ends with /> or has /> before the closing >)
+          if (match.includes('/>') || attrs.trim().endsWith('/')) {
+            return match; // Already self-closing
+          }
+          // Add / before the closing >, or just <br /> if no attributes
+          if (!attrs || attrs.trim() === '') {
+            return '<br />';
+          }
+          return `<br ${attrs.trim()}/>`;
+        });
+        
+        // Fix hr tags to be self-closing (XHTML requirement)
+        // Convert <hr> or <hr ...> to <hr /> or <hr .../> for all hr tags that aren't already self-closing
+        xhtmlContent = xhtmlContent.replace(/<hr\s*([^>]*?)>/gi, (match, attrs) => {
+          // Check if already self-closing (ends with /> or has /> before the closing >)
+          if (match.includes('/>') || attrs.trim().endsWith('/')) {
+            return match; // Already self-closing
+          }
+          // Add / before the closing >, or just <hr /> if no attributes
+          if (!attrs || attrs.trim() === '') {
+            return '<hr />';
+          }
+          return `<hr ${attrs.trim()}/>`;
+        });
+        
         // Replace placeholder divs with actual img tags if extracted images are available
         if (pageExtractedImages && pageExtractedImages.length > 0) {
           xhtmlContent = this.replacePlaceholderDivsWithImages(xhtmlContent, pageImage.pageNumber, pageExtractedImages);
@@ -1934,6 +1962,34 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
         }
         // Add / before the closing >
         return `<img${attrs}/>`;
+      });
+      
+      // Fix br tags to be self-closing (XHTML requirement)
+      // Convert <br> or <br ...> to <br /> or <br .../> for all br tags that aren't already self-closing
+      xhtmlContent = xhtmlContent.replace(/<br\s*([^>]*?)>/gi, (match, attrs) => {
+        // Check if already self-closing (ends with /> or has /> before the closing >)
+        if (match.includes('/>') || attrs.trim().endsWith('/')) {
+          return match; // Already self-closing
+        }
+        // Add / before the closing >, or just <br /> if no attributes
+        if (!attrs || attrs.trim() === '') {
+          return '<br />';
+        }
+        return `<br ${attrs.trim()}/>`;
+      });
+      
+      // Fix hr tags to be self-closing (XHTML requirement)
+      // Convert <hr> or <hr ...> to <hr /> or <hr .../> for all hr tags that aren't already self-closing
+      xhtmlContent = xhtmlContent.replace(/<hr\s*([^>]*?)>/gi, (match, attrs) => {
+        // Check if already self-closing (ends with /> or has /> before the closing >)
+        if (match.includes('/>') || attrs.trim().endsWith('/')) {
+          return match; // Already self-closing
+        }
+        // Add / before the closing >, or just <hr /> if no attributes
+        if (!attrs || attrs.trim() === '') {
+          return '<hr />';
+        }
+        return `<hr ${attrs.trim()}/>`;
       });
 
       // Write fixed XHTML to EPUB
@@ -5069,6 +5125,9 @@ body > p {
         blockId = this.mapSyncIdToXhtmlId(sync, pageNumber, textBlocks, idMapping);
       }
       
+      // Determine if this is word-level granularity (for adjusting gaps and pauses)
+      const isWordLevel = blockId && blockId.includes('_w');
+      
       // CRITICAL FIX: Ensure minimum duration for natural reading pace
       // Very short durations cause "reading too fast" issue in EPUB players
       // Calculate minimum duration based on text length (natural reading pace: ~150 words/min = ~2.5 words/sec)
@@ -5091,10 +5150,13 @@ body > p {
       
       // STEP 1: CRITICAL - Ensure NO OVERLAP with previous block
       // Use lastAdjustedEndTime to track the actual end time of the previous processed block
+      // For word-level, ensure larger gaps to prevent abrupt cuts
+      const minGapAfterPrevious = isWordLevel ? 0.1 : 0.05; // 100ms for words, 50ms for sentences
+      
       if (startTime < lastAdjustedEndTime) {
         const overlap = lastAdjustedEndTime - startTime;
         console.warn(`[SMIL Page ${pageNumber}] ⚠️ OVERLAP DETECTED: ${blockId} starts at ${startTime.toFixed(3)}s but previous block ends at ${lastAdjustedEndTime.toFixed(3)}s (overlap: ${overlap.toFixed(3)}s). Adjusting startTime.`);
-        startTime = lastAdjustedEndTime + 0.05; // Add 50ms minimum gap
+        startTime = lastAdjustedEndTime + minGapAfterPrevious; // Add minimum gap (larger for words)
         // Recalculate endTime to maintain original duration
         const originalDuration = originalEndTime - originalStartTime;
         endTime = startTime + originalDuration;
@@ -5131,8 +5193,10 @@ body > p {
       // Cap pause at reasonable maximum
       desiredPause = Math.min(desiredPause, 0.8);
       
-      // CRITICAL: Always ensure minimum pause (0.2s) to prevent abrupt cuts
-      const minRequiredPause = 0.2; // Minimum 200ms pause for smooth transitions
+      // CRITICAL: Always ensure minimum pause to prevent abrupt cuts
+      // For word-level, use smaller pauses (words are closer together)
+      // For sentence/paragraph level, use larger pauses
+      const minRequiredPause = isWordLevel ? 0.1 : 0.2; // 100ms for words, 200ms for sentences
       const actualPause = Math.max(desiredPause, minRequiredPause);
       
       // Calculate desired end time with pause
@@ -5174,8 +5238,9 @@ body > p {
       
       // STEP 5: Final validation - ensure minimum gap is maintained (prevents abrupt cuts)
       // Always leave at least 0.2s gap before next block for smooth transitions
+      // For word-level granularity, use larger gaps to prevent abrupt cuts
       const gapToNext = nextOriginalStartTime - endTime;
-      const minGap = 0.2; // Increased to 200ms for smoother transitions
+      const minGap = isWordLevel ? 0.15 : 0.2; // 150ms for words, 200ms for sentences/paragraphs
       
       if (gapToNext < minGap) {
         if (gapToNext < 0) {

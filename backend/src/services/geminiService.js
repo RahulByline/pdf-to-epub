@@ -72,6 +72,34 @@ export class GeminiService {
       }
     );
     
+    // Fix br tags to be self-closing (XHTML requirement)
+    // Convert <br> or <br ...> to <br /> or <br .../> for all br tags that aren't already self-closing
+    xhtml = xhtml.replace(/<br\s*([^>]*?)>/gi, (match, attrs) => {
+      // Check if already self-closing (ends with /> or has /> before the closing >)
+      if (match.includes('/>') || attrs.trim().endsWith('/')) {
+        return match; // Already self-closing
+      }
+      // Add / before the closing >, or just <br /> if no attributes
+      if (!attrs || attrs.trim() === '') {
+        return '<br />';
+      }
+      return `<br ${attrs.trim()}/>`;
+    });
+    
+    // Fix hr tags to be self-closing (XHTML requirement)
+    // Convert <hr> or <hr ...> to <hr /> or <hr .../> for all hr tags that aren't already self-closing
+    xhtml = xhtml.replace(/<hr\s*([^>]*?)>/gi, (match, attrs) => {
+      // Check if already self-closing (ends with /> or has /> before the closing >)
+      if (match.includes('/>') || attrs.trim().endsWith('/')) {
+        return match; // Already self-closing
+      }
+      // Add / before the closing >, or just <hr /> if no attributes
+      if (!attrs || attrs.trim() === '') {
+        return '<hr />';
+      }
+      return `<hr ${attrs.trim()}/>`;
+    });
+    
     // Clean up multiple spaces
     xhtml = xhtml.replace(/\s+>/g, '>');
     xhtml = xhtml.replace(/<(\w+)\s+/g, '<$1 ');
@@ -545,8 +573,8 @@ export class GeminiService {
 
 
         **LAYOUT DECISION:**
-        1) **TWO-COLUMN (Multi-Page Split):** Use ONLY if the image shows a visible divider line or two distinct page numbers. Use .container with two .page children.
-        2) **SINGLE-COLUMN (Default):** Standard single worksheet. Use a single .page element.
+        
+        1) **SINGLE-COLUMN (Default):** Standard single worksheet. Use a single .page element.
 
         **AUDIO SYNC REQUIREMENTS (MANDATORY) - HIERARCHICAL NESTED STRUCTURE FOR ALL ELEMENTS:**
         - **CRITICAL: ALL text elements must use NESTED hierarchical structure to support word/sentence/paragraph granularity**

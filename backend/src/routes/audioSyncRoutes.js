@@ -1008,15 +1008,22 @@ router.post('/magic-align', async (req, res) => {
           console.log(`  Gemini timestamps: ${startTime}s - ${endTime}s`);
         }
         
-        // Add to results with Gemini timestamps
-        finalResults.sentences.push({
+        // Add to results with Gemini timestamps - categorize by granularity
+        const resultItem = {
           id: aligned.id,
           text: block.text,
-          type: 'sentence',
+          type: granularity === 'word' ? 'word' : (granularity === 'paragraph' ? 'paragraph' : 'sentence'),
           startTime,
           endTime,
           pageNumber: parseInt(aligned.id.match(/page(\d+)/)?.[1]) || 1
-        });
+        };
+        
+        // Categorize based on granularity
+        if (granularity === 'word') {
+          finalResults.words.push(resultItem);
+        } else {
+          finalResults.sentences.push(resultItem);
+        }
       } else {
         // Gemini didn't provide timestamps - skip this block
         missingTimestampCount++;
