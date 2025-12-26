@@ -7,7 +7,7 @@
  * @param {number} imageHeight - Optional height for the image
  * @returns {string} - Modified XHTML with image tag replacing the placeholder
  */
-export function injectImageIntoXhtml(xhtml, targetId, imageSrc, imageWidth = null, imageHeight = null, description = null) {
+export function injectImageIntoXhtml(xhtml, targetId, imageSrc, imageWidth = null, imageHeight = null) {
   console.log(`[injectImageIntoXhtml] Starting injection for placeholder: ${targetId}, image: ${imageSrc}`);
   
   // Create a temporary DOM parser
@@ -74,12 +74,9 @@ export function injectImageIntoXhtml(xhtml, targetId, imageSrc, imageWidth = nul
     img.setAttribute('id', targetId);
     img.setAttribute('src', imageSrc);
     
-    // Get alt text from description, title, alt attribute, or use a default
-    const altText = description || placeholder.getAttribute('title') || placeholder.getAttribute('alt') || 'Image';
+    // Get alt text from title or alt attribute, or use a default
+    const altText = placeholder.getAttribute('title') || placeholder.getAttribute('alt') || 'Image';
     img.setAttribute('alt', altText);
-    if (description) {
-      img.setAttribute('title', description);
-    }
     img.setAttribute('style', 'max-width: 100%; height: auto; display: block;');
     
     if (imageWidth) img.setAttribute('width', imageWidth);
@@ -173,7 +170,7 @@ export function injectImageIntoXhtml(xhtml, targetId, imageSrc, imageWidth = nul
 /**
  * Fallback regex-based replacement for when DOM parsing fails
  */
-function injectImageIntoXhtmlRegex(xhtml, targetId, imageSrc, imageWidth, imageHeight, description = null) {
+function injectImageIntoXhtmlRegex(xhtml, targetId, imageSrc, imageWidth, imageHeight) {
   // Pattern to match the placeholder div
   const placeholderPattern = new RegExp(
     `(<div[^>]*id=["']${targetId}["'][^>]*class=["'][^"]*image-placeholder[^"]*["'][^>]*>)([^<]*</div>)`,
@@ -191,16 +188,13 @@ function injectImageIntoXhtmlRegex(xhtml, targetId, imageSrc, imageWidth, imageH
     }
   }
   
-  // Extract title/alt from the placeholder, or use description
+  // Extract title/alt from the placeholder
   const fullMatch = match ? match[0] : xhtml.match(new RegExp(`<div[^>]*id=["']${targetId}["'][^>]*>.*?</div>`, 'is'))[0];
   const titleMatch = fullMatch.match(/title=["']([^"']*)["']/i);
-  const altText = description || (titleMatch ? titleMatch[1] : 'Image');
+  const altText = titleMatch ? titleMatch[1] : 'Image';
   
   // Build img tag
   let imgTag = `<img id="${targetId}" src="${imageSrc}" alt="${altText.replace(/"/g, '&quot;')}" style="max-width: 100%; height: auto; display: block;"`;
-  if (description) {
-    imgTag += ` title="${description.replace(/"/g, '&quot;')}"`;
-  }
   if (imageWidth) imgTag += ` width="${imageWidth}"`;
   if (imageHeight) imgTag += ` height="${imageHeight}"`;
   imgTag += '/>';

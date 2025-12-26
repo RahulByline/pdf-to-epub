@@ -1,0 +1,248 @@
+/* Fabric Image Editor Styles */
+
+.fabric-image-editor {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+  background: #fff;
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+}
+
+.fabric-editor-loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  width: 100%;
+}
+
+.fabric-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 1em 1.5em;
+  background: #f8f9fa;
+  border-bottom: 1px solid #e0e0e0;
+}
+
+.fabric-editor-header h3 {
+  margin: 0;
+  font-size: 1.2em;
+  color: #333;
+}
+
+.editor-actions {
+  display: flex;
+  gap: 0.5em;
+  align-items: center;
+}
+
+.editor-actions button {
+  padding: 8px 16px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s ease;
+}
+
+.editor-actions button:hover:not(:disabled) {
+  background: #f0f0f0;
+  border-color: #2196F3;
+}
+
+.editor-actions button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn-undo,
+.btn-redo {
+  background: #fff;
+}
+
+.btn-reset {
+  background: #ff9800;
+  color: white;
+  border-color: #ff9800;
+}
+
+.btn-reset:hover:not(:disabled) {
+  background: #f57c00;
+}
+
+.btn-cancel {
+  background: #f44336;
+  color: white;
+  border-color: #f44336;
+}
+
+.btn-cancel:hover:not(:disabled) {
+  background: #d32f2f;
+}
+
+.btn-save-editor {
+  background: #4caf50;
+  color: white;
+  border-color: #4caf50;
+  font-weight: 600;
+}
+
+.btn-save-editor:hover:not(:disabled) {
+  background: #45a049;
+}
+
+.fabric-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1em;
+  padding: 1em 1.5em;
+  background: #fafafa;
+  border-bottom: 1px solid #e0e0e0;
+  align-items: center;
+}
+
+.tool-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  padding: 0.5em;
+  background: #fff;
+  border-radius: 4px;
+  border: 1px solid #e0e0e0;
+}
+
+.tool-label {
+  font-weight: 600;
+  color: #666;
+  font-size: 0.9em;
+  margin-right: 0.5em;
+}
+
+.tool-btn {
+  padding: 6px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 13px;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+}
+
+.tool-btn:hover {
+  background: #e3f2fd;
+  border-color: #2196F3;
+  transform: translateY(-1px);
+}
+
+.tool-btn.active {
+  background: #2196F3;
+  color: white;
+  border-color: #2196F3;
+}
+
+.btn-apply {
+  background: #4caf50;
+  color: white;
+  border-color: #4caf50;
+}
+
+.btn-apply:hover {
+  background: #45a049;
+}
+
+.fabric-editor-canvas-container {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 2em;
+  background: #f5f5f5;
+  overflow: auto;
+  position: relative;
+}
+
+.fabric-canvas {
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  background: #fff;
+  cursor: crosshair;
+}
+
+.fabric-editor-footer {
+  padding: 1em 1.5em;
+  background: #f8f9fa;
+  border-top: 1px solid #e0e0e0;
+}
+
+.editor-hint {
+  margin: 0;
+  font-size: 0.9em;
+  color: #666;
+  text-align: center;
+}
+
+/* Modal overlay styles */
+.fabric-editor-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10000;
+  padding: 2em;
+}
+
+.fabric-editor-modal-content {
+  width: 90%;
+  max-width: 1200px;
+  height: 90%;
+  max-height: 900px;
+  background: #fff;
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .fabric-editor-header {
+    flex-direction: column;
+    gap: 1em;
+    align-items: stretch;
+  }
+
+  .editor-actions {
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .fabric-editor-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .tool-group {
+    flex-wrap: wrap;
+  }
+
+  .fabric-editor-modal-content {
+    width: 100%;
+    height: 100%;
+    max-width: 100%;
+    max-height: 100%;
+    border-radius: 0;
+  }
+}
+

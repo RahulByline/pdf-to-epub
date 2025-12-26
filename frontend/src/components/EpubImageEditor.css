@@ -320,13 +320,6 @@
   cursor: pointer;
   transition: all 0.2s;
   border-radius: 4px;
-  position: relative;
-  display: block;
-  box-sizing: border-box;
-  /* Ensure proper structure - prevent scattering */
-  width: 100%;
-  max-width: 100%;
-  overflow: hidden;
 }
 
 .image-placeholder:hover,
@@ -335,41 +328,11 @@
   background-color: #f0f8f0;
 }
 
-/* Yellow highlight when dragging over - more prominent */
-.image-placeholder.drag-over::before,
-.image-drop-zone.drag-over::before {
-  content: '';
-  position: absolute;
-  top: -3px;
-  left: -3px;
-  right: -3px;
-  bottom: -3px;
-  border: 3px solid #ffc107;
-  border-radius: 6px;
-  background-color: rgba(255, 193, 7, 0.15);
-  z-index: 1;
-  pointer-events: none;
-  animation: pulse-yellow 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse-yellow {
-  0%, 100% {
-    box-shadow: 0 0 10px rgba(255, 193, 7, 0.4);
-  }
-  50% {
-    box-shadow: 0 0 20px rgba(255, 193, 7, 0.8);
-  }
-}
-
 .image-placeholder.drag-over,
 .image-drop-zone.drag-over {
-  border-color: #ffc107 !important;
-  background-color: #fff9c4 !important;
-  border-style: solid !important;
-  border-width: 3px !important;
-  box-shadow: 0 0 15px rgba(255, 193, 7, 0.6) !important;
-  transform: scale(1.02);
-  transition: all 0.2s ease;
+  border-color: #2196F3;
+  background-color: #e3f2fd;
+  border-style: solid;
 }
 
 .placeholder-content {
@@ -417,46 +380,6 @@
   display: block !important;
 }
 
-/* Structured layout for images - prevent scattering */
-.xhtml-content {
-  display: flex;
-  flex-direction: column;
-  gap: 1em;
-}
-
-.xhtml-content img {
-  max-width: 100% !important;
-  height: auto !important;
-  display: block !important;
-  margin: 1em auto !important;
-  /* Ensure images stay within their containers */
-  box-sizing: border-box;
-  object-fit: contain;
-  /* Prevent images from breaking out of containers */
-  position: relative !important;
-  left: auto !important;
-  top: auto !important;
-  right: auto !important;
-  bottom: auto !important;
-  float: none !important;
-}
-
-/* Ensure placeholders maintain structure */
-.xhtml-content .image-placeholder,
-.xhtml-content .image-drop-zone {
-  display: block !important;
-  width: 100% !important;
-  max-width: 100% !important;
-  box-sizing: border-box !important;
-  margin: 1em 0 !important;
-  /* Prevent absolute positioning that causes scattering */
-  position: relative !important;
-  left: auto !important;
-  top: auto !important;
-  right: auto !important;
-  bottom: auto !important;
-}
-
 .xhtml-content img {
   max-width: 100% !important;
   height: auto !important;
@@ -478,5 +401,7 @@
   .xhtml-canvas {
     width: 100%;
   }
+}
+
 }
 
