@@ -3,8 +3,8 @@ import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import api from '../services/api';
 import { injectImageIntoXhtml, applyReflowableCss } from '../utils/xhtmlUtils';
-import ToastCanvasEditor from './ToastCanvasEditor';
-import ToastImageEditor from './ToastImageEditor';
+import DraggableCanvas from './DraggableCanvas';
+import FabricImageEditor from './FabricImageEditor';
 import './EpubImageEditor.css';
 
 const DRAG_TYPE = 'EPUB_IMAGE';
@@ -206,7 +206,7 @@ const DraggableImage = ({ image, pageNumber }) => {
  * Drop Zone Overlay Component (for image drops only)
  * This is a transparent overlay that handles image drops
  */
-const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
+const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false }) => {
   const [{ isOver, isDragging, canDrop = false }, drop] = useDrop({
     accept: DRAG_TYPE,
     canDrop: (item, monitor) => {
@@ -630,11 +630,11 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
   const globalFlag = typeof window !== 'undefined' ? (window.__imageDragging || false) : false;
   const isAnyImageDragging = isDragging || globalFlag;
   
-  // When no image is being dragged, allow pointer events to pass through
+  // When edit mode is ON and no image is being dragged, allow pointer events to pass through
   // so text elements can be clicked and edited
   // When an image is being dragged, we need pointer events to detect drops
   // BUT: Always allow pointer events to pass through for image-with-options overlays (z-index 3000)
-  const shouldBlockPointerEvents = isAnyImageDragging;
+  const shouldBlockPointerEvents = isAnyImageDragging || !editMode;
   
   // Check if mouse is over an image-with-options wrapper (which has the clear button overlay)
   // If so, don't block pointer events so the button can be clicked
@@ -663,6 +663,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
     canDrop: canDrop || false,
     globalFlag,
     isAnyImageDragging,
+    editMode,
     shouldBlockPointerEvents,
     dropRefType: typeof drop,
     dropRefValue: drop ? 'exists' : 'null'
@@ -683,12 +684,12 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
         bottom: 0,
         width: '100%',
         height: '100%',
-        // Allow pointer events to pass through when not dragging
+        // Allow pointer events to pass through when edit mode is ON and not dragging
         // This enables text editing. When dragging, we need pointer events to detect drops
         // When hovering over image options overlay, allow clicks to pass through
         // Image overlay has z-index 3000, so it's always on top
         pointerEvents: (shouldBlockPointerEvents && !isOverImageOptions) ? 'auto' : 'none',
-        zIndex: isAnyImageDragging ? 2000 : 50, // Lower z-index when not dragging (image overlay is 3000)
+        zIndex: isAnyImageDragging ? 2000 : (editMode ? 50 : 100), // Lower z-index in edit mode when not dragging (image overlay is 3000)
         backgroundColor: isOver ? 'rgba(33, 150, 243, 0.2)' : (isAnyImageDragging ? 'rgba(33, 150, 243, 0.05)' : 'transparent'),
         border: isAnyImageDragging ? '2px dashed rgba(33, 150, 243, 0.5)' : 'none', // Visual indicator
         transition: 'background-color 0.2s ease',
@@ -715,6 +716,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const [placeholders, setPlaceholders] = useState([]);
   const canvasRef = useRef(null);
   const [modified, setModified] = useState(false);
+  const [editMode, setEditMode] = useState(false);
   const [editingImage, setEditingImage] = useState(null); // {imageId, imageUrl, imageElement}
   const [imageEditorVisible, setImageEditorVisible] = useState(false);
 
@@ -1282,6 +1284,147 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
     });
   }, [extractPlaceholdersFromXhtml, canvasRef]);
 
+  // Handle image editing operations (zoom, crop, fit)
+  const handleImageEdit = useCallback((placeholderId, operation, value = null) => {
+    console.log('[EpubImageEditor] handleImageEdit called:', { placeholderId, operation, value });
+    if (!placeholderId) {
+      console.warn('[EpubImageEditor] handleImageEdit called without placeholderId');
+      return;
+    }
+
+    setXhtml((currentXhtml) => {
+      if (!currentXhtml) {
+        console.warn('[EpubImageEditor] No XHTML to edit');
+        return currentXhtml;
+      }
+
+      try {
+        const parser = new DOMParser();
+        let doc = parser.parseFromString(currentXhtml, 'text/html');
+
+        // Check for parsing errors
+        let parserError = doc.querySelector('parsererror');
+        if (parserError) {
+          console.warn('[EpubImageEditor] HTML parsing failed, trying XML');
+          doc = parser.parseFromString(currentXhtml, 'application/xml');
+          parserError = doc.querySelector('parsererror');
+          if (parserError) {
+            console.error('[EpubImageEditor] Both HTML and XML parsing failed');
+            return currentXhtml;
+          }
+        }
+
+        // Find the target image
+        let target = doc.getElementById(placeholderId);
+        if (!target) {
+          target = doc.querySelector(`#${placeholderId}`);
+        }
+        if (!target && doc.body) {
+          target = doc.body.querySelector(`#${placeholderId}`);
+        }
+
+        if (!target || target.tagName?.toLowerCase() !== 'img') {
+          console.error(`[EpubImageEditor] Image ${placeholderId} not found`);
+          return currentXhtml;
+        }
+
+        // Get current styles
+        const currentStyle = target.getAttribute('style') || '';
+        const currentWidth = target.getAttribute('width') || '';
+        const currentHeight = target.getAttribute('height') || '';
+        
+        // Parse current transform if exists
+        let currentScale = 1;
+        const transformMatch = currentStyle.match(/transform\s*:\s*scale\(([^)]+)\)/i);
+        if (transformMatch) {
+          currentScale = parseFloat(transformMatch[1]) || 1;
+        }
+
+        // Apply operation
+        let newStyle = currentStyle;
+        let newWidth = currentWidth;
+        let newHeight = currentHeight;
+
+        switch (operation) {
+          case 'zoom-in':
+            const zoomInScale = Math.min(currentScale * 1.2, 5); // Max 5x zoom
+            newStyle = currentStyle.replace(/transform\s*:\s*scale\([^)]+\)/i, '');
+            newStyle = (newStyle.trim() ? newStyle + '; ' : '') + `transform: scale(${zoomInScale})`;
+            target.setAttribute('style', newStyle);
+            break;
+
+          case 'zoom-out':
+            const zoomOutScale = Math.max(currentScale / 1.2, 0.1); // Min 0.1x zoom
+            newStyle = currentStyle.replace(/transform\s*:\s*scale\([^)]+\)/i, '');
+            newStyle = (newStyle.trim() ? newStyle + '; ' : '') + `transform: scale(${zoomOutScale})`;
+            target.setAttribute('style', newStyle);
+            break;
+
+          case 'fit-container':
+            // Remove transform and set width/height to fit container
+            newStyle = currentStyle.replace(/transform\s*:\s*scale\([^)]+\)/gi, '').trim();
+            if (newStyle.endsWith(';')) {
+              newStyle = newStyle.slice(0, -1);
+            }
+            newStyle = (newStyle ? newStyle + '; ' : '') + 'width: 100%; height: auto; max-width: 100%;';
+            target.setAttribute('style', newStyle);
+            target.removeAttribute('width');
+            target.removeAttribute('height');
+            break;
+
+          case 'crop':
+            // For crop, we'll use object-fit: cover and object-position
+            // This is a simplified crop - full crop would need a more complex UI
+            newStyle = currentStyle.replace(/object-fit\s*:[^;]+/gi, '');
+            newStyle = currentStyle.replace(/object-position\s*:[^;]+/gi, '');
+            newStyle = (newStyle.trim() ? newStyle + '; ' : '') + 'object-fit: cover; object-position: center;';
+            target.setAttribute('style', newStyle);
+            break;
+
+          default:
+            console.warn(`[EpubImageEditor] Unknown operation: ${operation}`);
+            return currentXhtml;
+        }
+
+        // Serialize back to XHTML
+        const serializer = new XMLSerializer();
+        let updated = serializer.serializeToString(doc.documentElement);
+
+        // Handle HTML5 parser output
+        if (doc.documentElement.tagName === 'HTML' && doc.body) {
+          const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
+          const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
+          const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
+          const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
+
+          const headContent = doc.head ? doc.head.innerHTML : '';
+          const bodyContent = doc.body ? doc.body.innerHTML : '';
+
+          updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
+          if (headContent) {
+            updated += `<head>\n${headContent}\n</head>\n`;
+          }
+          updated += `<body>\n${bodyContent}\n</body>\n</html>`;
+        }
+
+        // Ensure self-closing tags
+        updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<meta${attrs}/>`;
+        });
+        updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<img${attrs}/>`;
+        });
+
+        console.log(`[EpubImageEditor] ✓ Image ${operation} applied to ${placeholderId}`);
+        setModified(true);
+        return updated;
+      } catch (err) {
+        console.error('[EpubImageEditor] Failed to edit image:', err);
+        return currentXhtml;
+      }
+    });
+  }, []);
+
   // Open image editor for a specific image
   const handleOpenImageEditor = useCallback((placeholderId) => {
     console.log('[EpubImageEditor] Opening image editor for:', placeholderId);
@@ -1342,7 +1485,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
     setImageEditorVisible(true);
   }, [xhtml, jobId]);
 
-  // Save edited image from ToastImageEditor
+  // Save edited image from FabricImageEditor
   const handleSaveEditedImage = useCallback(async (editorData) => {
     try {
       console.log('[EpubImageEditor] Saving edited image:', editorData);
@@ -1628,14 +1771,16 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   useEffect(() => {
     if (onStateChange) {
       onStateChange({ 
+        editMode, 
         modified, 
         saving, 
         handleSave, 
-        handleReset
+        handleReset, 
+        setEditMode 
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [modified, saving]); // Functions are stable (useCallback), onStateChange should be stable in parent
+  }, [editMode, modified, saving]); // Functions are stable (useCallback), onStateChange should be stable in parent
 
   if (loading) {
     return (
@@ -1647,9 +1792,10 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
 
   // Debug: Log button visibility state
   console.log('[EpubImageEditor] Render state:', {
+    editMode,
     modified,
     saving,
-    saveButtonDisabled: saving || !modified
+    saveButtonDisabled: saving || !modified || !editMode
   });
 
   return (
@@ -1665,12 +1811,19 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         <div className="editor-header" style={{ position: 'relative', zIndex: 10, minHeight: '60px' }}>
           <h2>EPUB Image Editor - Page {pageNumber}</h2>
           <div className="header-actions" style={{ display: 'flex', gap: '1em', alignItems: 'center', flexWrap: 'nowrap', minWidth: '400px' }}>
+            <button
+              onClick={() => setEditMode(!editMode)}
+              className={`btn-toggle-edit ${editMode ? 'active' : ''}`}
+              title={editMode ? 'Exit Edit Mode' : 'Enter Edit Mode'}
+            >
+              {editMode ? '✏️ Edit Mode ON' : '✏️ Edit Mode OFF'}
+            </button>
             {modified && (
               <span className="modified-indicator">Modified</span>
             )}
             <button
               onClick={handleReset}
-              disabled={!modified}
+              disabled={!modified || !editMode}
               className="btn-reset"
               style={{ display: 'block', visibility: 'visible' }}
             >
@@ -1678,15 +1831,15 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             </button>
             <button
               onClick={handleSave}
-              disabled={saving || !modified}
+              disabled={saving || !modified || !editMode}
               className="btn-save"
               style={{ 
                 display: 'inline-block', 
                 visibility: 'visible', 
                 minWidth: '120px',
-                opacity: (saving || !modified) ? 0.6 : 1
+                opacity: (saving || !modified || !editMode) ? 0.6 : 1
               }}
-              title={!modified ? 'No changes to save' : 'Save XHTML'}
+              title={!editMode ? 'Enable Edit Mode to save' : (!modified ? 'No changes to save' : 'Save XHTML')}
             >
               {saving ? 'Saving...' : 'Save XHTML'}
             </button>
@@ -1730,32 +1883,49 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             )}
           </div>
 
-          {/* Right Canvas - TOAST UI Image Editor (70%) */}
+          {/* Right Canvas - XHTML Display (70%) */}
           <div className="xhtml-canvas-wrapper" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div className="canvas-header">
-              <h3>TOAST UI Image Editor</h3>
-              <div className="placeholders-info">
-                <p>Drag images from gallery into the editor to add them. Use the editor tools to edit text, resize, move, and adjust images.</p>
-              </div>
+              <h3>XHTML Canvas</h3>
+              {placeholders.length > 0 && (
+                <div className="placeholders-info">
+                  <p>{placeholders.length} placeholder(s) found - Drag images from gallery to placeholders</p>
+                </div>
+              )}
             </div>
             <div className="canvas-wrapper" ref={canvasRef} style={{ position: 'relative', flex: '1 1 auto', minHeight: 0 }}>
-              <ToastCanvasEditor
-                key={`toast-canvas-${pageNumber}-${modified ? Date.now() : 'initial'}`}
+              <DraggableCanvas
+                key={`canvas-${pageNumber}-${modified ? Date.now() : 'initial'}`} // Force re-render when XHTML changes
                 xhtml={xhtml}
-                images={images}
                 onXhtmlChange={(updatedXhtml) => {
                   // Use functional update to ensure we're working with latest state
+                  // This prevents overwriting changes when multiple edits happen quickly
                   setXhtml((currentXhtml) => {
-                    console.log('[EpubImageEditor] XHTML update from TOAST UI:', {
+                    // If the updated XHTML is based on DOM reading, use it directly
+                    // Otherwise, merge changes intelligently
+                    console.log('[EpubImageEditor] XHTML update:', {
                       currentLength: currentXhtml.length,
                       updatedLength: updatedXhtml.length,
+                      currentImgCount: (currentXhtml.match(/<img[^>]*>/gi) || []).length,
+                      updatedImgCount: (updatedXhtml.match(/<img[^>]*>/gi) || []).length
                     });
                     return updatedXhtml;
                   });
                   setModified(true);
                 }}
-                jobId={jobId}
-                pageNumber={pageNumber}
+                editMode={editMode}
+                onEditModeChange={setEditMode}
+                onClearImage={handleClearImage}
+                onImageEdit={handleImageEdit}
+                onOpenImageEditor={handleOpenImageEditor}
+              />
+              {/* Transparent drop zone overlay for image drops - only active when dragging images */}
+              <XhtmlCanvas
+                xhtml=""
+                placeholders={placeholders}
+                onDrop={handleDrop}
+                canvasRef={canvasRef}
+                editMode={editMode}
               />
             </div>
           </div>
@@ -1770,16 +1940,17 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
           left: 0,
           right: 0,
           bottom: 0,
-          backgroundColor: 'rgba(0, 0, 0, 0.9)',
+          backgroundColor: 'rgba(0, 0, 0, 0.8)',
           zIndex: 10000,
           display: 'flex',
           flexDirection: 'column',
         }}>
-          <ToastImageEditor
+          <FabricImageEditor
             imageUrl={editingImage.imageUrl}
             imageId={editingImage.imageId}
             initialWidth={editingImage.initialWidth}
             initialHeight={editingImage.initialHeight}
+            initialTexts={editingImage.initialTexts}
             onSave={handleSaveEditedImage}
             onCancel={() => {
               setImageEditorVisible(false);

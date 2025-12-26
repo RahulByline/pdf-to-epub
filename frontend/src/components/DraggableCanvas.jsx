@@ -5,7 +5,7 @@ import './DraggableCanvas.css';
  * DraggableCanvas Component
  * Handles the new XHTML structure with draggable text blocks and canvas background
  */
-const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
+const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeChange, onClearImage, onImageEdit, onOpenImageEditor }) => {
   const containerRef = useRef(null);
   const [draggingElement, setDraggingElement] = useState(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
@@ -38,6 +38,8 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
 
   // Define handleMouseDown BEFORE useEffect that uses it
   const handleMouseDown = useCallback((e) => {
+    if (editMode) return;
+    
     // Don't allow text block dragging when an image is being dragged
     if (imageDragging) {
       console.log('[DraggableCanvas] Ignoring text drag - image is being dragged');
@@ -82,7 +84,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
     setDragOffset({ x: offsetX, y: offsetY });
     setIsDragging(true);
     block.classList.add('dragging');
-  }, [imageDragging]);
+  }, [editMode, imageDragging]);
 
   // Handle text blur (save changes) - work with all editable elements
   // CRITICAL FIX: Use functional update to read latest state, preventing overwrites
@@ -290,35 +292,189 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
         img.style.setProperty('position', 'relative', 'important');
         img.style.setProperty('z-index', '10', 'important');
         
-        // Add double-click to open image editor for images with IDs matching placeholder pattern
-        if (img.id && /^page\d+_(?:div|img)\d+$/.test(img.id) && onOpenImageEditor) {
-          img.style.cursor = 'pointer';
-          img.title = 'Double-click to edit image with TOAST UI Editor';
-          
-          const imageId = img.id;
-          const openEditorCallback = onOpenImageEditor;
-          
-          // Remove existing double-click listener if any
-          const existingHandler = img._doubleClickHandler;
-          if (existingHandler) {
-            img.removeEventListener('dblclick', existingHandler);
+        // Add hover overlay with options for images (not placeholders) with IDs matching placeholder pattern
+        // Only create overlay for actual <img> tags, not placeholder divs
+        if (img.tagName && img.tagName.toLowerCase() === 'img' && img.id && /^page\d+_(?:div|img)\d+$/.test(img.id) && (onClearImage || onImageEdit)) {
+          // Create wrapper if it doesn't exist
+          let wrapper = img.parentElement;
+          if (!wrapper || !wrapper.classList.contains('image-with-options')) {
+            wrapper = document.createElement('div');
+            wrapper.className = 'image-with-options';
+          wrapper.style.position = 'relative';
+          wrapper.style.display = 'inline-block';
+          wrapper.style.zIndex = '3000';
+          wrapper.style.pointerEvents = 'auto';
+            img.parentNode.insertBefore(wrapper, img);
+            wrapper.appendChild(img);
           }
           
-          // Create new handler
-          const doubleClickHandler = (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            console.log('[DraggableCanvas] Double-clicked image:', imageId);
-            if (openEditorCallback) {
-              openEditorCallback(imageId);
-            }
+          // Always recreate overlay to ensure it has the latest onClearImage callback
+          // Remove existing overlay if it exists (it gets removed when React re-renders)
+          let overlay = wrapper.querySelector('.image-options-overlay');
+          if (overlay) {
+            overlay.remove();
+          }
+          
+          // Create new overlay with latest callback
+          overlay = document.createElement('div');
+          overlay.className = 'image-options-overlay';
+          overlay.style.cssText = `
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.6);
+            display: none;
+            align-items: center;
+            justify-content: center;
+            z-index: 3000 !important;
+            border-radius: 4px;
+            pointer-events: auto !important;
+            flex-direction: column;
+            gap: 8px;
+            padding: 12px;
+          `;
+          
+          // Create button container
+          const buttonContainer = document.createElement('div');
+          buttonContainer.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+          `;
+          
+          // Use a closure to capture the current img.id and callbacks
+          const imageId = img.id;
+          const clearImageCallback = onClearImage;
+          const imageEditCallback = onImageEdit;
+          const openImageEditorCallback = onOpenImageEditor;
+          
+          // Helper function to create buttons
+          const createButton = (text, icon, bgColor, hoverColor, onClick) => {
+            const btn = document.createElement('button');
+            btn.innerHTML = `${icon} ${text}`;
+            btn.style.cssText = `
+              padding: 8px 16px;
+              background: ${bgColor};
+              color: white;
+              border: none;
+              border-radius: 4px;
+              cursor: pointer;
+              font-size: 13px;
+              font-weight: 600;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+              transition: all 0.2s ease;
+              pointer-events: auto;
+              width: 100%;
+              max-width: 200px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              gap: 6px;
+            `;
+            btn.onmouseenter = () => {
+              btn.style.background = hoverColor;
+              btn.style.transform = 'scale(1.05)';
+            };
+            btn.onmouseleave = () => {
+              btn.style.background = bgColor;
+              btn.style.transform = 'scale(1)';
+            };
+            btn.onclick = (e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              e.stopImmediatePropagation();
+              onClick();
+              return false;
+            };
+            btn.onmousedown = (e) => {
+              e.stopPropagation();
+              e.stopImmediatePropagation();
+            };
+            return btn;
           };
           
-          // Store handler reference and add listener
-          img._doubleClickHandler = doubleClickHandler;
-          img.addEventListener('dblclick', doubleClickHandler);
+          // Zoom In button
+          if (imageEditCallback) {
+            const zoomInBtn = createButton('Zoom In', '🔍+', '#1976d2', '#1565c0', () => {
+              console.log('[DraggableCanvas] Zoom in clicked for:', imageId);
+              if (imageEditCallback && imageId) {
+                imageEditCallback(imageId, 'zoom-in');
+              }
+            });
+            buttonContainer.appendChild(zoomInBtn);
+          }
+          
+          // Zoom Out button
+          if (imageEditCallback) {
+            const zoomOutBtn = createButton('Zoom Out', '🔍-', '#1976d2', '#1565c0', () => {
+              console.log('[DraggableCanvas] Zoom out clicked for:', imageId);
+              if (imageEditCallback && imageId) {
+                imageEditCallback(imageId, 'zoom-out');
+              }
+            });
+            buttonContainer.appendChild(zoomOutBtn);
+          }
+          
+          // Fit to Container button
+          if (imageEditCallback) {
+            const fitBtn = createButton('Fit to Container', '📐', '#388e3c', '#2e7d32', () => {
+              console.log('[DraggableCanvas] Fit to container clicked for:', imageId);
+              if (imageEditCallback && imageId) {
+                imageEditCallback(imageId, 'fit-container');
+              }
+            });
+            buttonContainer.appendChild(fitBtn);
+          }
+          
+          // Edit Image button (opens FabricImageEditor)
+          if (openImageEditorCallback) {
+            const editBtn = createButton('Edit Image', '✏️', '#9c27b0', '#7b1fa2', () => {
+              console.log('[DraggableCanvas] Edit image clicked for:', imageId);
+              if (openImageEditorCallback && imageId) {
+                openImageEditorCallback(imageId);
+              }
+            });
+            buttonContainer.appendChild(editBtn);
+          }
+          
+          // Clear Image button
+          if (clearImageCallback) {
+            const clearBtn = createButton('Clear Image', '🗑️', '#d32f2f', '#b71c1c', () => {
+              console.log('[DraggableCanvas] Clear image button clicked for:', imageId);
+              if (clearImageCallback && imageId) {
+                try {
+                  clearImageCallback(imageId);
+                  console.log('[DraggableCanvas] onClearImage called successfully');
+                } catch (error) {
+                  console.error('[DraggableCanvas] Error calling onClearImage:', error);
+                  alert('Error clearing image: ' + error.message);
+                }
+              } else {
+                console.warn('[DraggableCanvas] Cannot clear image - onClearImage:', !!clearImageCallback, 'img.id:', imageId);
+                alert('Cannot clear image: Clear function not available');
+              }
+            });
+            buttonContainer.appendChild(clearBtn);
+          }
+          
+          overlay.appendChild(buttonContainer);
+          wrapper.appendChild(overlay);
+          
+          // Show overlay on hover
+          wrapper.onmouseenter = () => {
+            overlay.style.display = 'flex';
+          };
+          wrapper.onmouseleave = () => {
+            overlay.style.display = 'none';
+          };
+          
+          console.log('[DraggableCanvas] Created overlay for image:', imageId);
         }
-        
         
         // Ensure proper sizing for all images (not just page1_img2)
         // Check if image has zero or very small dimensions
@@ -446,7 +602,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
         }
       }
 
-      // Set contentEditable on text elements - always enabled
+      // Set contentEditable on text elements based on editMode
       // More comprehensive selector to catch all text-containing elements
       // Include sync-word plus common text tags, and also check for text content
       const editableSelector = '.sync-word, .sync-sentence, p, span, h1, h2, h3, h4, h5, h6, li, div, td, th, label, figcaption, blockquote, article, section, aside';
@@ -482,29 +638,37 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
           if (!directText) return;
         }
 
-        node.contentEditable = true;
-        node.style.cursor = 'text';
-        node.style.outline = '1px dashed rgba(33, 150, 243, 0.3)';
-        node.style.userSelect = 'text';
+        node.contentEditable = editMode;
+        if (editMode) {
+          node.style.cursor = 'text';
+          node.style.outline = '1px dashed rgba(33, 150, 243, 0.3)';
+          node.style.userSelect = 'text';
+        } else {
+          node.style.cursor = 'inherit';
+          node.style.outline = 'none';
+          node.style.userSelect = 'none';
+        }
       });
       
-      console.log(`[DraggableCanvas] Made ${allEditableElements.size} elements editable`);
+      console.log(`[DraggableCanvas] Made ${allEditableElements.size} elements editable in edit mode: ${editMode}`);
 
       // Add input event listeners to editable elements to capture formatting changes
       const inputHandlers = new Map();
-      const handleInput = (e) => {
-        // Formatting change detected, update XHTML after a short delay
-        setTimeout(() => {
-          if (e.target && e.target.contentEditable === 'true') {
-            handleTextBlur(e);
-          }
-        }, 200);
-      };
+      if (editMode) {
+        const handleInput = (e) => {
+          // Formatting change detected, update XHTML after a short delay
+          setTimeout(() => {
+            if (e.target && e.target.contentEditable === 'true') {
+              handleTextBlur(e);
+            }
+          }, 200);
+        };
 
-      allEditableElements.forEach(node => {
-        node.addEventListener('input', handleInput);
-        inputHandlers.set(node, handleInput);
-      });
+        allEditableElements.forEach(node => {
+          node.addEventListener('input', handleInput);
+          inputHandlers.set(node, handleInput);
+        });
+      }
 
       // Add drag handlers to draggable blocks
       const mouseDownHandler = (e) => {
@@ -515,11 +679,15 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
         // Remove existing listeners first
         block.removeEventListener('mousedown', mouseDownHandler);
         
-        block.style.cursor = 'move';
-        block.style.userSelect = 'none';
+        block.style.cursor = editMode ? 'default' : 'move';
+        block.style.userSelect = editMode ? 'text' : 'none';
         
-        block.addEventListener('mousedown', mouseDownHandler);
-        block.classList.add('draggable-enabled');
+        if (!editMode) {
+          block.addEventListener('mousedown', mouseDownHandler);
+          block.classList.add('draggable-enabled');
+        } else {
+          block.classList.remove('draggable-enabled');
+        }
       });
 
       return () => {
@@ -534,7 +702,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
     }, 100); // Small delay to ensure DOM is updated
 
     return () => clearTimeout(timeoutId);
-    }, [xhtml, handleMouseDown, handleTextBlur, onOpenImageEditor]);
+    }, [xhtml, editMode, handleMouseDown, onClearImage, onImageEdit, onOpenImageEditor, handleTextBlur]);
 
   useEffect(() => {
     if (!isDragging || !draggingElement) return;
@@ -625,6 +793,8 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
 
   // Handle text editing - make it work for all text elements
   const handleTextEdit = useCallback((e) => {
+    if (!editMode) return;
+    
     let el = e.target;
     const tag = el.tagName.toLowerCase();
     
@@ -742,12 +912,12 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
       // Ignore cursor positioning errors
     }
     
-      console.log('[DraggableCanvas] Made element editable:', {
+    console.log('[DraggableCanvas] Made element editable:', {
       tag: el.tagName.toLowerCase(),
       className: el.className,
       textContent: el.textContent?.substring(0, 50)
     });
-  }, []);
+  }, [editMode]);
 
   // Mark this container so XhtmlCanvas can find it
   useEffect(() => {
@@ -781,7 +951,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, onOpenImageEditor }) => {
   return (
     <div 
       ref={containerRef}
-      className="draggable-canvas-container"
+      className={`draggable-canvas-container ${editMode ? 'edit-mode' : ''}`}
       onClick={handleTextEdit}
       onBlur={handleTextBlur}
       style={{ 

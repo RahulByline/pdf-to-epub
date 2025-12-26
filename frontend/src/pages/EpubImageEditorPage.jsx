@@ -112,35 +112,49 @@ const EpubImageEditorPage = () => {
             </label>
             {editorState && (
               <>
+                <button
+                  onClick={() => editorState.setEditMode(!editorState.editMode)}
+                  style={{
+                    padding: '0.5em 1em',
+                    backgroundColor: editorState.editMode ? '#2196F3' : '#f5f5f5',
+                    color: editorState.editMode ? 'white' : '#666',
+                    border: '1px solid #ddd',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '14px'
+                  }}
+                >
+                  {editorState.editMode ? '✏️ Edit Mode ON' : '✏️ Edit Mode OFF'}
+                </button>
                 {editorState.modified && (
                   <span style={{ color: '#ff9800', fontWeight: 'bold', fontSize: '0.9em' }}>Modified</span>
                 )}
                 <button
                   onClick={editorState.handleReset}
-                  disabled={!editorState.modified}
+                  disabled={!editorState.modified || !editorState.editMode}
                   style={{
                     padding: '0.5em 1.5em',
                     backgroundColor: '#f5f5f5',
                     color: '#666',
                     border: 'none',
                     borderRadius: '4px',
-                    cursor: !editorState.modified ? 'not-allowed' : 'pointer',
-                    opacity: !editorState.modified ? 0.5 : 1
+                    cursor: (!editorState.modified || !editorState.editMode) ? 'not-allowed' : 'pointer',
+                    opacity: (!editorState.modified || !editorState.editMode) ? 0.5 : 1
                   }}
                 >
                   Reset
                 </button>
                 <button
                   onClick={editorState.handleSave}
-                  disabled={editorState.saving || !editorState.modified}
+                  disabled={editorState.saving || !editorState.modified || !editorState.editMode}
                   style={{
                     padding: '0.5em 1.5em',
                     backgroundColor: '#4CAF50',
                     color: 'white',
                     border: 'none',
                     borderRadius: '4px',
-                    cursor: (editorState.saving || !editorState.modified) ? 'not-allowed' : 'pointer',
-                    opacity: (editorState.saving || !editorState.modified) ? 0.6 : 1,
+                    cursor: (editorState.saving || !editorState.modified || !editorState.editMode) ? 'not-allowed' : 'pointer',
+                    opacity: (editorState.saving || !editorState.modified || !editorState.editMode) ? 0.6 : 1,
                     minWidth: '120px'
                   }}
                 >
@@ -172,8 +186,8 @@ const EpubImageEditorPage = () => {
         </div>
       </div>
       
-      {editorState && (
-        <TextFormattingToolbar editMode={true} />
+      {editorState && editorState.editMode && (
+        <TextFormattingToolbar editMode={editorState.editMode} />
       )}
       
       {selectedPage && (

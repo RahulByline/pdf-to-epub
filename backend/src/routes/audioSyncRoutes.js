@@ -10,7 +10,6 @@ import { getUploadDir } from '../config/fileStorage.js';
 import { aeneasService } from '../services/aeneasService.js';
 import { EpubService } from '../services/epubService.js';
 import { GeminiService } from '../services/geminiService.js';
-import { PageFilter } from '../utils/pageFilter.js';
 
 // Configure multer for audio file uploads
 const audioUpload = multer({
@@ -614,21 +613,6 @@ router.post('/auto-sync', async (req, res) => {
         const pageNumber = pageIdx + 1;
         const pageXhtml = section.xhtml || section.content || '';
         
-        // Check if this is a TOC or Index page - skip audio sync
-        const pageData = {
-          pageNumber: pageNumber,
-          textBlocks: section.textBlocks || [],
-          text: section.text || '',
-          content: pageXhtml,
-          title: section.title || ''
-        };
-        
-        if (PageFilter.shouldSkipPage(pageData)) {
-          const pageType = PageFilter.isTocPage(pageData) ? 'Table of Contents' : 'Index';
-          console.log(`[AutoSync] Skipping ${pageType} page ${pageNumber} - not processing for audio sync`);
-          continue;
-        }
-        
         // Calculate this page's duration share
         const pageCharRatio = totalChars > 0 ? pageCharCounts[pageIdx] / totalChars : 0;
         const pageDuration = audioDuration * pageCharRatio;
@@ -905,21 +889,6 @@ router.post('/magic-align', async (req, res) => {
       
       if (!pageXhtml || pageXhtml.trim().length === 0) {
         console.log(`[MagicAlign] Skipping empty page ${pageNumber}`);
-        continue;
-      }
-      
-      // Check if this is a TOC or Index page - skip audio sync
-      const pageData = {
-        pageNumber: pageNumber,
-        textBlocks: section.textBlocks || [],
-        text: section.text || '',
-        content: pageXhtml,
-        title: section.title || ''
-      };
-      
-      if (PageFilter.shouldSkipPage(pageData)) {
-        const pageType = PageFilter.isTocPage(pageData) ? 'Table of Contents' : 'Index';
-        console.log(`[MagicAlign] Skipping ${pageType} page ${pageNumber} - not processing for audio sync`);
         continue;
       }
       
