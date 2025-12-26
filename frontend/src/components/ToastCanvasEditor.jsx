@@ -127,7 +127,7 @@ const ToastCanvasEditor = ({
     }
   }, [editorInstance]);
 
-  // Extract placeholders and text elements from XHTML
+  // Extract placeholders and text elements from XHTML with accurate positioning
   const extractEditableElements = useCallback((xhtmlContent) => {
     if (!xhtmlContent) return { placeholders: [], textElements: [] };
     
@@ -137,68 +137,120 @@ const ToastCanvasEditor = ({
       const placeholders = [];
       const textElements = [];
       
+      // Helper to parse style attribute and extract values
+      const parseStyle = (styleStr) => {
+        const styles = {};
+        if (!styleStr) return styles;
+        
+        styleStr.split(';').forEach(rule => {
+          const [key, value] = rule.split(':').map(s => s.trim());
+          if (key && value) {
+            styles[key] = value;
+          }
+        });
+        return styles;
+      };
+      
+      // Helper to extract pixel value from style
+      const extractPx = (value) => {
+        if (!value) return 0;
+        const match = value.toString().match(/(\d+(?:\.\d+)?)/);
+        return match ? parseFloat(match[1]) : 0;
+      };
+      
+      // Create temporary container to get actual computed positions
+      const tempContainer = document.createElement('div');
+      tempContainer.style.position = 'absolute';
+      tempContainer.style.left = '-9999px';
+      tempContainer.style.width = '800px';
+      tempContainer.style.backgroundColor = 'white';
+      tempContainer.innerHTML = xhtmlContent;
+      document.body.appendChild(tempContainer);
+      
       // Find placeholder containers (divs with borders, dashed borders, or container classes)
-      const allDivs = doc.querySelectorAll('div');
+      const allDivs = tempContainer.querySelectorAll('div');
       allDivs.forEach((div, index) => {
         const style = div.getAttribute('style') || '';
         const id = div.id || '';
         const className = div.className || '';
+        const styles = parseStyle(style);
         
         // Check for borders or container indicators
-        const hasBorder = style.includes('border') && !style.includes('border: none') && !style.includes('border: 0');
-        const hasDashedBorder = style.includes('border') && style.includes('dashed');
+        const hasBorder = (style.includes('border') && !style.includes('border: none') && !style.includes('border: 0')) ||
+                         styles.border || styles['border-width'];
+        const hasDashedBorder = style.includes('dashed') || styles['border-style'] === 'dashed';
         const isContainer = hasBorder || hasDashedBorder || 
                            id.includes('container') || className.includes('container') ||
                            id.includes('placeholder') || className.includes('placeholder');
         
         if (isContainer) {
-          // Get position and size
+          // Get actual computed position and size from rendered element
           const rect = div.getBoundingClientRect();
-          const computedStyle = window.getComputedStyle ? 
-            (div.ownerDocument.defaultView?.getComputedStyle(div) || {}) : {};
+          const computedStyle = window.getComputedStyle(div);
           
-          const width = parseInt(computedStyle.width || style.match(/width[^:]*:\s*(\d+)/)?.[1] || '300');
-          const height = parseInt(computedStyle.height || style.match(/height[^:]*:\s*(\d+)/)?.[1] || '200');
-          const left = parseInt(computedStyle.left || '0');
-          const top = parseInt(computedStyle.top || '0');
+          const width = rect.width || extractPx(computedStyle.width) || extractPx(styles.width) || 300;
+          const height = rect.height || extractPx(computedStyle.height) || extractPx(styles.height) || 200;
+          const left = rect.left - tempContainer.getBoundingClientRect().left || extractPx(styles.left) || extractPx(computedStyle.left) || 0;
+          const top = rect.top - tempContainer.getBoundingClientRect().top || extractPx(styles.top) || extractPx(computedStyle.top) || 0;
           
           placeholders.push({
             id: id || `placeholder_${index}`,
             className: className,
-            left: left || 50 + (index % 3) * 300,
-            top: top || 100 + Math.floor(index / 3) * 250,
-            width: width || 300,
-            height: height || 200,
+            left: Math.max(0, left),
+            top: Math.max(0, top),
+            width: Math.max(50, width),
+            height: Math.max(50, height),
             border: hasDashedBorder ? 'dashed' : 'solid',
             element: div,
+            originalStyle: style,
           });
         }
       });
       
-      // Find text elements
-      const allTextElements = doc.querySelectorAll('p, h1, h2, h3, h4, h5, h6, span, div');
+      // Find text elements with accurate positioning
+      const allTextElements = tempContainer.querySelectorAll('p, h1, h2, h3, h4, h5, h6, span, div');
       allTextElements.forEach((elem, index) => {
+        // Skip if it's already a placeholder or contains images
+        if (elem.closest('div[style*="border"]') || elem.querySelector('img')) return;
+        
         const text = elem.textContent?.trim() || '';
-        if (text && text.length > 0 && !elem.querySelector('img')) {
+        if (text && text.length > 0) {
           const style = elem.getAttribute('style') || '';
-          const computedStyle = window.getComputedStyle ? 
-            (elem.ownerDocument.defaultView?.getComputedStyle(elem) || {}) : {};
+          const styles = parseStyle(style);
+          const computedStyle = window.getComputedStyle(elem);
           
-          const fontSize = parseInt(computedStyle.fontSize || style.match(/font-size[^:]*:\s*(\d+)/)?.[1] || '16');
-          const fontFamily = computedStyle.fontFamily || style.match(/font-family[^:]*:\s*([^;]+)/)?.[1] || 'Arial';
-          const color = computedStyle.color || style.match(/color[^:]*:\s*([^;]+)/)?.[1] || '#000000';
+          // Get actual position
+          const rect = elem.getBoundingClientRect();
+          const left = rect.left - tempContainer.getBoundingClientRect().left || extractPx(styles.left) || extractPx(computedStyle.left) || 0;
+          const top = rect.top - tempContainer.getBoundingClientRect().top || extractPx(styles.top) || extractPx(computedStyle.top) || 0;
+          
+          // Extract font properties
+          const fontSize = extractPx(computedStyle.fontSize) || extractPx(styles['font-size']) || 16;
+          const fontFamily = computedStyle.fontFamily || styles['font-family'] || 'Arial';
+          const color = computedStyle.color || styles.color || '#000000';
           
           textElements.push({
             id: elem.id || `text_${index}`,
             text: text,
-            left: 50 + (index % 3) * 300,
-            top: 50 + Math.floor(index / 3) * 100,
-            fontSize: fontSize,
-            fontFamily: fontFamily,
+            left: Math.max(0, left),
+            top: Math.max(0, top),
+            fontSize: Math.max(10, fontSize),
+            fontFamily: fontFamily.replace(/['"]/g, '').split(',')[0].trim(), // Get first font family
             fill: color,
             element: elem,
+            originalStyle: style,
           });
         }
+      });
+      
+      // Clean up temporary container
+      document.body.removeChild(tempContainer);
+      
+      console.log('[ToastCanvasEditor] Extracted elements:', {
+        placeholders: placeholders.length,
+        textElements: textElements.length,
+        placeholderDetails: placeholders.map(p => ({ id: p.id, left: p.left, top: p.top, width: p.width, height: p.height })),
+        textDetails: textElements.map(t => ({ id: t.id, text: t.text.substring(0, 30), left: t.left, top: t.top }))
       });
       
       return { placeholders, textElements };
@@ -529,8 +581,8 @@ const ToastCanvasEditor = ({
                       top: placeholder.top,
                       width: placeholder.width,
                       height: placeholder.height,
-                      fill: 'transparent',
-                      stroke: placeholder.border === 'dashed' ? '#999' : '#2196F3',
+                      fill: 'rgba(255, 255, 255, 0.1)', // Slight fill to make it visible
+                      stroke: placeholder.border === 'dashed' ? '#999999' : '#2196F3',
                       strokeWidth: 2,
                       strokeDashArray: placeholder.border === 'dashed' ? [10, 5] : undefined,
                       selectable: true,
@@ -543,11 +595,21 @@ const ToastCanvasEditor = ({
                       lockScalingX: false,
                       lockScalingY: false,
                       name: `placeholder_${placeholder.id}`,
-                      customData: { type: 'placeholder', id: placeholder.id, original: placeholder },
+                      customData: { 
+                        type: 'placeholder', 
+                        id: placeholder.id, 
+                        className: placeholder.className,
+                        original: placeholder 
+                      },
                     });
                     
                     fabricCanvas.add(rect);
-                    console.log('[ToastCanvasEditor] Added editable placeholder:', placeholder.id);
+                    console.log('[ToastCanvasEditor] Added editable placeholder:', {
+                      id: placeholder.id,
+                      position: { left: placeholder.left, top: placeholder.top },
+                      size: { width: placeholder.width, height: placeholder.height },
+                      border: placeholder.border
+                    });
                   } catch (error) {
                     console.warn('[ToastCanvasEditor] Error adding placeholder:', error);
                   }
@@ -573,11 +635,22 @@ const ToastCanvasEditor = ({
                       lockScalingY: false,
                       editable: true, // Allow text editing
                       name: `text_${textElem.id}`,
-                      customData: { type: 'text', id: textElem.id, original: textElem },
+                      customData: { 
+                        type: 'text', 
+                        id: textElem.id, 
+                        original: textElem 
+                      },
                     });
                     
                     fabricCanvas.add(text);
-                    console.log('[ToastCanvasEditor] Added editable text:', textElem.id);
+                    console.log('[ToastCanvasEditor] Added editable text:', {
+                      id: textElem.id,
+                      text: textElem.text.substring(0, 50),
+                      position: { left: textElem.left, top: textElem.top },
+                      fontSize: textElem.fontSize,
+                      fontFamily: textElem.fontFamily,
+                      color: textElem.fill
+                    });
                   } catch (error) {
                     console.warn('[ToastCanvasEditor] Error adding text:', error);
                   }
