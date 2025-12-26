@@ -1,30 +1,33 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { 
-  Canvas, 
-  FabricImage, 
-  Rect,
-  filters
-} from 'fabric';
+import { Canvas, Image, Textbox } from 'fabric';
 import './FabricImageEditor.css';
 
 /**
  * FabricImageEditor Component
- * Advanced image editor using Fabric.js for crop, rotate, resize, filters, etc.
+ * A comprehensive image editor using Fabric.js that allows:
+ * - Adding text overlays to images
+ * - Moving and resizing images and text
+ * - Adjusting image size
+ * - Exporting edited content to XHTML
  */
 const FabricImageEditor = ({ 
   imageUrl, 
   imageId, 
   onSave, 
   onCancel,
-  initialImage = null // If editing an already placed image
+  initialWidth = null,
+  initialHeight = null,
+  initialTexts = [] // Array of {text, x, y, fontSize, color, fontFamily}
 }) => {
   const canvasRef = useRef(null);
-  const fabricCanvasRef = useRef(null);
-  const [fabricImage, setFabricImage] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [activeTool, setActiveTool] = useState(null);
-  const [history, setHistory] = useState([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
+  const canvasInstanceRef = useRef(null);
+  const [selectedObject, setSelectedObject] = useState(null);
+  const [textInput, setTextInput] = useState('');
+  const [fontSize, setFontSize] = useState(24);
+  const [textColor, setTextColor] = useState('#000000');
+  const [fontFamily, setFontFamily] = useState('Arial');
+  const [imageLoaded, setImageLoaded] = useState(false);
+  const [tool, setTool] = useState('select'); // 'select', 'text', 'move', 'resize'
 
   // Initialize Fabric.js canvas
   useEffect(() => {
@@ -37,447 +40,428 @@ const FabricImageEditor = ({
       preserveObjectStacking: true,
     });
 
-    fabricCanvasRef.current = canvas;
+    canvasInstanceRef.current = canvas;
 
-    // Set up canvas events
-    canvas.on('object:modified', () => {
-      saveToHistory();
+    // Handle object selection
+    canvas.on('selection:created', (e) => {
+      setSelectedObject(e.selected[0]);
+      if (e.selected[0] && e.selected[0].type === 'textbox') {
+        setTextInput(e.selected[0].text || '');
+        setFontSize(e.selected[0].fontSize || 24);
+        setTextColor(e.selected[0].fill || '#000000');
+        setFontFamily(e.selected[0].fontFamily || 'Arial');
+      }
     });
 
-    canvas.on('object:added', () => {
-      saveToHistory();
+    canvas.on('selection:updated', (e) => {
+      setSelectedObject(e.selected[0]);
+      if (e.selected[0] && e.selected[0].type === 'textbox') {
+        setTextInput(e.selected[0].text || '');
+        setFontSize(e.selected[0].fontSize || 24);
+        setTextColor(e.selected[0].fill || '#000000');
+        setFontFamily(e.selected[0].fontFamily || 'Arial');
+      }
     });
 
-    canvas.on('object:removed', () => {
-      saveToHistory();
+    canvas.on('selection:cleared', () => {
+      setSelectedObject(null);
+      setTextInput('');
     });
 
-    return () => {
-      canvas.dispose();
-    };
-  }, []);
+    // Load image
+    if (imageUrl) {
+      Image.fromURL(
+        imageUrl,
+        (img) => {
+          // Set initial dimensions if provided
+          if (initialWidth && initialHeight) {
+            img.scaleToWidth(initialWidth);
+            img.scaleToHeight(initialHeight);
+          } else {
+            // Scale to fit canvas while maintaining aspect ratio
+            const maxWidth = canvas.width * 0.9;
+            const maxHeight = canvas.height * 0.9;
+            if (img.width > maxWidth || img.height > maxHeight) {
+              const scale = Math.min(maxWidth / img.width, maxHeight / img.height);
+              img.scale(scale);
+            }
+          }
 
-  // Load image into canvas
-  useEffect(() => {
-    if (!fabricCanvasRef.current || !imageUrl) return;
-
-    const loadImage = async () => {
-      try {
-        setLoading(true);
-        
-        // Load image from URL
-        FabricImage.fromURL(imageUrl, (img) => {
-          if (!fabricCanvasRef.current) return;
-
-          const canvas = fabricCanvasRef.current;
-          
-          // Scale image to fit canvas while maintaining aspect ratio
-          const canvasWidth = canvas.width;
-          const canvasHeight = canvas.height;
-          const imgWidth = img.width;
-          const imgHeight = img.height;
-          
-          const scale = Math.min(
-            (canvasWidth * 0.9) / imgWidth,
-            (canvasHeight * 0.9) / imgHeight
-          );
-          
-          img.scale(scale);
           img.set({
-            left: canvasWidth / 2,
-            top: canvasHeight / 2,
-            originX: 'center',
-            originY: 'center',
+            left: (canvas.width - img.width * img.scaleX) / 2,
+            top: (canvas.height - img.height * img.scaleY) / 2,
             selectable: true,
+            evented: true,
+            lockMovementX: false,
+            lockMovementY: false,
             hasControls: true,
             hasBorders: true,
           });
 
-          canvas.setActiveObject(img);
           canvas.add(img);
+          canvas.setActiveObject(img);
           canvas.renderAll();
-          
-          setFabricImage(img);
-          setLoading(false);
-          saveToHistory();
-        }, {
-          crossOrigin: 'anonymous'
-        });
-      } catch (error) {
-        console.error('Error loading image:', error);
-        setLoading(false);
-      }
+          setImageLoaded(true);
+
+          // Load initial text overlays
+          if (initialTexts && initialTexts.length > 0) {
+            initialTexts.forEach((textData) => {
+              const text = new Textbox(textData.text || 'Text', {
+                left: textData.x || 100,
+                top: textData.y || 100,
+                fontSize: textData.fontSize || 24,
+                fill: textData.color || '#000000',
+                fontFamily: textData.fontFamily || 'Arial',
+                width: 200,
+                textAlign: textData.textAlign || 'left',
+                selectable: true,
+                evented: true,
+                hasControls: true,
+                hasBorders: true,
+              });
+              canvas.add(text);
+            });
+            canvas.renderAll();
+          }
+        },
+        {
+          crossOrigin: 'anonymous',
+        }
+      ).catch((error) => {
+        console.error('[FabricImageEditor] Error loading image:', error);
+        alert('Failed to load image. Please check the image URL.');
+        setImageLoaded(false);
+      });
+    }
+
+    return () => {
+      canvas.dispose();
     };
+  }, [imageUrl, initialWidth, initialHeight, initialTexts]);
 
-    loadImage();
-  }, [imageUrl]);
+  // Handle tool changes
+  useEffect(() => {
+    if (!canvasInstanceRef.current) return;
 
-  // History management
-  const saveToHistory = useCallback(() => {
-    if (!fabricCanvasRef.current) return;
-    
-    const json = JSON.stringify(fabricCanvasRef.current.toJSON());
-    setHistory(prev => {
-      const newHistory = prev.slice(0, historyIndex + 1);
-      newHistory.push(json);
-      // Limit history to 50 states
-      if (newHistory.length > 50) {
-        newHistory.shift();
-      } else {
-        setHistoryIndex(newHistory.length - 1);
+    const canvas = canvasInstanceRef.current;
+    const objects = canvas.getObjects();
+
+    objects.forEach((obj) => {
+      switch (tool) {
+        case 'select':
+          obj.selectable = true;
+          obj.evented = true;
+          obj.hasControls = true;
+          obj.hasBorders = true;
+          break;
+        case 'move':
+          obj.selectable = true;
+          obj.evented = true;
+          obj.hasControls = false;
+          obj.hasBorders = true;
+          break;
+        case 'resize':
+          obj.selectable = true;
+          obj.evented = true;
+          obj.hasControls = true;
+          obj.hasBorders = true;
+          break;
+        case 'text':
+          obj.selectable = true;
+          obj.evented = true;
+          obj.hasControls = true;
+          obj.hasBorders = true;
+          break;
       }
-      return newHistory;
     });
-  }, [historyIndex]);
 
-  // Undo/Redo
-  const handleUndo = useCallback(() => {
-    if (historyIndex <= 0) return;
-    
-    const newIndex = historyIndex - 1;
-    setHistoryIndex(newIndex);
-    
-    if (fabricCanvasRef.current && history[newIndex]) {
-      fabricCanvasRef.current.loadFromJSON(history[newIndex], () => {
-        fabricCanvasRef.current.renderAll();
-      });
-    }
-  }, [history, historyIndex]);
+    canvas.renderAll();
+  }, [tool]);
 
-  const handleRedo = useCallback(() => {
-    if (historyIndex >= history.length - 1) return;
-    
-    const newIndex = historyIndex + 1;
-    setHistoryIndex(newIndex);
-    
-    if (fabricCanvasRef.current && history[newIndex]) {
-      fabricCanvasRef.current.loadFromJSON(history[newIndex], () => {
-        fabricCanvasRef.current.renderAll();
-      });
-    }
-  }, [history, historyIndex]);
+  // Add text overlay
+  const handleAddText = useCallback(() => {
+    if (!canvasInstanceRef.current) return;
 
-  // Tool handlers
-  const handleCrop = useCallback(() => {
-    if (!fabricCanvasRef.current || !fabricImage) return;
-    
-    setActiveTool('crop');
-    
-    // Create a rectangle for cropping
-    const canvas = fabricCanvasRef.current;
-    const rect = new Rect({
-      left: canvas.width / 4,
-      top: canvas.height / 4,
-      width: canvas.width / 2,
-      height: canvas.height / 2,
-      fill: 'rgba(0,0,0,0.1)',
-      stroke: '#2196F3',
-      strokeWidth: 2,
-      strokeDashArray: [5, 5],
+    const canvas = canvasInstanceRef.current;
+    const text = new Textbox(textInput || 'Double click to edit', {
+      left: canvas.width / 2 - 100,
+      top: canvas.height / 2 - 15,
+      fontSize: fontSize,
+      fill: textColor,
+      fontFamily: fontFamily,
+      width: 200,
+      textAlign: 'left',
       selectable: true,
+      evented: true,
       hasControls: true,
       hasBorders: true,
     });
-    
-    canvas.add(rect);
-    canvas.setActiveObject(rect);
+
+    canvas.add(text);
+    canvas.setActiveObject(text);
     canvas.renderAll();
-  }, [fabricImage]);
+    setSelectedObject(text);
+    setTool('select');
+  }, [textInput, fontSize, textColor, fontFamily]);
 
-  const handleApplyCrop = useCallback(() => {
-    if (!fabricCanvasRef.current || !fabricImage) return;
-    
-    const canvas = fabricCanvasRef.current;
-    const activeObject = canvas.getActiveObject();
-    
-    if (activeObject && activeObject.type === 'rect') {
-      const rect = activeObject;
-      const img = fabricImage;
-      
-      // Calculate crop coordinates
-      const scaleX = img.scaleX || 1;
-      const scaleY = img.scaleY || 1;
-      const imgLeft = img.left - (img.width * scaleX) / 2;
-      const imgTop = img.top - (img.height * scaleY) / 2;
-      
-      const cropLeft = Math.max(0, (rect.left - imgLeft) / scaleX);
-      const cropTop = Math.max(0, (rect.top - imgTop) / scaleY);
-      const cropWidth = Math.min(img.width, rect.width / scaleX);
-      const cropHeight = Math.min(img.height, rect.height / scaleY);
-      
-      // Create cropped image
-      const croppedCanvas = document.createElement('canvas');
-      croppedCanvas.width = cropWidth;
-      croppedCanvas.height = cropHeight;
-      const ctx = croppedCanvas.getContext('2d');
-      
-      // Get image element
-      const imgElement = img.getElement();
-      
-      ctx.drawImage(
-        imgElement,
-        cropLeft, cropTop, cropWidth, cropHeight,
-        0, 0, cropWidth, cropHeight
-      );
-      
-      // Replace image with cropped version
-      FabricImage.fromURL(croppedCanvas.toDataURL(), (newImg) => {
-        canvas.remove(img);
-        canvas.remove(rect);
-        
-        newImg.set({
-          left: canvas.width / 2,
-          top: canvas.height / 2,
-          originX: 'center',
-          originY: 'center',
-          selectable: true,
-          hasControls: true,
-          hasBorders: true,
-        });
-        
-        canvas.add(newImg);
-        canvas.setActiveObject(newImg);
-        canvas.renderAll();
-        
-        setFabricImage(newImg);
-        setActiveTool(null);
-        saveToHistory();
-      });
-    }
-  }, [fabricImage, saveToHistory]);
+  // Update selected text properties
+  const handleUpdateText = useCallback(() => {
+    if (!canvasInstanceRef.current || !selectedObject || selectedObject.type !== 'textbox') return;
 
-  const handleRotate = useCallback((degrees) => {
-    if (!fabricImage) return;
-    
-    const currentAngle = fabricImage.angle || 0;
-    fabricImage.rotate(currentAngle + degrees);
-    fabricCanvasRef.current.renderAll();
-    saveToHistory();
-  }, [fabricImage, saveToHistory]);
-
-  const handleFlip = useCallback((direction) => {
-    if (!fabricImage) return;
-    
-    if (direction === 'horizontal') {
-      fabricImage.flipX = !fabricImage.flipX;
-    } else {
-      fabricImage.flipY = !fabricImage.flipY;
-    }
-    
-    fabricCanvasRef.current.renderAll();
-    saveToHistory();
-  }, [fabricImage, saveToHistory]);
-
-  const handleFilter = useCallback((filterName) => {
-    if (!fabricImage) return;
-    
-    // Remove existing filters
-    fabricImage.filters = [];
-    
-    switch (filterName) {
-      case 'grayscale':
-        fabricImage.filters.push(new filters.Grayscale());
-        break;
-      case 'sepia':
-        fabricImage.filters.push(new filters.Sepia());
-        break;
-      case 'vintage':
-        fabricImage.filters.push(new filters.Vintage());
-        break;
-      case 'brightness':
-        fabricImage.filters.push(new filters.Brightness({ brightness: 0.1 }));
-        break;
-      case 'contrast':
-        fabricImage.filters.push(new filters.Contrast({ contrast: 0.1 }));
-        break;
-      case 'saturation':
-        fabricImage.filters.push(new filters.Saturation({ saturation: 0.2 }));
-        break;
-      case 'blur':
-        fabricImage.filters.push(new filters.Blur({ blur: 0.1 }));
-        break;
-      case 'sharpen':
-        fabricImage.filters.push(new filters.Convolute({
-          matrix: [0, -1, 0, -1, 5, -1, 0, -1, 0]
-        }));
-        break;
-      case 'remove':
-        fabricImage.filters = [];
-        break;
-      default:
-        break;
-    }
-    
-    fabricImage.applyFilters();
-    fabricCanvasRef.current.renderAll();
-    saveToHistory();
-  }, [fabricImage, saveToHistory]);
-
-  const handleReset = useCallback(() => {
-    if (!fabricCanvasRef.current || !imageUrl) return;
-    
-    fabricCanvasRef.current.clear();
-    
-    FabricImage.fromURL(imageUrl, (img) => {
-      const canvas = fabricCanvasRef.current;
-      const scale = Math.min(
-        (canvas.width * 0.9) / img.width,
-        (canvas.height * 0.9) / img.height
-      );
-      
-      img.scale(scale);
-      img.set({
-        left: canvas.width / 2,
-        top: canvas.height / 2,
-        originX: 'center',
-        originY: 'center',
-        selectable: true,
-        hasControls: true,
-        hasBorders: true,
-      });
-
-      canvas.add(img);
-      canvas.renderAll();
-      
-      setFabricImage(img);
-      saveToHistory();
-    }, {
-      crossOrigin: 'anonymous'
+    selectedObject.set({
+      text: textInput,
+      fontSize: fontSize,
+      fill: textColor,
+      fontFamily: fontFamily,
     });
-  }, [imageUrl, saveToHistory]);
 
-  // Save edited image
-  const handleSave = useCallback(() => {
-    if (!fabricCanvasRef.current || !fabricImage) return;
+    canvasInstanceRef.current.renderAll();
+  }, [selectedObject, textInput, fontSize, textColor, fontFamily]);
+
+  // Delete selected object
+  const handleDelete = useCallback(() => {
+    if (!canvasInstanceRef.current || !selectedObject) return;
+
+    const canvas = canvasInstanceRef.current;
+    canvas.remove(selectedObject);
+    canvas.renderAll();
+    setSelectedObject(null);
+  }, [selectedObject]);
+
+  // Export to XHTML
+  const handleExport = useCallback(() => {
+    if (!canvasInstanceRef.current) return;
+
+    const canvas = canvasInstanceRef.current;
     
-    // Export canvas as image
-    const dataURL = fabricCanvasRef.current.toDataURL({
+    // Get all objects (image + texts)
+    const objects = canvas.getObjects();
+    const imageObj = objects.find(obj => obj.type === 'image');
+    const textObjects = objects.filter(obj => obj.type === 'textbox');
+
+    if (!imageObj) {
+      alert('No image found in canvas');
+      return;
+    }
+
+    // Export canvas to data URL
+    const dataURL = canvas.toDataURL({
       format: 'png',
-      quality: 1,
-      multiplier: 1
+      quality: 1.0,
+      multiplier: 2, // Higher resolution
     });
-    
-    // Convert to blob
-    fetch(dataURL)
-      .then(res => res.blob())
-      .then(blob => {
-        if (onSave) {
-          onSave(blob, dataURL);
-        }
-      })
-      .catch(error => {
-        console.error('Error saving image:', error);
-      });
-  }, [fabricImage, onSave]);
 
-  if (loading) {
-    return (
-      <div className="fabric-editor-loading">
-        <div className="loading-spinner">Loading image...</div>
-      </div>
-    );
-  }
+    // Get image dimensions and position
+    const imageData = {
+      dataURL: dataURL,
+      width: imageObj.width * imageObj.scaleX,
+      height: imageObj.height * imageObj.scaleY,
+      left: imageObj.left,
+      top: imageObj.top,
+      scaleX: imageObj.scaleX,
+      scaleY: imageObj.scaleY,
+    };
+
+    // Get text overlay data
+    const textsData = textObjects.map((text) => ({
+      text: text.text,
+      x: text.left,
+      y: text.top,
+      fontSize: text.fontSize,
+      color: text.fill,
+      fontFamily: text.fontFamily,
+      width: text.width,
+      height: text.height,
+      angle: text.angle,
+      scaleX: text.scaleX,
+      scaleY: text.scaleY,
+    }));
+
+    // Call onSave with all the data
+    if (onSave) {
+      onSave({
+        imageId: imageId,
+        imageData: imageData,
+        texts: textsData,
+        canvasDataURL: dataURL,
+      });
+    }
+  }, [imageId, onSave]);
+
+  // Zoom controls
+  const handleZoom = useCallback((factor) => {
+    if (!canvasInstanceRef.current) return;
+
+    const canvas = canvasInstanceRef.current;
+    const zoom = canvas.getZoom();
+    const newZoom = zoom * factor;
+    canvas.setZoom(Math.max(0.1, Math.min(5, newZoom)));
+    canvas.renderAll();
+  }, []);
+
+  // Reset zoom
+  const handleResetZoom = useCallback(() => {
+    if (!canvasInstanceRef.current) return;
+
+    const canvas = canvasInstanceRef.current;
+    canvas.setZoom(1);
+    canvas.setViewportTransform([1, 0, 0, 1, 0, 0]);
+    canvas.renderAll();
+  }, []);
 
   return (
     <div className="fabric-image-editor">
-      <div className="fabric-editor-header">
-        <h3>Image Editor - {imageId || 'New Image'}</h3>
-        <div className="editor-actions">
-          <button onClick={handleUndo} disabled={historyIndex <= 0} className="btn-undo">
-            ↶ Undo
-          </button>
-          <button onClick={handleRedo} disabled={historyIndex >= history.length - 1} className="btn-redo">
-            ↷ Redo
-          </button>
-          <button onClick={handleReset} className="btn-reset">
-            ↻ Reset
+      <div className="editor-toolbar">
+        <div className="toolbar-section">
+          <h3>Tools</h3>
+          <div className="tool-buttons">
+            <button
+              className={tool === 'select' ? 'active' : ''}
+              onClick={() => setTool('select')}
+              title="Select and edit objects"
+            >
+              ✏️ Select
+            </button>
+            <button
+              className={tool === 'text' ? 'active' : ''}
+              onClick={() => setTool('text')}
+              title="Add text overlay"
+            >
+              📝 Text
+            </button>
+            <button
+              className={tool === 'move' ? 'active' : ''}
+              onClick={() => setTool('move')}
+              title="Move objects"
+            >
+              ↔️ Move
+            </button>
+            <button
+              className={tool === 'resize' ? 'active' : ''}
+              onClick={() => setTool('resize')}
+              title="Resize objects"
+            >
+              🔍 Resize
+            </button>
+          </div>
+        </div>
+
+        {tool === 'text' && (
+          <div className="toolbar-section">
+            <h3>Text Properties</h3>
+            <div className="text-controls">
+              <input
+                type="text"
+                placeholder="Enter text..."
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                className="text-input"
+              />
+              <div className="control-row">
+                <label>
+                  Size:
+                  <input
+                    type="number"
+                    min="8"
+                    max="200"
+                    value={fontSize}
+                    onChange={(e) => setFontSize(Number(e.target.value))}
+                    className="number-input"
+                  />
+                </label>
+                <label>
+                  Color:
+                  <input
+                    type="color"
+                    value={textColor}
+                    onChange={(e) => setTextColor(e.target.value)}
+                    className="color-input"
+                  />
+                </label>
+                <label>
+                  Font:
+                  <select
+                    value={fontFamily}
+                    onChange={(e) => setFontFamily(e.target.value)}
+                    className="select-input"
+                  >
+                    <option value="Arial">Arial</option>
+                    <option value="Times New Roman">Times New Roman</option>
+                    <option value="Courier New">Courier New</option>
+                    <option value="Georgia">Georgia</option>
+                    <option value="Verdana">Verdana</option>
+                    <option value="Helvetica">Helvetica</option>
+                  </select>
+                </label>
+              </div>
+              <div className="button-row">
+                <button onClick={handleAddText} className="btn-primary">
+                  Add Text
+                </button>
+                {selectedObject && selectedObject.type === 'textbox' && (
+                  <button onClick={handleUpdateText} className="btn-secondary">
+                    Update Text
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedObject && (
+          <div className="toolbar-section">
+            <h3>Selected Object</h3>
+            <div className="object-info">
+              <p>Type: {selectedObject.type}</p>
+              {selectedObject.type === 'textbox' && (
+                <>
+                  <p>Text: {selectedObject.text}</p>
+                  <p>Size: {selectedObject.fontSize}px</p>
+                  <p>Position: ({Math.round(selectedObject.left)}, {Math.round(selectedObject.top)})</p>
+                </>
+              )}
+              {selectedObject.type === 'image' && (
+                <>
+                  <p>Dimensions: {Math.round(selectedObject.width * selectedObject.scaleX)} × {Math.round(selectedObject.height * selectedObject.scaleY)}</p>
+                  <p>Position: ({Math.round(selectedObject.left)}, {Math.round(selectedObject.top)})</p>
+                </>
+              )}
+              <button onClick={handleDelete} className="btn-danger">
+                🗑️ Delete
+              </button>
+            </div>
+          </div>
+        )}
+
+        <div className="toolbar-section">
+          <h3>Zoom</h3>
+          <div className="zoom-controls">
+            <button onClick={() => handleZoom(1.2)} title="Zoom In">🔍+</button>
+            <button onClick={handleResetZoom} title="Reset Zoom">🔍 Reset</button>
+            <button onClick={() => handleZoom(0.8)} title="Zoom Out">🔍-</button>
+          </div>
+        </div>
+
+        <div className="toolbar-section actions">
+          <button onClick={handleExport} className="btn-save" disabled={!imageLoaded}>
+            💾 Save to XHTML
           </button>
           <button onClick={onCancel} className="btn-cancel">
-            Cancel
-          </button>
-          <button onClick={handleSave} className="btn-save-editor">
-            ✓ Save
+            ❌ Cancel
           </button>
         </div>
       </div>
 
-      <div className="fabric-editor-toolbar">
-        <div className="tool-group">
-          <span className="tool-label">Transform:</span>
-          <button onClick={() => handleRotate(-90)} className="tool-btn" title="Rotate Left">
-            ↺ 90°
-          </button>
-          <button onClick={() => handleRotate(90)} className="tool-btn" title="Rotate Right">
-            ↻ 90°
-          </button>
-          <button onClick={() => handleFlip('horizontal')} className="tool-btn" title="Flip Horizontal">
-            ⇄ Flip H
-          </button>
-          <button onClick={() => handleFlip('vertical')} className="tool-btn" title="Flip Vertical">
-            ⇅ Flip V
-          </button>
-        </div>
-
-        <div className="tool-group">
-          <span className="tool-label">Crop:</span>
-          <button 
-            onClick={handleCrop} 
-            className={`tool-btn ${activeTool === 'crop' ? 'active' : ''}`}
-            title="Crop Image"
-          >
-            ✂️ Crop
-          </button>
-          {activeTool === 'crop' && (
-            <button onClick={handleApplyCrop} className="tool-btn btn-apply" title="Apply Crop">
-              ✓ Apply
-            </button>
-          )}
-        </div>
-
-        <div className="tool-group">
-          <span className="tool-label">Filters:</span>
-          <button onClick={() => handleFilter('grayscale')} className="tool-btn" title="Grayscale">
-            ⚫ Grayscale
-          </button>
-          <button onClick={() => handleFilter('sepia')} className="tool-btn" title="Sepia">
-            🟤 Sepia
-          </button>
-          <button onClick={() => handleFilter('vintage')} className="tool-btn" title="Vintage">
-            📷 Vintage
-          </button>
-          <button onClick={() => handleFilter('brightness')} className="tool-btn" title="Brightness">
-            ☀️ Bright
-          </button>
-          <button onClick={() => handleFilter('contrast')} className="tool-btn" title="Contrast">
-            🎨 Contrast
-          </button>
-          <button onClick={() => handleFilter('saturation')} className="tool-btn" title="Saturation">
-            🌈 Saturate
-          </button>
-          <button onClick={() => handleFilter('blur')} className="tool-btn" title="Blur">
-            🌫️ Blur
-          </button>
-          <button onClick={() => handleFilter('sharpen')} className="tool-btn" title="Sharpen">
-            ✨ Sharpen
-          </button>
-          <button onClick={() => handleFilter('remove')} className="tool-btn" title="Remove Filters">
-            🗑️ Remove
-          </button>
-        </div>
-      </div>
-
-      <div className="fabric-editor-canvas-container">
+      <div className="editor-canvas-container">
         <canvas ref={canvasRef} className="fabric-canvas" />
-      </div>
-
-      <div className="fabric-editor-footer">
-        <p className="editor-hint">
-          💡 Drag to move • Use corner handles to resize • Right-click for more options
-        </p>
+        {!imageLoaded && (
+          <div className="loading-overlay">
+            <div className="loading-spinner">Loading image...</div>
+          </div>
+        )}
       </div>
     </div>
   );
 };
 
 export default FabricImageEditor;
-

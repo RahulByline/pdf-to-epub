@@ -3,7 +3,8 @@ import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import api from '../services/api';
 import { injectImageIntoXhtml, applyReflowableCss } from '../utils/xhtmlUtils';
-import DraggableCanvas from './DraggableCanvas';
+import ToastCanvasEditor from './ToastCanvasEditor';
+import ToastImageEditor from './ToastImageEditor';
 import './EpubImageEditor.css';
 
 const DRAG_TYPE = 'EPUB_IMAGE';
@@ -205,7 +206,7 @@ const DraggableImage = ({ image, pageNumber }) => {
  * Drop Zone Overlay Component (for image drops only)
  * This is a transparent overlay that handles image drops
  */
-const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false }) => {
+const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef }) => {
   const [{ isOver, isDragging, canDrop = false }, drop] = useDrop({
     accept: DRAG_TYPE,
     canDrop: (item, monitor) => {
@@ -629,11 +630,11 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
   const globalFlag = typeof window !== 'undefined' ? (window.__imageDragging || false) : false;
   const isAnyImageDragging = isDragging || globalFlag;
   
-  // When edit mode is ON and no image is being dragged, allow pointer events to pass through
+  // When no image is being dragged, allow pointer events to pass through
   // so text elements can be clicked and edited
   // When an image is being dragged, we need pointer events to detect drops
   // BUT: Always allow pointer events to pass through for image-with-options overlays (z-index 3000)
-  const shouldBlockPointerEvents = isAnyImageDragging || !editMode;
+  const shouldBlockPointerEvents = isAnyImageDragging;
   
   // Check if mouse is over an image-with-options wrapper (which has the clear button overlay)
   // If so, don't block pointer events so the button can be clicked
@@ -662,7 +663,6 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
     canDrop: canDrop || false,
     globalFlag,
     isAnyImageDragging,
-    editMode,
     shouldBlockPointerEvents,
     dropRefType: typeof drop,
     dropRefValue: drop ? 'exists' : 'null'
@@ -683,12 +683,12 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
         bottom: 0,
         width: '100%',
         height: '100%',
-        // Allow pointer events to pass through when edit mode is ON and not dragging
+        // Allow pointer events to pass through when not dragging
         // This enables text editing. When dragging, we need pointer events to detect drops
         // When hovering over image options overlay, allow clicks to pass through
         // Image overlay has z-index 3000, so it's always on top
         pointerEvents: (shouldBlockPointerEvents && !isOverImageOptions) ? 'auto' : 'none',
-        zIndex: isAnyImageDragging ? 2000 : (editMode ? 50 : 100), // Lower z-index in edit mode when not dragging (image overlay is 3000)
+        zIndex: isAnyImageDragging ? 2000 : 50, // Lower z-index when not dragging (image overlay is 3000)
         backgroundColor: isOver ? 'rgba(33, 150, 243, 0.2)' : (isAnyImageDragging ? 'rgba(33, 150, 243, 0.05)' : 'transparent'),
         border: isAnyImageDragging ? '2px dashed rgba(33, 150, 243, 0.5)' : 'none', // Visual indicator
         transition: 'background-color 0.2s ease',
@@ -715,7 +715,8 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const [placeholders, setPlaceholders] = useState([]);
   const canvasRef = useRef(null);
   const [modified, setModified] = useState(false);
-  const [editMode, setEditMode] = useState(false);
+  const [editingImage, setEditingImage] = useState(null); // {imageId, imageUrl, imageElement}
+  const [imageEditorVisible, setImageEditorVisible] = useState(false);
 
   // Load XHTML and images
   // Only reload if pageNumber or jobId changes, NOT if we're just modifying XHTML
@@ -1281,146 +1282,247 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
     });
   }, [extractPlaceholdersFromXhtml, canvasRef]);
 
-  // Handle image editing operations (zoom, crop, fit)
-  const handleImageEdit = useCallback((placeholderId, operation, value = null) => {
-    console.log('[EpubImageEditor] handleImageEdit called:', { placeholderId, operation, value });
-    if (!placeholderId) {
-      console.warn('[EpubImageEditor] handleImageEdit called without placeholderId');
+  // Open image editor for a specific image
+  const handleOpenImageEditor = useCallback((placeholderId) => {
+    console.log('[EpubImageEditor] Opening image editor for:', placeholderId);
+    
+    // Find the image in XHTML
+    const parser = new DOMParser();
+    let doc = parser.parseFromString(xhtml, 'text/html');
+    let parserError = doc.querySelector('parsererror');
+    if (parserError) {
+      doc = parser.parseFromString(xhtml, 'application/xml');
+    }
+    
+    const imgElement = doc.getElementById(placeholderId) || doc.querySelector(`#${placeholderId}`);
+    if (!imgElement || imgElement.tagName?.toLowerCase() !== 'img') {
+      alert('Image not found. Please place an image first.');
       return;
     }
-
-    setXhtml((currentXhtml) => {
-      if (!currentXhtml) {
-        console.warn('[EpubImageEditor] No XHTML to edit');
-        return currentXhtml;
+    
+    const imgSrc = imgElement.getAttribute('src');
+    if (!imgSrc) {
+      alert('Image source not found.');
+      return;
+    }
+    
+    // Get absolute URL if it's relative
+    let imageUrl = imgSrc;
+    if (!imgSrc.startsWith('http://') && !imgSrc.startsWith('https://')) {
+      if (imgSrc.startsWith('images/')) {
+        imageUrl = `${api.defaults.baseURL}/conversions/${jobId}/images/${imgSrc.replace('images/', '')}`;
+      } else {
+        imageUrl = `${api.defaults.baseURL}/conversions/${jobId}/images/${imgSrc}`;
       }
-
+    }
+    
+    // Get image dimensions
+    const width = imgElement.getAttribute('width') || imgElement.style.width;
+    const height = imgElement.getAttribute('height') || imgElement.style.height;
+    
+    // Extract existing text overlays from data attributes if any
+    const textsData = [];
+    const textOverlays = imgElement.getAttribute('data-text-overlays');
+    if (textOverlays) {
       try {
+        textsData.push(...JSON.parse(textOverlays));
+      } catch (e) {
+        console.warn('Failed to parse text overlays:', e);
+      }
+    }
+    
+    setEditingImage({
+      imageId: placeholderId,
+      imageUrl: imageUrl,
+      imageElement: imgElement,
+      initialWidth: width ? parseInt(width) : null,
+      initialHeight: height ? parseInt(height) : null,
+      initialTexts: textsData,
+    });
+    setImageEditorVisible(true);
+  }, [xhtml, jobId]);
+
+  // Save edited image from ToastImageEditor
+  const handleSaveEditedImage = useCallback(async (editorData) => {
+    try {
+      console.log('[EpubImageEditor] Saving edited image:', editorData);
+      
+      // Convert dataURL to blob
+      const dataURL = editorData.canvasDataURL;
+      const response = await fetch(dataURL);
+      const blob = await response.blob();
+      
+      // Get the original image filename
+      const imageObj = images.find(img => img.id === editorData.imageId || 
+        xhtml.includes(`images/${img.fileName}`) && 
+        xhtml.match(new RegExp(`id=["']${editorData.imageId}["']`)));
+      
+      let fileName = imageObj?.fileName || `edited_${editorData.imageId}.png`;
+      if (!fileName.endsWith('.png') && !fileName.endsWith('.jpg') && !fileName.endsWith('.jpeg')) {
+        fileName = fileName.replace(/\.[^.]+$/, '.png');
+      }
+      
+      // Upload edited image to backend
+      // Try to upload, but if endpoint doesn't exist, use data URL approach
+      let uploadedFileName = fileName;
+      
+      try {
+        const formData = new FormData();
+        formData.append('image', blob, fileName);
+        
+        // Try uploading to backend
+        const uploadResponse = await api.post(`/conversions/${jobId}/images/upload`, formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        });
+        
+        uploadedFileName = uploadResponse.data?.fileName || fileName;
+      } catch (uploadError) {
+        console.warn('[EpubImageEditor] Image upload endpoint not available, using data URL:', uploadError);
+        // If upload fails, we'll use the data URL directly in XHTML
+        // This is a fallback - the image will be embedded as base64
+        const dataUrl = editorData.canvasDataURL;
+        
+        // Update XHTML with data URL directly
+        setXhtml((currentXhtml) => {
+          const parser = new DOMParser();
+          let doc = parser.parseFromString(currentXhtml, 'text/html');
+          let parserError = doc.querySelector('parsererror');
+          if (parserError) {
+            doc = parser.parseFromString(currentXhtml, 'application/xml');
+          }
+          
+          const imgElement = doc.getElementById(editorData.imageId) || doc.querySelector(`#${editorData.imageId}`);
+          if (imgElement) {
+            imgElement.setAttribute('src', dataUrl);
+            
+            // Store text overlay data
+            if (editorData.texts && editorData.texts.length > 0) {
+              imgElement.setAttribute('data-text-overlays', JSON.stringify(editorData.texts));
+            }
+            
+            // Serialize back to XHTML
+            const serializer = new XMLSerializer();
+            let updated = serializer.serializeToString(doc.documentElement);
+            
+            // Handle HTML5 parser output
+            if (doc.documentElement.tagName === 'HTML' && doc.body) {
+              const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
+              const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
+              const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
+              const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
+              
+              const headContent = doc.head ? doc.head.innerHTML : '';
+              const bodyContent = doc.body ? doc.body.innerHTML : '';
+              
+              updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
+              if (headContent) {
+                updated += `<head>\n${headContent}\n</head>\n`;
+              }
+              updated += `<body>\n${bodyContent}\n</body>\n</html>`;
+            }
+            
+            // Ensure self-closing tags
+            updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+              return attrs.includes('/') ? match : `<meta${attrs}/>`;
+            });
+            updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+              return attrs.includes('/') ? match : `<img${attrs}/>`;
+            });
+            
+            setModified(true);
+            setImageEditorVisible(false);
+            setEditingImage(null);
+            alert('Image edited and saved! (Note: Using embedded data URL - image may be large)');
+            return updated;
+          }
+          
+          return currentXhtml;
+        });
+        
+        return; // Exit early if using data URL
+      }
+      const relativePath = `images/${uploadedFileName}`;
+      
+      // Update XHTML with the edited image
+      setXhtml((currentXhtml) => {
         const parser = new DOMParser();
         let doc = parser.parseFromString(currentXhtml, 'text/html');
-
-        // Check for parsing errors
         let parserError = doc.querySelector('parsererror');
         if (parserError) {
-          console.warn('[EpubImageEditor] HTML parsing failed, trying XML');
           doc = parser.parseFromString(currentXhtml, 'application/xml');
-          parserError = doc.querySelector('parsererror');
-          if (parserError) {
-            console.error('[EpubImageEditor] Both HTML and XML parsing failed');
-            return currentXhtml;
-          }
         }
-
-        // Find the target image
-        let target = doc.getElementById(placeholderId);
-        if (!target) {
-          target = doc.querySelector(`#${placeholderId}`);
-        }
-        if (!target && doc.body) {
-          target = doc.body.querySelector(`#${placeholderId}`);
-        }
-
-        if (!target || target.tagName?.toLowerCase() !== 'img') {
-          console.error(`[EpubImageEditor] Image ${placeholderId} not found`);
-          return currentXhtml;
-        }
-
-        // Get current styles
-        const currentStyle = target.getAttribute('style') || '';
-        const currentWidth = target.getAttribute('width') || '';
-        const currentHeight = target.getAttribute('height') || '';
         
-        // Parse current transform if exists
-        let currentScale = 1;
-        const transformMatch = currentStyle.match(/transform\s*:\s*scale\(([^)]+)\)/i);
-        if (transformMatch) {
-          currentScale = parseFloat(transformMatch[1]) || 1;
-        }
-
-        // Apply operation
-        let newStyle = currentStyle;
-        let newWidth = currentWidth;
-        let newHeight = currentHeight;
-
-        switch (operation) {
-          case 'zoom-in':
-            const zoomInScale = Math.min(currentScale * 1.2, 5); // Max 5x zoom
-            newStyle = currentStyle.replace(/transform\s*:\s*scale\([^)]+\)/i, '');
-            newStyle = (newStyle.trim() ? newStyle + '; ' : '') + `transform: scale(${zoomInScale})`;
-            target.setAttribute('style', newStyle);
-            break;
-
-          case 'zoom-out':
-            const zoomOutScale = Math.max(currentScale / 1.2, 0.1); // Min 0.1x zoom
-            newStyle = currentStyle.replace(/transform\s*:\s*scale\([^)]+\)/i, '');
-            newStyle = (newStyle.trim() ? newStyle + '; ' : '') + `transform: scale(${zoomOutScale})`;
-            target.setAttribute('style', newStyle);
-            break;
-
-          case 'fit-container':
-            // Remove transform and set width/height to fit container
-            newStyle = currentStyle.replace(/transform\s*:\s*scale\([^)]+\)/gi, '').trim();
-            if (newStyle.endsWith(';')) {
-              newStyle = newStyle.slice(0, -1);
-            }
-            newStyle = (newStyle ? newStyle + '; ' : '') + 'width: 100%; height: auto; max-width: 100%;';
-            target.setAttribute('style', newStyle);
-            target.removeAttribute('width');
-            target.removeAttribute('height');
-            break;
-
-          case 'crop':
-            // For crop, we'll use object-fit: cover and object-position
-            // This is a simplified crop - full crop would need a more complex UI
-            newStyle = currentStyle.replace(/object-fit\s*:[^;]+/gi, '');
-            newStyle = currentStyle.replace(/object-position\s*:[^;]+/gi, '');
-            newStyle = (newStyle.trim() ? newStyle + '; ' : '') + 'object-fit: cover; object-position: center;';
-            target.setAttribute('style', newStyle);
-            break;
-
-          default:
-            console.warn(`[EpubImageEditor] Unknown operation: ${operation}`);
-            return currentXhtml;
-        }
-
-        // Serialize back to XHTML
-        const serializer = new XMLSerializer();
-        let updated = serializer.serializeToString(doc.documentElement);
-
-        // Handle HTML5 parser output
-        if (doc.documentElement.tagName === 'HTML' && doc.body) {
-          const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
-          const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
-          const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
-          const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
-
-          const headContent = doc.head ? doc.head.innerHTML : '';
-          const bodyContent = doc.body ? doc.body.innerHTML : '';
-
-          updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
-          if (headContent) {
-            updated += `<head>\n${headContent}\n</head>\n`;
+        const imgElement = doc.getElementById(editorData.imageId) || doc.querySelector(`#${editorData.imageId}`);
+        if (imgElement) {
+          // Update image source
+          imgElement.setAttribute('src', relativePath);
+          
+          // Update dimensions if changed
+          if (editorData.imageData.width) {
+            imgElement.setAttribute('width', Math.round(editorData.imageData.width));
           }
-          updated += `<body>\n${bodyContent}\n</body>\n</html>`;
+          if (editorData.imageData.height) {
+            imgElement.setAttribute('height', Math.round(editorData.imageData.height));
+          }
+          
+          // Store text overlay data as data attribute (for future editing)
+          if (editorData.texts && editorData.texts.length > 0) {
+            imgElement.setAttribute('data-text-overlays', JSON.stringify(editorData.texts));
+          }
+          
+          // Serialize back to XHTML
+          const serializer = new XMLSerializer();
+          let updated = serializer.serializeToString(doc.documentElement);
+          
+          // Handle HTML5 parser output
+          if (doc.documentElement.tagName === 'HTML' && doc.body) {
+            const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
+            const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
+            const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
+            const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
+            
+            const headContent = doc.head ? doc.head.innerHTML : '';
+            const bodyContent = doc.body ? doc.body.innerHTML : '';
+            
+            updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
+            if (headContent) {
+              updated += `<head>\n${headContent}\n</head>\n`;
+            }
+            updated += `<body>\n${bodyContent}\n</body>\n</html>`;
+          }
+          
+          // Ensure self-closing tags
+          updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+            return attrs.includes('/') ? match : `<meta${attrs}/>`;
+          });
+          updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+            return attrs.includes('/') ? match : `<img${attrs}/>`;
+          });
+          
+          // Convert to preview URL for display
+          const previewUrl = `${api.defaults.baseURL}/conversions/${jobId}/images/${uploadedFileName}`;
+          updated = updated.replace(
+            new RegExp(`src=["']${relativePath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'g'),
+            `src="${previewUrl}"`
+          );
+          
+          setModified(true);
+          return updated;
         }
-
-        // Ensure self-closing tags
-        updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
-          return attrs.includes('/') ? match : `<meta${attrs}/>`;
-        });
-        updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
-          return attrs.includes('/') ? match : `<img${attrs}/>`;
-        });
-
-        console.log(`[EpubImageEditor] ✓ Image ${operation} applied to ${placeholderId}`);
-        setModified(true);
-        return updated;
-      } catch (err) {
-        console.error('[EpubImageEditor] Failed to edit image:', err);
+        
         return currentXhtml;
-      }
-    });
-  }, []);
+      });
+      
+      setImageEditorVisible(false);
+      setEditingImage(null);
+      alert('Image edited and saved successfully!');
+    } catch (err) {
+      console.error('[EpubImageEditor] Error saving edited image:', err);
+      alert('Failed to save edited image: ' + (err.response?.data?.message || err.message));
+    }
+  }, [jobId, images, xhtml]);
 
   const handleSave = useCallback(async () => {
     try {
@@ -1526,16 +1628,14 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   useEffect(() => {
     if (onStateChange) {
       onStateChange({ 
-        editMode, 
         modified, 
         saving, 
         handleSave, 
-        handleReset, 
-        setEditMode 
+        handleReset
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editMode, modified, saving]); // Functions are stable (useCallback), onStateChange should be stable in parent
+  }, [modified, saving]); // Functions are stable (useCallback), onStateChange should be stable in parent
 
   if (loading) {
     return (
@@ -1547,10 +1647,9 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
 
   // Debug: Log button visibility state
   console.log('[EpubImageEditor] Render state:', {
-    editMode,
     modified,
     saving,
-    saveButtonDisabled: saving || !modified || !editMode
+    saveButtonDisabled: saving || !modified
   });
 
   return (
@@ -1566,19 +1665,12 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         <div className="editor-header" style={{ position: 'relative', zIndex: 10, minHeight: '60px' }}>
           <h2>EPUB Image Editor - Page {pageNumber}</h2>
           <div className="header-actions" style={{ display: 'flex', gap: '1em', alignItems: 'center', flexWrap: 'nowrap', minWidth: '400px' }}>
-            <button
-              onClick={() => setEditMode(!editMode)}
-              className={`btn-toggle-edit ${editMode ? 'active' : ''}`}
-              title={editMode ? 'Exit Edit Mode' : 'Enter Edit Mode'}
-            >
-              {editMode ? '✏️ Edit Mode ON' : '✏️ Edit Mode OFF'}
-            </button>
             {modified && (
               <span className="modified-indicator">Modified</span>
             )}
             <button
               onClick={handleReset}
-              disabled={!modified || !editMode}
+              disabled={!modified}
               className="btn-reset"
               style={{ display: 'block', visibility: 'visible' }}
             >
@@ -1586,15 +1678,15 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             </button>
             <button
               onClick={handleSave}
-              disabled={saving || !modified || !editMode}
+              disabled={saving || !modified}
               className="btn-save"
               style={{ 
                 display: 'inline-block', 
                 visibility: 'visible', 
                 minWidth: '120px',
-                opacity: (saving || !modified || !editMode) ? 0.6 : 1
+                opacity: (saving || !modified) ? 0.6 : 1
               }}
-              title={!editMode ? 'Enable Edit Mode to save' : (!modified ? 'No changes to save' : 'Save XHTML')}
+              title={!modified ? 'No changes to save' : 'Save XHTML'}
             >
               {saving ? 'Saving...' : 'Save XHTML'}
             </button>
@@ -1638,53 +1730,64 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             )}
           </div>
 
-          {/* Right Canvas - XHTML Display (70%) */}
+          {/* Right Canvas - TOAST UI Image Editor (70%) */}
           <div className="xhtml-canvas-wrapper" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
             <div className="canvas-header">
-              <h3>XHTML Canvas</h3>
-              {placeholders.length > 0 && (
-                <div className="placeholders-info">
-                  <p>{placeholders.length} placeholder(s) found - Drag images from gallery to placeholders</p>
-                </div>
-              )}
+              <h3>TOAST UI Image Editor</h3>
+              <div className="placeholders-info">
+                <p>Drag images from gallery into the editor to add them. Use the editor tools to edit text, resize, move, and adjust images.</p>
+              </div>
             </div>
             <div className="canvas-wrapper" ref={canvasRef} style={{ position: 'relative', flex: '1 1 auto', minHeight: 0 }}>
-              <DraggableCanvas
-                key={`canvas-${pageNumber}-${modified ? Date.now() : 'initial'}`} // Force re-render when XHTML changes
+              <ToastCanvasEditor
+                key={`toast-canvas-${pageNumber}-${modified ? Date.now() : 'initial'}`}
                 xhtml={xhtml}
+                images={images}
                 onXhtmlChange={(updatedXhtml) => {
                   // Use functional update to ensure we're working with latest state
-                  // This prevents overwriting changes when multiple edits happen quickly
                   setXhtml((currentXhtml) => {
-                    // If the updated XHTML is based on DOM reading, use it directly
-                    // Otherwise, merge changes intelligently
-                    console.log('[EpubImageEditor] XHTML update:', {
+                    console.log('[EpubImageEditor] XHTML update from TOAST UI:', {
                       currentLength: currentXhtml.length,
                       updatedLength: updatedXhtml.length,
-                      currentImgCount: (currentXhtml.match(/<img[^>]*>/gi) || []).length,
-                      updatedImgCount: (updatedXhtml.match(/<img[^>]*>/gi) || []).length
                     });
                     return updatedXhtml;
                   });
                   setModified(true);
                 }}
-                editMode={editMode}
-                onEditModeChange={setEditMode}
-                onClearImage={handleClearImage}
-                onImageEdit={handleImageEdit}
-              />
-              {/* Transparent drop zone overlay for image drops - only active when dragging images */}
-              <XhtmlCanvas
-                xhtml=""
-                placeholders={placeholders}
-                onDrop={handleDrop}
-                canvasRef={canvasRef}
-                editMode={editMode}
+                jobId={jobId}
+                pageNumber={pageNumber}
               />
             </div>
           </div>
         </div>
       </div>
+
+      {/* Image Editor Modal */}
+      {imageEditorVisible && editingImage && (
+        <div className="image-editor-modal" style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          right: 0,
+          bottom: 0,
+          backgroundColor: 'rgba(0, 0, 0, 0.9)',
+          zIndex: 10000,
+          display: 'flex',
+          flexDirection: 'column',
+        }}>
+          <ToastImageEditor
+            imageUrl={editingImage.imageUrl}
+            imageId={editingImage.imageId}
+            initialWidth={editingImage.initialWidth}
+            initialHeight={editingImage.initialHeight}
+            onSave={handleSaveEditedImage}
+            onCancel={() => {
+              setImageEditorVisible(false);
+              setEditingImage(null);
+            }}
+          />
+        </div>
+      )}
     </DndProvider>
   );
 };

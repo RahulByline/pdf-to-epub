@@ -1,9 +1,12 @@
+import fs from 'fs/promises';
+import path from 'path';
 import { PdfAnalysisService } from './pdfAnalysisService.js';
 import { TextExtractionService } from './textExtractionService.js';
 import { DocumentStructureService } from './documentStructureService.js';
 import { SemanticXhtmlGenerator } from './semanticXhtmlGenerator.js';
 import { Epub3TextBasedGenerator } from './epub3TextBasedGenerator.js';
 import { TtsService } from './TtsService.js';
+import { PageFilter } from '../utils/pageFilter.js';
 
 /**
  * Text-Based Conversion Pipeline
@@ -60,7 +63,15 @@ export class TextBasedConversionPipeline {
       
       if (options.generateAudio !== false) {
         console.log(`[Pipeline ${jobId}] Step 4: Generating TTS audio...`);
-        const audioResult = await this.generateAudioForText(structure.pages, outputDir, jobId);
+        
+        // Filter out TOC and Index pages before generating audio
+        const filteredPages = PageFilter.filterPages(structure.pages);
+        const skippedPages = structure.pages.length - filteredPages.length;
+        if (skippedPages > 0) {
+          console.log(`[Pipeline ${jobId}] Skipping ${skippedPages} page(s) (TOC/Index) for TTS generation`);
+        }
+        
+        const audioResult = await this.generateAudioForText(filteredPages, outputDir, jobId, options);
         audioFilePath = audioResult.audioPath;
         audioMappings = audioResult.mappings;
         console.log(`[Pipeline ${jobId}] Generated audio: ${audioMappings.length} text blocks mapped`);
@@ -105,7 +116,7 @@ export class TextBasedConversionPipeline {
   /**
    * Generate TTS audio for all text blocks
    */
-  static async generateAudioForText(pages, outputDir, jobId) {
+  static async generateAudioForText(pages, outputDir, jobId, options = {}) {
     const audioDir = path.join(outputDir, `audio_${jobId}`);
     await fs.mkdir(audioDir, { recursive: true });
     
@@ -113,9 +124,15 @@ export class TextBasedConversionPipeline {
     const mappings = [];
     let totalDuration = 0;
     
-    // Extract all text blocks with IDs
+    // Extract all text blocks with IDs (pages are already filtered)
     const textBlocks = [];
     for (const page of pages) {
+      // Double-check: skip TOC and Index pages
+      if (PageFilter.shouldSkipPage(page)) {
+        console.log(`[Pipeline] Skipping page ${page.pageNumber || 'unknown'} (TOC/Index)`);
+        continue;
+      }
+      
       if (!page.textBlocks) continue;
       
       for (const block of page.textBlocks) {
@@ -141,7 +158,10 @@ export class TextBasedConversionPipeline {
         const ttsResult = await TtsService.synthesizePageAudio({
           text: block.text,
           audioOutPath: chunkPath,
-          voice: options?.voice || {}
+          voice: {
+            ...(options?.voice || {}),
+            speakingRate: 1.3 // 30% faster speech (range: 0.25 to 4.0)
+          }
         });
         
         if (ttsResult.audioFilePath && ttsResult.timings) {
@@ -251,7 +271,4 @@ export class TextBasedConversionPipeline {
     }
   }
 }
-
-import fs from 'fs/promises';
-import path from 'path';
 
