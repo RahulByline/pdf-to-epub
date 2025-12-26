@@ -135,7 +135,8 @@ export class TtsService {
     };
     const audioConfig = {
       audioEncoding: 'MP3',
-      enableTimePointing: ['WORD']
+      enableTimePointing: ['WORD'],
+      speakingRate: voice.speakingRate || 1.3 // Increased speed: 1.0 = normal, 1.3 = 30% faster (range: 0.25 to 4.0)
     };
 
     try {

@@ -6,6 +6,7 @@ import fs from 'fs/promises';
 import { fileURLToPath } from 'url';
 import { getEpubOutputDir, getHtmlIntermediateDir } from '../config/fileStorage.js';
 import { TtsService } from '../services/TtsService.js';
+import { PageFilter } from '../utils/pageFilter.js';
 import { mapTimingsToBlocks } from '../helpers/mapTimingsToBlocks.js';
 
 /**
@@ -571,6 +572,17 @@ router.post('/:jobId/page/:pageNumber/tts', async (req, res) => {
       return res.status(404).json({ error: `No text blocks found for page ${pageNumber}` });
     }
 
+    if (PageFilter.shouldSkipPage(page)) {
+      const pageType = PageFilter.isTocPage(page) ? 'Table of Contents' : 'Index';
+      console.log(`[TTS] Skipping ${pageType} page ${pageNumber} - not generating audio`);
+      return res.json({
+        success: true,
+        skipped: true,
+        pageType: pageType,
+        message: `${pageType} page skipped - TTS audio not generated for navigation pages`
+      });
+    }
+
     // Sort blocks by readingOrder
     const orderedBlocks = [...page.textBlocks].sort((a, b) => 
       (a.readingOrder || 0) - (b.readingOrder || 0)
@@ -590,7 +602,10 @@ router.post('/:jobId/page/:pageNumber/tts', async (req, res) => {
 
     const ttsResult = await TtsService.synthesizePageAudio({ 
       text: pageText, 
-      audioOutPath 
+      audioOutPath,
+      voice: {
+        speakingRate: 1.3 // 30% faster speech
+      }
     });
 
     if (!ttsResult.timings || ttsResult.timings.length === 0) {
