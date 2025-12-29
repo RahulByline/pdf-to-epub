@@ -120,6 +120,18 @@ export class ConversionService {
         pageExtractedImages
       );
       
+      if (!xhtmlResult) {
+        console.error(`[Job ${jobId}] ERROR: Failed to convert page ${pageImage.pageNumber} - GeminiService returned null`);
+        // Continue to next page instead of failing entire job
+        continue;
+      }
+      
+      if (!xhtmlResult.xhtml) {
+        console.error(`[Job ${jobId}] ERROR: Failed to convert page ${pageImage.pageNumber} - No XHTML content in result`);
+        // Continue to next page instead of failing entire job
+        continue;
+      }
+      
       if (xhtmlResult && xhtmlResult.xhtml && (xhtmlResult.css !== undefined)) {
         // Save XHTML file
         const xhtmlFileName = `page_${pageImage.pageNumber}.xhtml`;

@@ -100,11 +100,208 @@ export class GeminiService {
       return `<hr ${attrs.trim()}/>`;
     });
     
+    // Fix truncated attributes (attributes missing closing quotes)
+    // Pattern: attribute="value without closing quote, followed by < or end of tag
+    // This handles cases like: id="page3_p10_s1</span> -> id="page3_p10_s1"></span>
+    xhtml = xhtml.replace(/(\w+)="([^"]*?)(?=<[^>]*>|$)/g, (match, attrName, attrValue, offset, string) => {
+      // Check if this is actually a truncated attribute (not a complete one)
+      // If the next character after the match is < and not >, it's truncated
+      const nextChar = string[offset + match.length];
+      if (nextChar === '<') {
+        // This is a truncated attribute, close it
+        return `${attrName}="${attrValue}"`;
+      }
+      return match; // Keep as is
+    });
+    
+    // More aggressive fix: find attributes that are followed by < without closing quote
+    // Pattern: <tag ... attr="value<... where < is not part of the attribute value
+    xhtml = xhtml.replace(/(\w+)="([^"]*?)(?=<\/?[a-zA-Z])/g, (match, attrName, attrValue) => {
+      // If attrValue doesn't end with quote and next is a tag, it's truncated
+      if (!attrValue.includes('"') && !match.endsWith('"')) {
+        return `${attrName}="${attrValue}"`;
+      }
+      return match;
+    });
+    
+    // Fix attributes that are cut off mid-value (most common case)
+    // Find patterns like: id="page3_p10_s1</span> and fix to: id="page3_p10_s1"></span>
+    xhtml = xhtml.replace(/(\w+)="([^"]*?)(?=<)/g, (match, attrName, attrValue) => {
+      // If the match doesn't end with a quote and is followed by <, it's truncated
+      if (!match.endsWith('"')) {
+        return `${attrName}="${attrValue}"`;
+      }
+      return match;
+    });
+    
+    // Fix CSS attribute selectors with quotes in <style> tags
+    // In XHTML, CSS attribute selectors like [class*="value"] can cause XML parsing errors
+    // We need to escape the quotes or use CDATA sections, but simpler: replace with single quotes
+    xhtml = xhtml.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (match, cssContent) => {
+      // Replace double quotes in CSS attribute selectors with single quotes
+      // Pattern: [attr*="value"] -> [attr*='value']
+      // This is safer for XHTML parsing
+      // Match patterns like: [class*="value"], [id="value"], [data-*="value"]
+      let fixedCss = cssContent;
+      
+      // Find all CSS attribute selectors with double quotes and replace with single quotes
+      // Pattern: [anything="value"] -> [anything='value']
+      // Use a simple, direct approach: find ="[anything]" inside [...] brackets
+      // This regex matches: [ followed by any chars, then =", then value, then ", then any chars, then ]
+      fixedCss = fixedCss.replace(/\[([^\]]*?)=["]([^"]*?)["]([^\]]*?)\]/g, (fullMatch, before, value, after) => {
+        // Replace double quotes with single quotes
+        // Handle cases like: [class*="value"], [id="value"], [data-attr="value"]
+        return `[${before}='${value}'${after}]`;
+      });
+      
+      // If the above didn't catch it (e.g., due to whitespace), try a more permissive pattern
+      // Match: [ ... = "value" ... ] with optional whitespace
+      if (fixedCss.includes('="')) {
+        fixedCss = fixedCss.replace(/\[([^\]]*?)\s*=\s*["]([^"]*?)["]\s*([^\]]*?)\]/g, (fullMatch, before, value, after) => {
+          return `[${before.trim()}='${value}'${after.trim()}]`;
+        });
+      }
+      
+      // Final safety check: if there are still any ="[value]" patterns in brackets, fix them
+      // This catches edge cases where the pattern might be split across lines or have unusual formatting
+      if (fixedCss.includes('="') && fixedCss.includes('[')) {
+        // Find any remaining ="[value]" inside [...]
+        fixedCss = fixedCss.replace(/(\[[^\]]*?)=["]([^"]*?)["]([^\]]*?\])/g, (fullMatch, before, value, after) => {
+          return `${before}='${value}'${after}`;
+        });
+      }
+      
+      return match.replace(cssContent, fixedCss);
+    });
+    
+    // Also fix unclosed style tags (if style tag is missing closing tag)
+    // This can happen if the response is truncated
+    if (xhtml.includes('<style') && !xhtml.includes('</style>')) {
+      // Find the last <style> tag and add closing tag before </head> or at end
+      const styleMatch = xhtml.match(/<style[^>]*>([\s\S]*)$/i);
+      if (styleMatch) {
+        const headCloseIdx = xhtml.indexOf('</head>');
+        if (headCloseIdx !== -1) {
+          xhtml = xhtml.substring(0, headCloseIdx) + '</style>' + xhtml.substring(headCloseIdx);
+        } else {
+          // No </head>, add before </html> or at end
+          const htmlCloseIdx = xhtml.indexOf('</html>');
+          if (htmlCloseIdx !== -1) {
+            xhtml = xhtml.substring(0, htmlCloseIdx) + '</style></head>' + xhtml.substring(htmlCloseIdx);
+          } else {
+            xhtml = xhtml + '</style>';
+          }
+        }
+      }
+    }
+    
     // Clean up multiple spaces
     xhtml = xhtml.replace(/\s+>/g, '>');
     xhtml = xhtml.replace(/<(\w+)\s+/g, '<$1 ');
     
     return xhtml;
+  }
+  
+  /**
+   * Fix truncated attributes in HTML/XHTML content
+   * Handles cases where attributes are cut off mid-value, like: id="page3_p10_s1</span>
+   * Also handles attributes with no value: id</p> -> id=""
+   * @param {string} content - HTML/XHTML content
+   * @returns {string} Content with truncated attributes fixed
+   */
+  static fixTruncatedAttributes(content) {
+    if (!content || typeof content !== 'string') return content;
+    
+    // Pattern 1: Fix attributes with no value followed by closing tag: id</p> -> id=""
+    // Example: <span class="sync-sentence" id</p> -> <span class="sync-sentence" id=""></span>
+    // This handles the case where an attribute is declared but has no value
+    // Direct pattern match: whitespace + attribute name + </tag (no = sign, no value)
+    // This is a very specific pattern that indicates a truncated attribute
+    content = content.replace(/(\s+)(id|class|data-read-aloud|style|title|alt|src|href|data-[a-zA-Z0-9_-]+)(\s*)(<\/[a-zA-Z][a-zA-Z0-9]*>)/gi, (match, whitespace1, attrName, whitespace2, closingTag, offset, string) => {
+      // Verify we're inside a tag by checking backwards for the opening <
+      const before = string.substring(Math.max(0, offset - 500), offset);
+      const lastOpenTag = before.lastIndexOf('<');
+      const lastCloseTag = before.lastIndexOf('>');
+      
+      // If we're inside a tag (last < is after last >)
+      if (lastOpenTag > lastCloseTag) {
+        // Get everything from the opening tag to our match
+        const tagStart = lastOpenTag;
+        const tagContent = string.substring(tagStart, offset);
+        
+        // Check if this attribute name appears with an = sign (meaning it already has a value)
+        // We look for: whitespace + attrName + whitespace* + =
+        // Escape special regex characters in attrName
+        const escapedAttrName = attrName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const attrWithValuePattern = new RegExp(`\\s+${escapedAttrName}\\s*=`, 'i');
+        
+        // If the attribute doesn't have a value (no = sign after it), add empty value
+        if (!attrWithValuePattern.test(tagContent)) {
+          // This is a truncated attribute with no value, add empty value
+          console.log(`[fixTruncatedAttributes] Fixed attribute with no value: ${attrName} -> ${attrName}=""`);
+          return `${whitespace1}${attrName}=""${whitespace2}${closingTag}`;
+        }
+      }
+      return match;
+    });
+    
+    // Pattern 2: Find attributes that are followed by </tag> without closing quote
+    // Example: id="page3_p10_s1</span> -> id="page3_p10_s1"></span>
+    // This is the most common truncation pattern we see
+    // Match: attribute="value</tag where value doesn't end with quote
+    content = content.replace(/(\w+)=(["'])([^"']*?)<\/([a-zA-Z][a-zA-Z0-9]*>)/g, (match, attrName, quote, attrValue, closingTag) => {
+      // The match captures: attrName="attrValue</tag
+      // If attrValue doesn't end with quote (which it shouldn't in this pattern),
+      // we need to add the closing quote before </
+      return `${attrName}=${quote}${attrValue}${quote}</${closingTag}`;
+    });
+    
+    // Pattern 3: Find attributes followed by <tag (opening tag) without closing quote
+    // Example: id="page3_p10_s1<span -> id="page3_p10_s1"><span
+    content = content.replace(/(\w+)=(["'])([^"']*?)<([a-zA-Z][a-zA-Z0-9]*\s)/g, (match, attrName, quote, attrValue, tagName) => {
+      // Similar to above, but for opening tags
+      return `${attrName}=${quote}${attrValue}${quote}<${tagName} `;
+    });
+    
+    // Pattern 4: Find attributes at end of content or before whitespace + <
+    // This handles edge cases
+    content = content.replace(/(\w+)=(["'])([^"']*?)(?=\s*<)/g, (match, attrName, quote, attrValue, offset, string) => {
+      // Check if match ends with quote
+      if (match.endsWith(quote)) {
+        return match; // Already complete
+      }
+      // Check what comes after
+      const after = string.substring(offset + match.length);
+      if (after.trim().startsWith('<')) {
+        // Truncated attribute before a tag
+        return `${attrName}=${quote}${attrValue}${quote}`;
+      }
+      return match;
+    });
+    
+    // Pattern 5: More specific fix for attributes with no value before closing tags
+    // Example: <span id</p> -> <span id=""></span>
+    // This is a more targeted approach for the exact error we're seeing
+    content = content.replace(/(\s+)(\w+)(?=\s*<\/[a-zA-Z][a-zA-Z0-9]*>)/g, (match, whitespace, attrName, offset, string) => {
+      // Check if we're inside a tag by looking backwards
+      const before = string.substring(Math.max(0, offset - 100), offset);
+      const lastOpenTag = before.lastIndexOf('<');
+      const lastCloseTag = before.lastIndexOf('>');
+      
+      // If we're inside a tag (last < is after last >)
+      if (lastOpenTag > lastCloseTag) {
+        const tagContent = before.substring(lastOpenTag + 1);
+        // Check if this looks like an attribute (common attribute names)
+        const commonAttrs = ['id', 'class', 'data-read-aloud', 'style', 'title', 'alt', 'src', 'href'];
+        if (commonAttrs.includes(attrName.toLowerCase())) {
+          // This is likely an attribute, add empty value
+          return `${whitespace}${attrName}=""`;
+        }
+      }
+      return match;
+    });
+    
+    return content;
   }
 
   static parseRetryDelayMs(errorDetails) {
@@ -280,6 +477,82 @@ export class GeminiService {
   }
 
   /**
+   * Close unclosed HTML tags in truncated content
+   * Uses a simple stack-based approach to track and close open tags
+   * @param {string} content - HTML content that may have unclosed tags
+   * @returns {string} Content with unclosed tags closed
+   */
+  static closeUnclosedTags(content) {
+    // Self-closing tags that don't need closing
+    const selfClosingTags = new Set(['img', 'br', 'hr', 'meta', 'link', 'input', 'area', 'base', 'col', 'embed', 'source', 'track', 'wbr']);
+    
+    // Find body content (between <body> and </body> or end of content)
+    const bodyStartMatch = content.match(/<body[^>]*>/i);
+    if (!bodyStartMatch) {
+      return content; // No body tag, can't fix
+    }
+    
+    const bodyStartIdx = bodyStartMatch.index;
+    const bodyTagEndIdx = bodyStartMatch.index + bodyStartMatch[0].length;
+    const bodyEndMatch = content.substring(bodyStartIdx).match(/<\/body>/i);
+    const bodyEndIdx = bodyEndMatch ? bodyStartIdx + bodyEndMatch.index : -1;
+    
+    // Extract body inner content (between <body> and </body> or end)
+    const bodyInnerStart = bodyTagEndIdx;
+    const bodyInnerEnd = bodyEndIdx !== -1 ? bodyEndIdx : content.length;
+    const bodyInnerContent = content.substring(bodyInnerStart, bodyInnerEnd);
+    
+    // Stack to track open tags
+    const tagStack = [];
+    const tagPattern = /<\/?([a-zA-Z][a-zA-Z0-9]*)[^>]*>/g;
+    let match;
+    
+    // Reset regex lastIndex
+    tagPattern.lastIndex = 0;
+    
+    // Find all tags and their positions
+    while ((match = tagPattern.exec(bodyInnerContent)) !== null) {
+      const isClosing = match[0].startsWith('</');
+      const tagName = match[1].toLowerCase();
+      
+      // Check if it's a self-closing tag (ends with />)
+      const isSelfClosing = match[0].endsWith('/>');
+      
+      if (!isClosing && !selfClosingTags.has(tagName) && !isSelfClosing) {
+        // Opening tag - push to stack
+        tagStack.push({ name: tagName });
+      } else if (isClosing) {
+        // Closing tag - pop matching opening tag from stack
+        for (let i = tagStack.length - 1; i >= 0; i--) {
+          if (tagStack[i].name === tagName) {
+            tagStack.splice(i, 1);
+            break;
+          }
+        }
+      }
+    }
+    
+    // If there are unclosed tags, close them in reverse order
+    if (tagStack.length > 0) {
+      let closingTags = '';
+      for (let i = tagStack.length - 1; i >= 0; i--) {
+        closingTags += `</${tagStack[i].name}>`;
+      }
+      
+      // Insert closing tags before </body> or at the end of body content
+      if (bodyEndIdx !== -1) {
+        // Insert before </body>
+        return content.substring(0, bodyEndIdx) + closingTags + content.substring(bodyEndIdx);
+      } else {
+        // No </body> tag yet, add closing tags at the end of body content
+        return content.substring(0, bodyInnerEnd) + closingTags + content.substring(bodyInnerEnd);
+      }
+    }
+    
+    return content;
+  }
+
+  /**
    * Process raw response from Gemini API and extract XHTML
    * This is extracted to a separate method for reuse in late response capture
    * @param {string} rawResponse - Raw response text from Gemini
@@ -329,23 +602,79 @@ export class GeminiService {
         console.warn(`[Page ${pageNumber}] Last 500 chars of response:`, responseContent.substring(Math.max(0, responseContent.length - 500)));
         // Try to extract what we have and add closing tags
         let xhtml = responseContent.substring(doctypeIdx).trim();
-        // Check if we have at least a body tag
-        if (xhtml.includes('<body>') && !xhtml.includes('</body>')) {
-          // Add closing tags for truncated response
-          xhtml += '\n</body>\n</html>';
-          console.warn(`[Page ${pageNumber}] Attempting to fix truncated response by adding closing tags`);
-        } else if (!xhtml.includes('</html>')) {
-          // If no body tag either, try to add both
-          if (xhtml.includes('<html')) {
-            if (!xhtml.includes('</body>')) {
-              xhtml += '\n</body>';
-            }
-            xhtml += '\n</html>';
-            console.warn(`[Page ${pageNumber}] Attempting to fix truncated response by adding closing tags`);
+        
+        // Check what we have and add missing closing tags
+        const hasBody = xhtml.includes('<body') || xhtml.includes('<body>');
+        const hasBodyClose = xhtml.includes('</body>');
+        const hasHtml = xhtml.includes('<html');
+        
+        // First, fix truncated attributes
+        xhtml = this.fixTruncatedAttributes(xhtml);
+        
+        // Then, close any unclosed tags in the body content
+        if (hasBody) {
+          xhtml = this.closeUnclosedTags(xhtml);
+        }
+        
+        // Ensure we have closing body tag if we have opening body tag
+        if (hasBody && !hasBodyClose) {
+          xhtml += '\n</body>';
+        } else if (!hasBody && !hasBodyClose) {
+          // No body tag at all - might be truncated before body starts
+          // Try to add body tag before closing html
+          // But first check if we have head closing tag
+          if (xhtml.includes('</head>')) {
+            // Has head, so add body after head
+            const headCloseIdx = xhtml.lastIndexOf('</head>');
+            xhtml = xhtml.substring(0, headCloseIdx + '</head>'.length) + '\n<body>\n</body>' + xhtml.substring(headCloseIdx + '</head>'.length);
+          } else if (hasHtml) {
+            // Has html tag but no head close, might be in head section
+            // Add minimal structure: close head, add body, then close body
+            xhtml += '\n</head>\n<body>\n</body>';
           }
+        }
+        
+        // Always add closing html tag
+        if (!xhtml.includes('</html>')) {
+          xhtml += '\n</html>';
+          console.warn(`[Page ${pageNumber}] Attempting to fix truncated response by adding closing tags`);
+        }
+        
+        // Process the fixed truncated XHTML the same way as non-truncated
+        if (xhtml.includes('</html>')) {
+          // Unescape any JSON-escaped characters
+          xhtml = xhtml.replace(/\\\\/g, '\\');
+          xhtml = xhtml.replace(/\\"/g, '"');
+          xhtml = xhtml.replace(/\\'/g, "'");
+          xhtml = xhtml.replace(/\\n/g, '\n');
+          xhtml = xhtml.replace(/\\r/g, '\r');
+          xhtml = xhtml.replace(/\\t/g, '\t');
+          
+          // Normalize DOCTYPE
+          const correctDoctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+          xhtml = xhtml.replace(/<!DOCTYPE\s+html[^>]*>/i, correctDoctype);
+          
+          // Sanitize XHTML
+          xhtml = this.sanitizeXhtml(xhtml);
+          
+          console.log(`[Page ${pageNumber}] Successfully fixed truncated response (${xhtml.length} chars)`);
+          return {
+            xhtml,
+            css: '',
+            pageNumber
+          };
         }
       } else if (doctypeIdx !== -1 && htmlEndIdx !== -1 && htmlEndIdx > doctypeIdx) {
         let xhtml = responseContent.substring(doctypeIdx, htmlEndIdx + '</html>'.length).trim();
+        
+        // Fix truncated attributes first
+        xhtml = this.fixTruncatedAttributes(xhtml);
+        
+        // Close any unclosed tags even if response has </html> tag
+        // (response might be truncated mid-tag but still have closing html tag)
+        if (xhtml.includes('<body')) {
+          xhtml = this.closeUnclosedTags(xhtml);
+        }
         
         // Unescape any JSON-escaped characters
         xhtml = xhtml.replace(/\\\\/g, '\\');
@@ -548,9 +877,10 @@ export class GeminiService {
         
         const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
         // Configure generation settings with higher output token limit for long pages
-        // gemini-2.5-flash supports up to 8192 output tokens
+        // gemini-2.5-flash supports up to 8192 output tokens, but we can try 16384 for newer models
+        // If the model doesn't support it, it will fall back to its maximum
         const generationConfig = {
-          maxOutputTokens: 8192, // Maximum for gemini-2.5-flash to handle long pages like TOC
+          maxOutputTokens: 16384, // Increased to handle complex pages with many images and reduce truncation
           temperature: 0.1, // Lower temperature for more consistent XHTML generation
         };
         const model = client.getGenerativeModel({ 
@@ -565,7 +895,20 @@ export class GeminiService {
         
         
 
-        const prompt = `Analyze the provided image of the worksheet page(s) and generate complete XHTML with ALL CSS embedded inside.
+        const prompt = `Analyze the provided image of the worksheet page(s) and generate complete, valid XHTML with ALL CSS embedded inside.
+
+**CRITICAL OUTPUT REQUIREMENTS - MUST BE COMPLETE:**
+- You MUST return the ENTIRE XHTML document from <!DOCTYPE to </html> - DO NOT truncate mid-tag or mid-attribute
+- ALL attributes MUST have values - NEVER write incomplete attributes like id</p> (must be id="value" or id="")
+- If you cannot complete the entire document, prioritize completing all opening tags and attributes before closing tags
+- Ensure every opening tag has a matching closing tag
+- Every attribute must have a value in quotes: id="value", class="value", NOT id or class
+- The output MUST be valid XHTML 1.0 Strict that can be parsed by an XML parser
+- **PRIORITY ORDER if output is limited:**
+  1. Complete all attribute values (id="", class="", etc.) - NEVER leave attributes incomplete
+  2. Close all opened tags properly
+  3. Ensure </body> and </html> closing tags are present
+  4. Then add content as space allows
 
         **THIS IS PAGE ${pageNumber}** - Use this page number in ALL element IDs to ensure global uniqueness.
 
@@ -604,8 +947,8 @@ export class GeminiService {
 
 
         **LAYOUT DECISION:**
-        
-        1) **SINGLE-COLUMN (Default):** Standard single worksheet. Use a single .page element.
+        1) **TWO-COLUMN (Multi-Page Split):** Use ONLY if the image shows a visible divider line or two distinct page numbers. Use .container with two .page children.
+        2) **SINGLE-COLUMN (Default):** Standard single worksheet. Use a single .page element.
 
         **AUDIO SYNC REQUIREMENTS (MANDATORY) - HIERARCHICAL NESTED STRUCTURE FOR ALL ELEMENTS:**
         - **CRITICAL: ALL text elements must use NESTED hierarchical structure to support word/sentence/paragraph granularity**
@@ -740,6 +1083,9 @@ export class GeminiService {
         - Use relative units (em, rem, %, vw, vh) - NO px units for layout
         - Represent graphics as <div> placeholders with title attributes
         - **CRITICAL: When using <img> tags, DO NOT include xmlns="" attribute. Use: <img src="..." alt="..." /> NOT <img xmlns="" src="..." />**
+        - **CRITICAL: ALL attributes MUST have values in quotes - id="value", class="value", style="value" - NEVER id, class, or style without quotes**
+        - **CRITICAL: If an attribute value is empty, use empty quotes: id="" NOT id**
+        - **CRITICAL: Complete ALL attributes before closing any tag - incomplete attributes cause XML parsing errors**
 
         **CSS REQUIREMENTS - CRITICAL:**
         - ALL CSS MUST be inside a <style type="text/css"> tag within <head>
@@ -789,6 +1135,10 @@ export class GeminiService {
         - Do NOT use any markdown formatting
         - Start directly with <!DOCTYPE and end with </html>
         - Return pure XHTML only, nothing else
+        - **MANDATORY: Complete ALL attributes with values before closing any tag**
+        - **MANDATORY: If output is truncated, prioritize completing attributes and closing tags over adding new content**
+        - **Example of CORRECT: <span class="sync-sentence" id="page1_p1_s1"></span>**
+        - **Example of WRONG: <span class="sync-sentence" id</span> (missing value)**
 
         Example structure for PAGE ${pageNumber} (showing HIERARCHICAL NESTED structure for ALL elements):
         <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
@@ -982,6 +1332,26 @@ export class GeminiService {
         }
         
         console.warn(`[Page ${pageNumber}] Response missing XHTML content. Raw (first 500 chars): ${rawResponse.substring(0, 500)}`);
+        
+        // Check for late response before returning null - wait a bit for it to arrive
+        const cacheKey = GeminiService.getCacheKey(imagePath, pageNumber);
+        console.log(`[Page ${pageNumber}] Waiting up to 30s for late response (response was empty/malformed)...`);
+        for (let waitAttempt = 0; waitAttempt < 30; waitAttempt++) {
+          await new Promise(res => setTimeout(res, 1000));
+          const lateResponse = GeminiService.getLateResponse(cacheKey);
+          if (lateResponse) {
+            console.log(`[Page ${pageNumber}] Late response arrived after ${waitAttempt + 1}s, using it`);
+            return lateResponse;
+          }
+        }
+        
+        // Final check before giving up
+        const finalLateResponse = GeminiService.getLateResponse(cacheKey);
+        if (finalLateResponse) {
+          console.log(`[Page ${pageNumber}] Using cached late response instead`);
+          return finalLateResponse;
+        }
+        
         return null;
       } catch (error) {
         const is429 = error?.status === 429 || error?.statusCode === 429;
@@ -991,7 +1361,29 @@ export class GeminiService {
           CircuitBreakerService.recordFailure('Gemini', true);
           console.warn(`[Page ${pageNumber}] 429 error during XHTML conversion`);
         } else if (isTimeout) {
-          console.warn(`[Page ${pageNumber}] API call timed out, skipping`);
+          console.warn(`[Page ${pageNumber}] API call timed out, checking for late response...`);
+          
+          // Check for late response before giving up
+          const cacheKey = GeminiService.getCacheKey(imagePath, pageNumber);
+          const lateResponse = GeminiService.getLateResponse(cacheKey);
+          if (lateResponse) {
+            console.log(`[Page ${pageNumber}] Found late response in cache, using it`);
+            return lateResponse;
+          }
+          
+          // Wait longer for late response to arrive (within grace period)
+          // Late responses can take 30+ seconds after timeout, so wait up to 30 seconds
+          console.log(`[Page ${pageNumber}] Waiting up to 30s for late response...`);
+          for (let waitAttempt = 0; waitAttempt < 30; waitAttempt++) {
+            await new Promise(res => setTimeout(res, 1000));
+            const lateResponse = GeminiService.getLateResponse(cacheKey);
+            if (lateResponse) {
+              console.log(`[Page ${pageNumber}] Late response arrived after ${waitAttempt + 1}s, using it`);
+              return lateResponse;
+            }
+          }
+          
+          console.warn(`[Page ${pageNumber}] No late response received, skipping`);
           CircuitBreakerService.recordFailure('Gemini', false);
         } else {
           console.error(`[Page ${pageNumber}] Error converting PNG to XHTML:`, error.message);
@@ -1005,7 +1397,29 @@ export class GeminiService {
       return await Promise.race([operationPromise, timeoutPromise]);
     } catch (error) {
       if (error?.message?.includes('Overall timeout')) {
-        console.error(`[Page ${pageNumber}] Overall operation timed out after 90s, skipping`);
+        console.error(`[Page ${pageNumber}] Overall operation timed out after 120s, checking for late response...`);
+        
+        // Check for late response before giving up
+        const cacheKey = GeminiService.getCacheKey(imagePath, pageNumber);
+        const lateResponse = GeminiService.getLateResponse(cacheKey);
+        if (lateResponse) {
+          console.log(`[Page ${pageNumber}] Found late response in cache after overall timeout, using it`);
+          return lateResponse;
+        }
+        
+          // Wait longer for late response to arrive (within grace period)
+          // Late responses can take 30+ seconds after timeout, so wait up to 30 seconds
+          console.log(`[Page ${pageNumber}] Waiting up to 30s for late response after overall timeout...`);
+          for (let waitAttempt = 0; waitAttempt < 30; waitAttempt++) {
+            await new Promise(res => setTimeout(res, 1000));
+            const lateResponse = GeminiService.getLateResponse(cacheKey);
+            if (lateResponse) {
+              console.log(`[Page ${pageNumber}] Late response arrived after overall timeout (${waitAttempt + 1}s), using it`);
+              return lateResponse;
+            }
+          }
+          
+          console.error(`[Page ${pageNumber}] Overall operation timed out after 120s, no late response received after 30s wait, skipping`);
         CircuitBreakerService.recordFailure('Gemini', false);
       }
       return null;

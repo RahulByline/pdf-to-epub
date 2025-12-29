@@ -62,7 +62,7 @@ const GrapesJSCanvas = ({
     
     // Set global flag to prevent concurrent initializations
     window.__grapesjsInitializing = true;
-    
+
     const grapesEditor = grapesjs.init({
       container: containerRef.current,
       height: '100%',
@@ -1101,7 +1101,7 @@ const GrapesJSCanvas = ({
                   styleEl.textContent = styles;
                 }
                 
-                editor.refresh();
+            editor.refresh();
                 lastXhtmlRef.current = xhtml;
                 console.log('[GrapesJSCanvas] Content updated to match xhtml prop');
               }
@@ -1115,7 +1115,7 @@ const GrapesJSCanvas = ({
             lastXhtmlRef.current = xhtml; // Update last known xhtml
             
             // Ensure visibility
-            frameDoc.body.style.display = 'block';
+              frameDoc.body.style.display = 'block';
           }
         }
       } catch (e) {
@@ -1218,10 +1218,10 @@ const GrapesJSCanvas = ({
           lastXhtmlLength: lastXhtmlRef.current.length || 0,
           wasPending: !!pendingXhtmlUpdateRef.current
         });
-        
-        // Set flag to prevent event handlers from firing
-        isUpdatingFromExternalRef.current = true;
-        
+          
+          // Set flag to prevent event handlers from firing
+          isUpdatingFromExternalRef.current = true;
+          
         const styles = newDoc.querySelector('style')?.innerHTML || '';
         
         // Update editor with new content - use both API and direct iframe update (like initial load)
@@ -1241,7 +1241,7 @@ const GrapesJSCanvas = ({
                 frameDoc.body.innerHTML = newBodyContent;
                 
                 // Update styles in iframe head
-                if (styles) {
+          if (styles) {
                   let styleEl = frameDoc.querySelector('style');
                   if (!styleEl) {
                     styleEl = frameDoc.createElement('style');
@@ -1258,18 +1258,18 @@ const GrapesJSCanvas = ({
         } catch (updateError) {
           console.error('[GrapesJSCanvas] Error updating editor:', updateError);
           throw updateError; // Re-throw to be caught by outer catch
-        }
-        
+          }
+          
         // Update last known value AFTER successful update (use the xhtml we actually applied)
         lastXhtmlRef.current = xhtmlToApplyInTimeout;
         pendingXhtmlUpdateRef.current = null; // Clear pending update since we've applied it
-        
-        // Reset flag after a short delay to allow editor to process
-        setTimeout(() => {
-          if (isMountedRef.current) {
-            isUpdatingFromExternalRef.current = false;
-          }
-        }, 200);
+          
+          // Reset flag after a short delay to allow editor to process
+          setTimeout(() => {
+            if (isMountedRef.current) {
+              isUpdatingFromExternalRef.current = false;
+            }
+          }, 200);
       } catch (e) {
         console.error('[GrapesJSCanvas] Error updating content:', e);
         if (isMountedRef.current) {

@@ -10,7 +10,8 @@ const GrapesJSFooter = ({
   editMode, 
   images = [],
   onImageReplace,
-  onXhtmlChange 
+  onXhtmlChange,
+  onContentModified 
 }) => {
   const [fontSize, setFontSize] = useState('16');
   const [fontColor, setFontColor] = useState('#000000');
@@ -442,13 +443,18 @@ const GrapesJSFooter = ({
         window.__footerModifying = false;
       }, 200);
       
+      // Notify parent that content was modified (without passing XHTML to prevent loops)
+      if (onContentModified) {
+        onContentModified();
+      }
+      
       // Don't call onXhtmlChange here - the DOM is already updated in the iframe
       // The save function will read directly from the editor/iframe when needed
       // This prevents infinite loops
     } catch (err) {
       console.error('[GrapesJSFooter] Error applying font size:', err);
     }
-  }, [editor, isImageSelected, getIframeDoc]);
+  }, [editor, isImageSelected, getIframeDoc, onContentModified]);
 
   // Handle font color change
   const handleFontColorChange = useCallback((e) => {
@@ -488,13 +494,18 @@ const GrapesJSFooter = ({
         window.__footerModifying = false;
       }, 200);
       
+      // Notify parent that content was modified (without passing XHTML to prevent loops)
+      if (onContentModified) {
+        onContentModified();
+      }
+      
       // Don't call onXhtmlChange here - the DOM is already updated in the iframe
       // The save function will read directly from the editor/iframe when needed
       // This prevents infinite loops
     } catch (err) {
       console.error('[GrapesJSFooter] Error applying font color:', err);
     }
-  }, [editor, isImageSelected, getIframeDoc]);
+  }, [editor, isImageSelected, getIframeDoc, onContentModified]);
 
   // Handle font family change
   const handleFontFamilyChange = useCallback((e) => {
@@ -544,13 +555,18 @@ const GrapesJSFooter = ({
         window.__footerModifying = false;
       }, 200);
       
+      // Notify parent that content was modified (without passing XHTML to prevent loops)
+      if (onContentModified) {
+        onContentModified();
+      }
+      
       // Don't call onXhtmlChange here - the DOM is already updated in the iframe
       // The save function will read directly from the editor/iframe when needed
       // This prevents infinite loops
     } catch (err) {
       console.error('[GrapesJSFooter] Error applying font family:', err);
     }
-  }, [editor, isImageSelected, getIframeDoc]);
+  }, [editor, isImageSelected, getIframeDoc, onContentModified]);
 
   // Handle bold toggle
   const handleBoldToggle = useCallback((e) => {
@@ -593,13 +609,18 @@ const GrapesJSFooter = ({
         window.__footerModifying = false;
       }, 200);
       
+      // Notify parent that content was modified (without passing XHTML to prevent loops)
+      if (onContentModified) {
+        onContentModified();
+      }
+      
       // Don't call onXhtmlChange here - the DOM is already updated in the iframe
       // The save function will read directly from the editor/iframe when needed
       // This prevents infinite loops
     } catch (err) {
       console.error('[GrapesJSFooter] Error applying bold:', err);
     }
-  }, [editor, isImageSelected, isBold, getIframeDoc]);
+  }, [editor, isImageSelected, isBold, getIframeDoc, onContentModified]);
 
   // Handle image replacement
   const handleImageReplace = useCallback((image) => {
@@ -630,6 +651,23 @@ const GrapesJSFooter = ({
         window.__footerModifying = false;
       }, 200);
       
+      // Deselect the image after replacement so text formatting can work
+      setTimeout(() => {
+        try {
+          editor.select(null);
+          setIsImageSelected(false);
+          setSelectedImageId(null);
+          setSelectedComponent(null);
+        } catch (err) {
+          console.warn('[GrapesJSFooter] Error deselecting image after replacement:', err);
+        }
+      }, 250);
+      
+      // Notify parent that content was modified (without passing XHTML to prevent loops)
+      if (onContentModified) {
+        onContentModified();
+      }
+      
       // Don't call onXhtmlChange for image replacement - save function will read from editor directly
       // This prevents infinite loops
       
@@ -640,7 +678,7 @@ const GrapesJSFooter = ({
     } catch (err) {
       console.error('[GrapesJSFooter] Error replacing image:', err);
     }
-  }, [editor, selectedComponent, isImageSelected, selectedImageId, onImageReplace]);
+  }, [editor, selectedComponent, isImageSelected, selectedImageId, onImageReplace, onContentModified]);
 
 
   // Toggle between text and image modes

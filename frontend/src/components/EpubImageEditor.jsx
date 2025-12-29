@@ -3081,6 +3081,10 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                         setXhtml(updatedXhtml);
                         setModified(true);
                       }}
+                      onContentModified={() => {
+                        // Mark content as modified when formatting changes are made
+                        setModified(true);
+                      }}
                     />
                   )}
                 </>
