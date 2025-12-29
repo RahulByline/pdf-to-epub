@@ -471,18 +471,10 @@ export class GeminiService {
     }
 
     // Wrap entire operation in a timeout
-    // Increase timeout for pages with many extracted images (each image adds processing time)
-    const baseTimeout = 120000; // 120 seconds base timeout
-    const imageTimeoutMultiplier = Math.min(extractedImages?.length || 0, 10) * 5000; // 5 seconds per image, max 50s extra
-    const overallTimeout = baseTimeout + imageTimeoutMultiplier;
-    const timeoutSeconds = Math.round(overallTimeout / 1000);
+    const overallTimeout = 120000; // 120 seconds max for entire operation
     const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error(`Overall timeout after ${timeoutSeconds}s`)), overallTimeout)
+      setTimeout(() => reject(new Error('Overall timeout after 90s')), overallTimeout)
     );
-    
-    if (extractedImages && extractedImages.length > 0) {
-      console.log(`[Page ${pageNumber}] Using extended timeout of ${timeoutSeconds}s due to ${extractedImages.length} extracted image(s)`);
-    }
 
     const operationPromise = RequestQueueService.enqueue('Gemini', async () => {
       // Pre-request rate limit check with retry logic
@@ -524,7 +516,6 @@ export class GeminiService {
         
         // Read extracted images if provided
         const extractedImageBuffers = [];
-        const extractedImagesCount = extractedImages?.length || 0;
         if (extractedImages && extractedImages.length > 0) {
           console.log(`[Page ${pageNumber}] Including ${extractedImages.length} extracted image(s) from PDF...`);
           for (const img of extractedImages) {
@@ -892,20 +883,12 @@ export class GeminiService {
 
         while (attempt < maxApiAttempts && !result) {
           attempt++;
-          // Increase API timeout for pages with many extracted images
-          const baseApiTimeout = 90000; // 90 seconds base
-          const imageTimeoutExtra = Math.min(extractedImageBuffers.length, 10) * 3000; // 3 seconds per image, max 30s extra
-          const apiTimeout = baseApiTimeout + imageTimeoutExtra;
-          const apiTimeoutSeconds = Math.round(apiTimeout / 1000);
+          const apiTimeout = 90000; // 90 seconds
           let timeoutId;
           
           const apiTimeoutPromise = new Promise((_, reject) => {
-            timeoutId = setTimeout(() => reject(new Error(`API call timeout after ${apiTimeoutSeconds}s`)), apiTimeout);
+            timeoutId = setTimeout(() => reject(new Error('API call timeout after 90s')), apiTimeout);
           });
-          
-          if (extractedImageBuffers.length > 5 && attempt === 1) {
-            console.log(`[Page ${pageNumber}] Using extended API timeout of ${apiTimeoutSeconds}s for ${extractedImageBuffers.length} images`);
-          }
 
           // Build content array with main page image and extracted images
           const contentArray = [
@@ -1022,12 +1005,7 @@ export class GeminiService {
       return await Promise.race([operationPromise, timeoutPromise]);
     } catch (error) {
       if (error?.message?.includes('Overall timeout')) {
-        const timeoutMatch = error.message.match(/after (\d+)s/);
-        const timeoutSeconds = timeoutMatch ? timeoutMatch[1] : '120';
-        console.error(`[Page ${pageNumber}] Overall operation timed out after ${timeoutSeconds}s, skipping`);
-        if (extractedImages && extractedImages.length > 5) {
-          console.warn(`[Page ${pageNumber}] Page has ${extractedImages.length} extracted images, which may have contributed to timeout`);
-        }
+        console.error(`[Page ${pageNumber}] Overall operation timed out after 90s, skipping`);
         CircuitBreakerService.recordFailure('Gemini', false);
       }
       return null;

@@ -7,7 +7,6 @@ import DraggableCanvas from './DraggableCanvas';
 import GrapesJSCanvas from './GrapesJSCanvas';
 import GrapesJSFooter from './GrapesJSFooter';
 import FabricImageEditor from './FabricImageEditor';
-import InlineImageEditor from './InlineImageEditor';
 import './EpubImageEditor.css';
 
 const DRAG_TYPE = 'EPUB_IMAGE';
@@ -1091,32 +1090,6 @@ const formatXHTML = (xhtml) => {
 /**
  * Main EpubImageEditor Component
  */
-// Helper function to extract head content without duplicating style tags
-const extractHeadContent = (doc) => {
-  if (!doc.head) return '';
-  
-  const headChildren = Array.from(doc.head.children);
-  const seenStyles = new Set();
-  const headParts = [];
-  
-  for (const child of headChildren) {
-    if (child.tagName === 'STYLE') {
-      const styleContent = child.innerHTML || child.textContent || '';
-      // Only add unique style content
-      if (!seenStyles.has(styleContent) && styleContent.trim()) {
-        seenStyles.add(styleContent);
-        headParts.push(`<style>${styleContent}</style>`);
-      }
-    } else {
-      // For other head elements, serialize them
-      const serializer = new XMLSerializer();
-      headParts.push(serializer.serializeToString(child));
-    }
-  }
-  
-  return headParts.join('\n');
-};
-
 const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const [xhtml, setXhtml] = useState('');
   const [originalXhtml, setOriginalXhtml] = useState('');
@@ -1137,7 +1110,6 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const [grapesjsEditor, setGrapesjsEditor] = useState(null); // GrapesJS editor instance
   const [showCodeViewer, setShowCodeViewer] = useState(false); // Show/hide XHTML code viewer
   const [editedXhtml, setEditedXhtml] = useState(''); // Editable XHTML code in viewer
-  const [selectedImageForEdit, setSelectedImageForEdit] = useState(null); // {element, id} for inline editing
 
   // Initialize edited XHTML when opening code viewer
   useEffect(() => {
@@ -1492,128 +1464,6 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       alert('Error saving XHTML code. Please check the syntax.');
     }
   }, [editedXhtml, extractPlaceholdersFromXhtml, useGrapesJS, grapesjsEditor]);
-
-  // Handle image click for inline editing
-  const handleImageClick = useCallback((e) => {
-    if (!editMode) return;
-    
-    // Find the clicked image element
-    const img = e.target.closest('img');
-    if (!img) return;
-    
-    e.preventDefault();
-    e.stopPropagation();
-    
-    const imageId = img.id || img.getAttribute('id');
-    if (!imageId) return;
-    
-    console.log('[EpubImageEditor] Image clicked for inline editing:', imageId);
-    setSelectedImageForEdit({ element: img, id: imageId });
-  }, [editMode]);
-
-  // Setup image click listeners
-  useEffect(() => {
-    if (!editMode || !canvasRef.current) return;
-    
-    const canvas = canvasRef.current;
-    
-    // For GrapesJS mode, we need to listen inside the iframe
-    if (useGrapesJS && grapesjsEditor) {
-      const canvasInstance = grapesjsEditor.Canvas;
-      if (canvasInstance) {
-        const frameEl = canvasInstance.getFrameEl();
-        if (frameEl) {
-          const frameDoc = frameEl.contentDocument || frameEl.contentWindow?.document;
-          if (frameDoc) {
-            const handleImageClickInFrame = (e) => {
-              if (e.target.tagName === 'IMG') {
-                handleImageClick(e);
-              }
-            };
-            
-            frameDoc.addEventListener('click', handleImageClickInFrame, true);
-            
-            return () => {
-              frameDoc.removeEventListener('click', handleImageClickInFrame, true);
-            };
-          }
-        }
-      }
-    } else {
-      // For DraggableCanvas mode
-      const handleImageClickInCanvas = (e) => {
-        if (e.target.tagName === 'IMG') {
-          handleImageClick(e);
-        }
-      };
-      
-      canvas.addEventListener('click', handleImageClickInCanvas, true);
-      
-      return () => {
-        canvas.removeEventListener('click', handleImageClickInCanvas, true);
-      };
-    }
-  }, [editMode, useGrapesJS, grapesjsEditor, handleImageClick]);
-
-  // Handle inline image editor update
-  const handleInlineImageUpdate = useCallback((updatedElement) => {
-    if (!selectedImageForEdit) return;
-    
-    setXhtml((currentXhtml) => {
-      const parser = new DOMParser();
-      let doc = parser.parseFromString(currentXhtml, 'text/html');
-      let parserError = doc.querySelector('parsererror');
-      if (parserError) {
-        doc = parser.parseFromString(currentXhtml, 'application/xml');
-      }
-      
-      const imgElement = doc.getElementById(selectedImageForEdit.id);
-      if (imgElement) {
-        // Update attributes from the updated element
-        const width = updatedElement.getAttribute('width');
-        const height = updatedElement.getAttribute('height');
-        const style = updatedElement.getAttribute('style') || '';
-        
-        if (width) imgElement.setAttribute('width', width);
-        if (height) imgElement.setAttribute('height', height);
-        if (style) imgElement.setAttribute('style', style);
-        
-        // Serialize back to XHTML
-        const serializer = new XMLSerializer();
-        let updated = serializer.serializeToString(doc.documentElement);
-        
-        // Handle HTML5 parser output
-        if (doc.documentElement.tagName === 'HTML' && doc.body) {
-          const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
-          const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
-          const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
-          const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
-          
-          // Extract head content without duplicating style tags
-          const headContent = extractHeadContent(doc);
-          
-          const bodyContent = doc.body ? doc.body.innerHTML : '';
-          
-          updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
-          if (headContent) {
-            updated += `<head>\n${headContent}\n</head>\n`;
-          }
-          updated += `<body>\n${bodyContent}\n</body>\n</html>`;
-        }
-        
-        // Ensure self-closing tags
-        updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
-          return attrs.includes('/') ? match : `<img${attrs}/>`;
-        });
-        
-        setModified(true);
-        extractPlaceholdersFromXhtml(updated);
-        return updated;
-      }
-      
-      return currentXhtml;
-    });
-  }, [selectedImageForEdit, extractPlaceholdersFromXhtml]);
 
   // Handle ESC key to close code viewer and Ctrl+S to save
   useEffect(() => {
@@ -2539,7 +2389,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
           const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
           const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
           
-          const headContent = extractHeadContent(doc);
+          const headContent = doc.head ? doc.head.innerHTML : '';
           const bodyContent = doc.body ? doc.body.innerHTML : '';
           
           updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
@@ -2708,25 +2558,25 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
           const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
           const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
 
-              const headContent = extractHeadContent(doc);
-              const bodyContent = doc.body ? doc.body.innerHTML : '';
-              
-              updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
-              if (headContent) {
-                updated += `<head>\n${headContent}\n</head>\n`;
-              }
-              updated += `<body>\n${bodyContent}\n</body>\n</html>`;
-            }
-            
-            // Ensure self-closing tags
-            updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
-              return attrs.includes('/') ? match : `<meta${attrs}/>`;
-            });
-            updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
-              return attrs.includes('/') ? match : `<img${attrs}/>`;
-            });
+          const headContent = doc.head ? doc.head.innerHTML : '';
+          const bodyContent = doc.body ? doc.body.innerHTML : '';
 
-            console.log(`[EpubImageEditor] ✓ Image ${operation} applied to ${placeholderId}`);
+          updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
+          if (headContent) {
+            updated += `<head>\n${headContent}\n</head>\n`;
+          }
+          updated += `<body>\n${bodyContent}\n</body>\n</html>`;
+        }
+
+        // Ensure self-closing tags
+        updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<meta${attrs}/>`;
+        });
+        updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<img${attrs}/>`;
+        });
+
+        console.log(`[EpubImageEditor] ✓ Image ${operation} applied to ${placeholderId}`);
         setModified(true);
         return updated;
       } catch (err) {
@@ -2884,7 +2734,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
               const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
               const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
               
-              const headContent = extractHeadContent(doc);
+              const headContent = doc.head ? doc.head.innerHTML : '';
               const bodyContent = doc.body ? doc.body.innerHTML : '';
               
               updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
@@ -2954,7 +2804,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
             const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
             
-            const headContent = extractHeadContent(doc);
+            const headContent = doc.head ? doc.head.innerHTML : '';
             const bodyContent = doc.body ? doc.body.innerHTML : '';
             
             updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
@@ -3441,17 +3291,6 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                     </ErrorBoundary>
                   )}
                 </>
-              )}
-              
-              {/* Inline Image Editor */}
-              {selectedImageForEdit && selectedImageForEdit.element && editMode && (
-                <InlineImageEditor
-                  imageElement={selectedImageForEdit.element}
-                  imageId={selectedImageForEdit.id}
-                  onUpdate={handleInlineImageUpdate}
-                  onClose={() => setSelectedImageForEdit(null)}
-                  editMode={editMode}
-                />
               )}
             </div>
           </div>
