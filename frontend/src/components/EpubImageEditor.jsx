@@ -7,6 +7,7 @@ import DraggableCanvas from './DraggableCanvas';
 import GrapesJSCanvas from './GrapesJSCanvas';
 import GrapesJSFooter from './GrapesJSFooter';
 import FabricImageEditor from './FabricImageEditor';
+import InlineImageEditor from './InlineImageEditor';
 import './EpubImageEditor.css';
 
 const DRAG_TYPE = 'EPUB_IMAGE';
@@ -1008,8 +1009,114 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
 };
 
 /**
+ * Format XHTML for display (prettify)
+ */
+const formatXHTML = (xhtml) => {
+  if (!xhtml) return '';
+  
+  try {
+    // Use DOMParser to parse and format
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(xhtml, 'text/html');
+    
+    // Simple recursive formatter
+    const formatNode = (node, indent = 0) => {
+      const indentStr = '  '.repeat(indent);
+      
+      if (node.nodeType === 1) { // ELEMENT_NODE
+        const tagName = node.tagName.toLowerCase();
+        let attrs = '';
+        if (node.attributes && node.attributes.length > 0) {
+          attrs = ' ' + Array.from(node.attributes)
+            .map(attr => `${attr.name}="${attr.value}"`)
+            .join(' ');
+        }
+        
+        const children = Array.from(node.childNodes).filter(n => 
+          n.nodeType === 1 || (n.nodeType === 3 && n.textContent && n.textContent.trim())
+        );
+        
+        if (children.length === 0) {
+          // Self-closing or empty tag
+          return `${indentStr}<${tagName}${attrs} />\n`;
+        } else {
+          let result = `${indentStr}<${tagName}${attrs}>\n`;
+          children.forEach(child => {
+            if (child.nodeType === 1) { // Element
+              result += formatNode(child, indent + 1);
+            } else if (child.nodeType === 3 && child.textContent && child.textContent.trim()) { // Text
+              const text = child.textContent.trim();
+              if (text.length > 0) {
+                result += '  '.repeat(indent + 1) + text + '\n';
+              }
+            }
+          });
+          result += `${indentStr}</${tagName}>\n`;
+          return result;
+        }
+      }
+      
+      return '';
+    };
+    
+    // Build formatted output
+    let formatted = '';
+    if (doc.documentElement) {
+      // Format head if exists
+      if (doc.head && doc.head.innerHTML.trim()) {
+        formatted += '<head>\n';
+        Array.from(doc.head.childNodes).forEach(child => {
+          formatted += formatNode(child, 1);
+        });
+        formatted += '</head>\n';
+      }
+      
+      // Format body if exists
+      if (doc.body && doc.body.innerHTML.trim()) {
+        formatted += '<body>\n';
+        Array.from(doc.body.childNodes).forEach(child => {
+          formatted += formatNode(child, 1);
+        });
+        formatted += '</body>\n';
+      }
+    }
+    
+    return formatted || xhtml;
+  } catch (e) {
+    console.warn('Failed to format XHTML, using original:', e);
+    return xhtml;
+  }
+};
+
+/**
  * Main EpubImageEditor Component
  */
+// Helper function to extract head content without duplicating style tags
+const extractHeadContent = (doc) => {
+  if (!doc.head) return '';
+  
+  const headChildren = Array.from(doc.head.children);
+  const seenStyles = new Set();
+  const headParts = [];
+  
+  for (const child of headChildren) {
+    if (child.tagName === 'STYLE') {
+      const styleContent = child.innerHTML || child.textContent || '';
+      // Only add unique style content
+      if (!seenStyles.has(styleContent) && styleContent.trim()) {
+        seenStyles.add(styleContent);
+        headParts.push(`<style>${styleContent}</style>`);
+      }
+    } else {
+      // For other head elements, serialize them
+      const serializer = new XMLSerializer();
+      headParts.push(serializer.serializeToString(child));
+    }
+  }
+  
+  return headParts.join('\n');
+};
+
 const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const [xhtml, setXhtml] = useState('');
   const [originalXhtml, setOriginalXhtml] = useState('');
@@ -1028,6 +1135,16 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const oneByOneMode = true; // One-by-one drop mode (always enabled)
   const [useGrapesJS, setUseGrapesJS] = useState(true); // Toggle between GrapesJS and DraggableCanvas
   const [grapesjsEditor, setGrapesjsEditor] = useState(null); // GrapesJS editor instance
+  const [showCodeViewer, setShowCodeViewer] = useState(false); // Show/hide XHTML code viewer
+  const [editedXhtml, setEditedXhtml] = useState(''); // Editable XHTML code in viewer
+  const [selectedImageForEdit, setSelectedImageForEdit] = useState(null); // {element, id} for inline editing
+
+  // Initialize edited XHTML when opening code viewer
+  useEffect(() => {
+    if (showCodeViewer) {
+      setEditedXhtml(xhtml);
+    }
+  }, [showCodeViewer, xhtml]);
 
   // Only reload if pageNumber or jobId changes, NOT if we're just modifying XHTML
   useEffect(() => {
@@ -1334,6 +1451,185 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
     console.log(`[EpubImageEditor] Found ${found.length} placeholders total:`, found.map(p => p.id));
     setPlaceholders(found);
   };
+
+  // Handle saving edited XHTML from code viewer
+  const handleSaveEditedXhtml = useCallback(() => {
+    try {
+      // Update the main XHTML state with edited content
+      // Use functional update to ensure we're working with latest state
+      setXhtml((currentXhtml) => {
+        console.log('[EpubImageEditor] Saving edited XHTML from code viewer', {
+          currentLength: currentXhtml.length,
+          newLength: editedXhtml.length,
+          changed: currentXhtml !== editedXhtml
+        });
+        return editedXhtml;
+      });
+      setModified(true);
+      
+      // Extract placeholders from the updated XHTML
+      extractPlaceholdersFromXhtml(editedXhtml);
+      
+      // Force preview update by triggering a refresh
+      // For GrapesJS, the useEffect watching xhtml will handle it
+      // For DraggableCanvas, the key change will force re-render
+      if (useGrapesJS && grapesjsEditor) {
+        // Force GrapesJS to refresh
+        setTimeout(() => {
+          if (grapesjsEditor && grapesjsEditor.refresh) {
+            grapesjsEditor.refresh();
+            console.log('[EpubImageEditor] Forced GrapesJS refresh after code edit');
+          }
+        }, 100);
+      }
+      
+      // Close the code viewer
+      setShowCodeViewer(false);
+      
+      console.log('[EpubImageEditor] XHTML code saved from editor, preview should update');
+    } catch (error) {
+      console.error('[EpubImageEditor] Error saving edited XHTML:', error);
+      alert('Error saving XHTML code. Please check the syntax.');
+    }
+  }, [editedXhtml, extractPlaceholdersFromXhtml, useGrapesJS, grapesjsEditor]);
+
+  // Handle image click for inline editing
+  const handleImageClick = useCallback((e) => {
+    if (!editMode) return;
+    
+    // Find the clicked image element
+    const img = e.target.closest('img');
+    if (!img) return;
+    
+    e.preventDefault();
+    e.stopPropagation();
+    
+    const imageId = img.id || img.getAttribute('id');
+    if (!imageId) return;
+    
+    console.log('[EpubImageEditor] Image clicked for inline editing:', imageId);
+    setSelectedImageForEdit({ element: img, id: imageId });
+  }, [editMode]);
+
+  // Setup image click listeners
+  useEffect(() => {
+    if (!editMode || !canvasRef.current) return;
+    
+    const canvas = canvasRef.current;
+    
+    // For GrapesJS mode, we need to listen inside the iframe
+    if (useGrapesJS && grapesjsEditor) {
+      const canvasInstance = grapesjsEditor.Canvas;
+      if (canvasInstance) {
+        const frameEl = canvasInstance.getFrameEl();
+        if (frameEl) {
+          const frameDoc = frameEl.contentDocument || frameEl.contentWindow?.document;
+          if (frameDoc) {
+            const handleImageClickInFrame = (e) => {
+              if (e.target.tagName === 'IMG') {
+                handleImageClick(e);
+              }
+            };
+            
+            frameDoc.addEventListener('click', handleImageClickInFrame, true);
+            
+            return () => {
+              frameDoc.removeEventListener('click', handleImageClickInFrame, true);
+            };
+          }
+        }
+      }
+    } else {
+      // For DraggableCanvas mode
+      const handleImageClickInCanvas = (e) => {
+        if (e.target.tagName === 'IMG') {
+          handleImageClick(e);
+        }
+      };
+      
+      canvas.addEventListener('click', handleImageClickInCanvas, true);
+      
+      return () => {
+        canvas.removeEventListener('click', handleImageClickInCanvas, true);
+      };
+    }
+  }, [editMode, useGrapesJS, grapesjsEditor, handleImageClick]);
+
+  // Handle inline image editor update
+  const handleInlineImageUpdate = useCallback((updatedElement) => {
+    if (!selectedImageForEdit) return;
+    
+    setXhtml((currentXhtml) => {
+      const parser = new DOMParser();
+      let doc = parser.parseFromString(currentXhtml, 'text/html');
+      let parserError = doc.querySelector('parsererror');
+      if (parserError) {
+        doc = parser.parseFromString(currentXhtml, 'application/xml');
+      }
+      
+      const imgElement = doc.getElementById(selectedImageForEdit.id);
+      if (imgElement) {
+        // Update attributes from the updated element
+        const width = updatedElement.getAttribute('width');
+        const height = updatedElement.getAttribute('height');
+        const style = updatedElement.getAttribute('style') || '';
+        
+        if (width) imgElement.setAttribute('width', width);
+        if (height) imgElement.setAttribute('height', height);
+        if (style) imgElement.setAttribute('style', style);
+        
+        // Serialize back to XHTML
+        const serializer = new XMLSerializer();
+        let updated = serializer.serializeToString(doc.documentElement);
+        
+        // Handle HTML5 parser output
+        if (doc.documentElement.tagName === 'HTML' && doc.body) {
+          const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
+          const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
+          const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
+          const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
+          
+          // Extract head content without duplicating style tags
+          const headContent = extractHeadContent(doc);
+          
+          const bodyContent = doc.body ? doc.body.innerHTML : '';
+          
+          updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
+          if (headContent) {
+            updated += `<head>\n${headContent}\n</head>\n`;
+          }
+          updated += `<body>\n${bodyContent}\n</body>\n</html>`;
+        }
+        
+        // Ensure self-closing tags
+        updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<img${attrs}/>`;
+        });
+        
+        setModified(true);
+        extractPlaceholdersFromXhtml(updated);
+        return updated;
+      }
+      
+      return currentXhtml;
+    });
+  }, [selectedImageForEdit, extractPlaceholdersFromXhtml]);
+
+  // Handle ESC key to close code viewer and Ctrl+S to save
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if (showCodeViewer) {
+        if (e.key === 'Escape') {
+          setShowCodeViewer(false);
+        } else if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+          e.preventDefault();
+          handleSaveEditedXhtml();
+        }
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [showCodeViewer, handleSaveEditedXhtml]);
 
   const handleDrop = useCallback((placeholderId, image) => {
     try {
@@ -2243,7 +2539,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
           const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
           const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
           
-          const headContent = doc.head ? doc.head.innerHTML : '';
+          const headContent = extractHeadContent(doc);
           const bodyContent = doc.body ? doc.body.innerHTML : '';
           
           updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
@@ -2412,25 +2708,25 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
           const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
           const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
 
-          const headContent = doc.head ? doc.head.innerHTML : '';
-          const bodyContent = doc.body ? doc.body.innerHTML : '';
+              const headContent = extractHeadContent(doc);
+              const bodyContent = doc.body ? doc.body.innerHTML : '';
+              
+              updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
+              if (headContent) {
+                updated += `<head>\n${headContent}\n</head>\n`;
+              }
+              updated += `<body>\n${bodyContent}\n</body>\n</html>`;
+            }
+            
+            // Ensure self-closing tags
+            updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+              return attrs.includes('/') ? match : `<meta${attrs}/>`;
+            });
+            updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+              return attrs.includes('/') ? match : `<img${attrs}/>`;
+            });
 
-          updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
-          if (headContent) {
-            updated += `<head>\n${headContent}\n</head>\n`;
-          }
-          updated += `<body>\n${bodyContent}\n</body>\n</html>`;
-        }
-
-        // Ensure self-closing tags
-        updated = updated.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
-          return attrs.includes('/') ? match : `<meta${attrs}/>`;
-        });
-        updated = updated.replace(/<img([^>]*?)>/gi, (match, attrs) => {
-          return attrs.includes('/') ? match : `<img${attrs}/>`;
-        });
-
-        console.log(`[EpubImageEditor] ✓ Image ${operation} applied to ${placeholderId}`);
+            console.log(`[EpubImageEditor] ✓ Image ${operation} applied to ${placeholderId}`);
         setModified(true);
         return updated;
       } catch (err) {
@@ -2588,7 +2884,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
               const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
               const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
               
-              const headContent = doc.head ? doc.head.innerHTML : '';
+              const headContent = extractHeadContent(doc);
               const bodyContent = doc.body ? doc.body.innerHTML : '';
               
               updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
@@ -2658,7 +2954,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
             const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
             
-            const headContent = doc.head ? doc.head.innerHTML : '';
+            const headContent = extractHeadContent(doc);
             const bodyContent = doc.body ? doc.body.innerHTML : '';
             
             updated = `${doctype}\n<html xmlns="${xmlns}">\n`;
@@ -2954,6 +3250,25 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
               Reset
             </button>
             <button
+              onClick={() => setShowCodeViewer(true)}
+              className="btn-view-code"
+              style={{
+                padding: '8px 16px',
+                background: '#2196F3',
+                color: 'white',
+                border: '1px solid #2196F3',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                transition: 'all 0.2s ease',
+                display: 'inline-block',
+                visibility: 'visible',
+              }}
+              title="View XHTML Code"
+            >
+              📄 View Code
+            </button>
+            <button
               onClick={handleSave}
               disabled={saving || !modified || !editMode}
               className="btn-save"
@@ -3043,7 +3358,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
               {useGrapesJS ? (
                 <>
                   <GrapesJSCanvas
-                    key={`grapesjs-canvas-${pageNumber}`}
+                    key={`grapesjs-canvas-${pageNumber}-${xhtml.length}-${modified ? 'modified' : 'initial'}`}
                     xhtml={xhtml}
                     onXhtmlChange={(updatedXhtml) => {
                       setXhtml((currentXhtml) => {
@@ -3127,6 +3442,17 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                   )}
                 </>
               )}
+              
+              {/* Inline Image Editor */}
+              {selectedImageForEdit && selectedImageForEdit.element && editMode && (
+                <InlineImageEditor
+                  imageElement={selectedImageForEdit.element}
+                  imageId={selectedImageForEdit.id}
+                  onUpdate={handleInlineImageUpdate}
+                  onClose={() => setSelectedImageForEdit(null)}
+                  editMode={editMode}
+                />
+              )}
             </div>
           </div>
         </div>
@@ -3157,6 +3483,173 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
               setEditingImage(null);
             }}
           />
+        </div>
+      )}
+
+      {/* XHTML Code Viewer Modal */}
+      {showCodeViewer && (
+        <div 
+          className="code-viewer-modal" 
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.85)',
+            zIndex: 10001,
+            display: 'flex',
+            flexDirection: 'column',
+            padding: '20px',
+          }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) {
+              setShowCodeViewer(false);
+            }
+          }}
+        >
+          <div style={{
+            backgroundColor: '#1e1e1e',
+            borderRadius: '8px',
+            display: 'flex',
+            flexDirection: 'column',
+            height: '100%',
+            maxWidth: '95vw',
+            maxHeight: '95vh',
+            margin: '0 auto',
+            boxShadow: '0 4px 20px rgba(0, 0, 0, 0.5)',
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '16px 20px',
+              borderBottom: '1px solid #333',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              backgroundColor: '#252526',
+              borderRadius: '8px 8px 0 0',
+            }}>
+              <h3 style={{ 
+                margin: 0, 
+                color: '#fff',
+                fontSize: '18px',
+                fontWeight: '600',
+              }}>
+                XHTML Code Editor - Page {pageNumber}
+              </h3>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(editedXhtml).then(() => {
+                      alert('XHTML code copied to clipboard!');
+                    }).catch(err => {
+                      console.error('Failed to copy:', err);
+                    });
+                  }}
+                  style={{
+                    padding: '6px 12px',
+                    background: '#0e639c',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    transition: 'background 0.2s',
+                  }}
+                  onMouseOver={(e) => e.target.style.background = '#1177bb'}
+                  onMouseOut={(e) => e.target.style.background = '#0e639c'}
+                  title="Copy to clipboard"
+                >
+                  📋 Copy
+                </button>
+                <button
+                  onClick={handleSaveEditedXhtml}
+                  style={{
+                    padding: '6px 12px',
+                    background: '#4CAF50',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    transition: 'background 0.2s',
+                    fontWeight: '600',
+                  }}
+                  onMouseOver={(e) => e.target.style.background = '#45a049'}
+                  onMouseOut={(e) => e.target.style.background = '#4CAF50'}
+                  title="Save edited XHTML"
+                >
+                  💾 Save
+                </button>
+                <button
+                  onClick={() => setShowCodeViewer(false)}
+                  style={{
+                    padding: '6px 12px',
+                    background: '#d32f2f',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '4px',
+                    cursor: 'pointer',
+                    fontSize: '13px',
+                    transition: 'background 0.2s',
+                  }}
+                  onMouseOver={(e) => e.target.style.background = '#f44336'}
+                  onMouseOut={(e) => e.target.style.background = '#d32f2f'}
+                  title="Close"
+                >
+                  ✕ Close
+                </button>
+              </div>
+            </div>
+
+            {/* Code Editor */}
+            <div style={{
+              flex: 1,
+              overflow: 'auto',
+              padding: '20px',
+              backgroundColor: '#1e1e1e',
+            }}>
+              <textarea
+                value={editedXhtml}
+                onChange={(e) => setEditedXhtml(e.target.value)}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  minHeight: '400px',
+                  backgroundColor: '#1e1e1e',
+                  color: '#d4d4d4',
+                  fontFamily: 'Consolas, Monaco, "Courier New", monospace',
+                  fontSize: '13px',
+                  lineHeight: '1.6',
+                  border: '1px solid #333',
+                  borderRadius: '4px',
+                  padding: '15px',
+                  resize: 'vertical',
+                  whiteSpace: 'pre',
+                  overflowWrap: 'normal',
+                  overflowX: 'auto',
+                }}
+                spellCheck={false}
+                placeholder="Edit XHTML code here..."
+              />
+            </div>
+
+            {/* Footer */}
+            <div style={{
+              padding: '12px 20px',
+              borderTop: '1px solid #333',
+              backgroundColor: '#252526',
+              borderRadius: '0 0 8px 8px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              fontSize: '12px',
+              color: '#999',
+            }}>
+              <span>Length: {editedXhtml.length} characters</span>
+              <span>Press ESC to close | Ctrl+S to save</span>
+            </div>
+          </div>
         </div>
       )}
     </DndProvider>
