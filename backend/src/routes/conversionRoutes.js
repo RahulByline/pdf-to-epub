@@ -711,10 +711,78 @@ router.put('/:jobId/xhtml/:pageNumber', async (req, res) => {
   try {
     const jobId = parseInt(req.params.jobId);
     const pageNumber = parseInt(req.params.pageNumber);
-    const { xhtml } = req.body;
+    let { xhtml } = req.body;
     
     if (!xhtml || typeof xhtml !== 'string') {
       return badRequestResponse(res, 'XHTML content is required');
+    }
+    
+    // Check if XHTML has proper document structure
+    const hasDoctype = xhtml.trim().startsWith('<!DOCTYPE');
+    const hasHtmlTag = xhtml.includes('<html');
+    const hasHeadTag = xhtml.includes('<head>');
+    const hasBodyTag = xhtml.includes('<body>');
+    
+    // If missing proper structure, wrap content in proper XHTML document
+    if (!hasDoctype || !hasHtmlTag || !hasHeadTag || !hasBodyTag) {
+      console.log(`[Save XHTML] Page ${pageNumber} missing document structure, wrapping content...`);
+      
+      // Extract all CSS from <style> tags (including unclosed ones)
+      let cssContent = '';
+      let bodyContent = xhtml;
+      
+      // Extract CSS from properly closed style tags
+      const closedStyleMatches = xhtml.match(/<style[^>]*>([\s\S]*?)<\/style>/gi);
+      if (closedStyleMatches) {
+        const extractedCss = closedStyleMatches.map(style => {
+          const contentMatch = style.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+          return contentMatch ? contentMatch[1] : '';
+        }).filter(css => css.trim()).join('\n');
+        if (extractedCss) {
+          cssContent += extractedCss + '\n';
+        }
+        // Remove closed style tags from body content
+        bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+      }
+      
+      // Extract CSS from unclosed style tags (style tag without closing tag)
+      // Look for <style> followed by content but no </style> before next tag or end
+      const unclosedStyleMatch = bodyContent.match(/<style[^>]*>([\s\S]*?)(?=<[^/]|$)/i);
+      if (unclosedStyleMatch) {
+        const unclosedCss = unclosedStyleMatch[1].trim();
+        if (unclosedCss) {
+          cssContent += unclosedCss + '\n';
+        }
+        // Remove unclosed style tag from body content
+        bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?(?=<[^/]|$)/i, '');
+      }
+      
+      // Remove any wrapper divs that might be present
+      bodyContent = bodyContent.replace(/<div[^>]*class=["']xhtml-content-wrapper["'][^>]*>/gi, '');
+      bodyContent = bodyContent.replace(/<\/div>\s*$/, '').trim();
+      
+      // Clean up any remaining style tags that might be in the body
+      bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+      bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?(?=<[^/]|$)/gi, '');
+      
+      // Trim CSS content
+      cssContent = cssContent.trim();
+      
+      // Build proper XHTML structure
+      xhtml = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Page ${pageNumber}</title>
+${cssContent ? `<style type="text/css">\n${cssContent}\n</style>` : ''}
+</head>
+<body>
+${bodyContent}
+</body>
+</html>`;
+      
+      console.log(`[Save XHTML] Wrapped page ${pageNumber} content in proper XHTML structure`);
     }
     
     const htmlIntermediateDir = getHtmlIntermediateDir();

@@ -1943,6 +1943,69 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
       // Read and fix XHTML file (fix image paths from ../images/ to images/)
       let xhtmlContent = await fs.readFile(page.xhtmlPath, 'utf8');
       
+      // CRITICAL FIX: Ensure XHTML has proper document structure
+      const hasDoctype = xhtmlContent.trim().startsWith('<!DOCTYPE');
+      const hasHtmlTag = xhtmlContent.includes('<html');
+      const hasHeadTag = xhtmlContent.includes('<head>');
+      const hasBodyTag = xhtmlContent.includes('<body>');
+      
+      if (!hasDoctype || !hasHtmlTag || !hasHeadTag || !hasBodyTag) {
+        console.log(`[Regenerate EPUB] Page ${page.pageNumber} missing document structure, fixing...`);
+        
+        // Extract all CSS from <style> tags (including unclosed ones)
+        let cssContent = '';
+        let bodyContent = xhtmlContent;
+        
+        // Extract CSS from properly closed style tags
+        const closedStyleMatches = xhtmlContent.match(/<style[^>]*>([\s\S]*?)<\/style>/gi);
+        if (closedStyleMatches) {
+          const extractedCss = closedStyleMatches.map(style => {
+            const contentMatch = style.match(/<style[^>]*>([\s\S]*?)<\/style>/i);
+            return contentMatch ? contentMatch[1] : '';
+          }).filter(css => css.trim()).join('\n');
+          if (extractedCss) {
+            cssContent += extractedCss + '\n';
+          }
+          bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+        }
+        
+        // Extract CSS from unclosed style tags
+        const unclosedStyleMatch = bodyContent.match(/<style[^>]*>([\s\S]*?)(?=<[^/]|$)/i);
+        if (unclosedStyleMatch) {
+          const unclosedCss = unclosedStyleMatch[1].trim();
+          if (unclosedCss) {
+            cssContent += unclosedCss + '\n';
+          }
+          bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?(?=<[^/]|$)/i, '');
+        }
+        
+        // Remove any wrapper divs
+        bodyContent = bodyContent.replace(/<div[^>]*class=["']xhtml-content-wrapper["'][^>]*>/gi, '');
+        bodyContent = bodyContent.replace(/<\/div>\s*$/, '').trim();
+        
+        // Clean up any remaining style tags
+        bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
+        bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?(?=<[^/]|$)/gi, '');
+        
+        cssContent = cssContent.trim();
+        
+        // Build proper XHTML structure
+        xhtmlContent = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Page ${page.pageNumber}</title>
+${cssContent ? `<style type="text/css">\n${cssContent}\n</style>` : ''}
+</head>
+<body>
+${bodyContent}
+</body>
+</html>`;
+        
+        console.log(`[Regenerate EPUB] Fixed page ${page.pageNumber} XHTML structure`);
+      }
+      
       // Fix image paths: ../images/ -> images/ (correct EPUB path)
       // EPUB structure: OEBPS/page_1.xhtml and OEBPS/images/file.jpg
       // So from page_1.xhtml, path should be "images/file.jpg"
