@@ -1,0 +1,101 @@
+/* GrapesJS Canvas Styles */
+
+.grapesjs-canvas-container {
+  width: 100%;
+  height: 100%;
+  min-height: 400px; /* Ensure minimum height */
+  position: relative;
+  overflow: hidden;
+}
+
+/* Override GrapesJS default styles for EPUB editing */
+.gjs-editor {
+  height: 100%;
+  width: 100%;
+}
+
+/* CRITICAL: Ensure the GrapesJS internal editor container fills the container */
+.gjs-editor-cont {
+  height: 100% !important;
+  min-height: 400px !important;
+}
+
+.gjs-cv-canvas {
+  width: 100% !important;
+  height: 100% !important;
+  top: 0 !important;
+  left: 0 !important;
+}
+
+.gjs-frame {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+/* Placeholder styles */
+.gjs-selected .image-placeholder {
+  outline: 2px solid #2196F3 !important;
+}
+
+/* Drag over styles for placeholders */
+.image-placeholder.drag-over,
+.image-drop-zone.drag-over {
+  border-color: #2196F3 !important;
+  background-color: #e3f2fd !important;
+  border-style: solid !important;
+}
+
+.image-placeholder.drag-over-active,
+.image-drop-zone.drag-over-active {
+  border-color: #4CAF50 !important;
+  background-color: rgba(76, 175, 80, 0.2) !important;
+  border-style: solid !important;
+  border-width: 3px !important;
+  box-shadow: 0 0 0 4px rgba(76, 175, 80, 0.3), 0 4px 12px rgba(76, 175, 80, 0.4) !important;
+  transform: scale(1.02);
+  z-index: 1000 !important;
+}
+
+.image-placeholder.drag-over-disabled,
+.image-drop-zone.drag-over-disabled {
+  border-color: #ccc !important;
+  background-color: rgba(0, 0, 0, 0.05) !important;
+  opacity: 0.4 !important;
+  pointer-events: none !important;
+}
+
+/* Hide GrapesJS panels we don't need */
+.gjs-pn-panels {
+  display: none !important;
+}
+
+.gjs-pn-devices-c {
+  display: none !important;
+}
+
+/* Ensure content is visible */
+.gjs-cv-canvas iframe {
+  width: 100% !important;
+  height: 100% !important;
+  border: none !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Ensure the canvas frame document body is visible */
+.gjs-cv-canvas iframe body {
+  margin: 0 !important;
+  padding: 0 !important;
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Make sure GrapesJS editor container is visible */
+.gjs-editor {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+

@@ -211,10 +211,11 @@ export class ConversionService {
           return `<hr ${attrs.trim()}/>`;
         });
         
+        // DISABLED: Automatic image insertion - images should only be inserted manually via the editor
         // Replace placeholder divs with actual img tags if extracted images are available
-        if (pageExtractedImages && pageExtractedImages.length > 0) {
-          xhtmlContent = this.replacePlaceholderDivsWithImages(xhtmlContent, pageImage.pageNumber, pageExtractedImages);
-        }
+        // if (pageExtractedImages && pageExtractedImages.length > 0) {
+        //   xhtmlContent = this.replacePlaceholderDivsWithImages(xhtmlContent, pageImage.pageNumber, pageExtractedImages);
+        // }
         
         // Add viewport meta tag for fixed-layout (must be before other meta tags)
         const viewportMeta = useFixedLayout
@@ -326,8 +327,9 @@ body { margin: 0; padding: 0; }
           }
         }
         
+        // DISABLED: Automatic image insertion - images should only be inserted manually via the editor
         // Replace image placeholders with actual img tags pointing to the PNG image
-        xhtmlContent = this.replaceImagePlaceholders(xhtmlContent, pageImage.pageNumber, pageImage.fileName);
+        // xhtmlContent = this.replaceImagePlaceholders(xhtmlContent, pageImage.pageNumber, pageImage.fileName);
         
         // CRITICAL: Ensure every text element has a unique ID
         xhtmlContent = this.ensureAllTextElementsHaveIds(xhtmlContent, pageImage.pageNumber);

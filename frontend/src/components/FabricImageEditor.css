@@ -231,6 +231,24 @@
   border-radius: 4px;
   box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
   background: white;
+  display: block !important;
+}
+
+/* Ensure Fabric.js canvas elements are visible */
+.fabric-canvas.lower-canvas,
+.fabric-canvas.upper-canvas {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+}
+
+/* Target Fabric.js generated canvas elements */
+.editor-canvas-container canvas {
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  position: relative !important;
+  z-index: 1 !important;
 }
 
 .loading-overlay {

@@ -1,9 +1,11 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo, Component } from 'react';
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import api from '../services/api';
 import { injectImageIntoXhtml, applyReflowableCss } from '../utils/xhtmlUtils';
 import DraggableCanvas from './DraggableCanvas';
+import GrapesJSCanvas from './GrapesJSCanvas';
+import GrapesJSFooter from './GrapesJSFooter';
 import FabricImageEditor from './FabricImageEditor';
 import './EpubImageEditor.css';
 
@@ -31,14 +33,28 @@ const DraggableImage = ({ image, pageNumber }) => {
     end: (item, monitor) => {
       const didDrop = monitor.didDrop();
       console.log('[DraggableImage] Drag ended:', image.fileName, 'Did drop:', didDrop);
-      if (!didDrop) {
+      
+      // Only warn if react-dnd didn't handle the drop AND we didn't use native drag events
+      // Native drag events (used in GrapesJS mode) bypass react-dnd, so didDrop() will be false
+      const usedNativeDrag = typeof window !== 'undefined' && (window.__nativeDragActive || window.currentDragImage !== null);
+      if (!didDrop && !usedNativeDrag) {
+        // This is a genuine failed drop in react-dnd mode
         console.warn('[DraggableImage] Drop failed - image was not dropped on a valid target');
+      } else if (!didDrop && usedNativeDrag) {
+        // Native drag was used, react-dnd didn't see it - this is expected
+        console.log('[DraggableImage] Native drag event used (GrapesJS mode), react-dnd didDrop is false (expected)');
       }
+      
       // Emit event to re-enable text block dragging
       window.dispatchEvent(new CustomEvent('image-drag-end'));
       // Clear global flag
       if (typeof window !== 'undefined') {
         window.__imageDragging = false;
+        // Clear currentDragImage and native drag flag (they should already be cleared by native drag end, but ensure cleanup)
+        setTimeout(() => {
+          window.currentDragImage = null;
+          window.__nativeDragActive = false;
+        }, 100);
       }
     },
     collect: (monitor) => {
@@ -162,6 +178,40 @@ const DraggableImage = ({ image, pageNumber }) => {
     };
   }, [image.url, image.fileName]);
 
+  // Support both react-dnd and native HTML5 drag (for GrapesJS)
+  const handleNativeDragStart = (e) => {
+    console.log('[DraggableImage] Native drag started:', image.fileName);
+    // Set custom data for GrapesJS drop handler
+    e.dataTransfer.setData('application/epub-image', JSON.stringify(image));
+    e.dataTransfer.setData('text/plain', JSON.stringify(image)); // Fallback
+    e.dataTransfer.effectAllowed = 'copy';
+    
+    // CRITICAL: Store in window global for iframe cross-boundary access
+    if (typeof window !== 'undefined') {
+      window.currentDragImage = image;
+      window.__imageDragging = true;
+      window.__nativeDragActive = true; // Flag to track native drag usage
+    }
+    
+    // Also set for react-dnd compatibility
+    window.dispatchEvent(new CustomEvent('image-drag-start', { detail: image }));
+  };
+
+  const handleNativeDragEnd = (e) => {
+    console.log('[DraggableImage] Native drag ended:', image.fileName);
+    window.dispatchEvent(new CustomEvent('image-drag-end'));
+    if (typeof window !== 'undefined') {
+      window.__imageDragging = false;
+      // Clear the global drag image and native drag flag after a delay (allows react-dnd end handler to check)
+      setTimeout(() => {
+        if (window.currentDragImage === image) {
+          window.currentDragImage = null;
+        }
+        window.__nativeDragActive = false;
+      }, 200); // Increased delay to allow react-dnd end handler to check
+    }
+  };
+
   return (
     <div
       ref={drag}
@@ -171,7 +221,9 @@ const DraggableImage = ({ image, pageNumber }) => {
         cursor: 'move',
         touchAction: 'none', // Prevent touch scrolling
       }}
-      draggable={false} // Let react-dnd handle dragging, not native HTML5 drag
+      draggable={true} // Enable native HTML5 drag for GrapesJS
+      onDragStart={handleNativeDragStart}
+      onDragEnd={handleNativeDragEnd}
     >
       {loading ? (
         <div className="image-loading">
@@ -200,13 +252,41 @@ const DraggableImage = ({ image, pageNumber }) => {
 };
 
 /**
- * XHTML Canvas Component with Drop Handling
+ * Error Boundary Component to catch errors in XhtmlCanvas
  */
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error('[ErrorBoundary] Caught error in XhtmlCanvas:', error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return null; // Silently fail instead of crashing
+    }
+    return this.props.children;
+  }
+}
+
 /**
  * Drop Zone Overlay Component (for image drops only)
  * This is a transparent overlay that handles image drops
  */
-const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false }) => {
+const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false, oneByOneMode = true, useGrapesJS = false }) => {
+  // Early return if onDrop is not a valid function
+  if (!onDrop || typeof onDrop !== 'function') {
+    console.warn('[XhtmlCanvas] onDrop is not a function, returning null');
+    return null;
+  }
+
   const [{ isOver, isDragging, canDrop = false }, drop] = useDrop({
     accept: DRAG_TYPE,
     canDrop: (item, monitor) => {
@@ -218,12 +298,30 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
       
       try {
         // Always allow drop when dragging an image
-        const itemType = monitor.getItemType();
+        // Safely get itemType with fallback
+        let itemType = null;
+        try {
+          if (monitor && typeof monitor.getItemType === 'function') {
+            itemType = monitor.getItemType();
+          } else {
+            console.warn('[XhtmlCanvas] canDrop - monitor.getItemType is not a function, monitor:', monitor);
+            return false;
+          }
+        } catch (getItemTypeError) {
+          console.error('[XhtmlCanvas] canDrop - Error calling getItemType:', getItemTypeError);
+          return false;
+        }
+        
+        if (itemType === null || itemType === undefined) {
+          console.warn('[XhtmlCanvas] canDrop - itemType is null/undefined');
+          return false;
+        }
+        
         const isImageDrag = itemType === DRAG_TYPE;
-        console.log('[XhtmlCanvas] canDrop check:', isImageDrag);
+        console.log('[XhtmlCanvas] canDrop check:', isImageDrag, 'itemType:', itemType);
         return isImageDrag;
       } catch (error) {
-        console.error('[XhtmlCanvas] canDrop - Error:', error);
+        console.error('[XhtmlCanvas] canDrop - Unexpected error:', error);
         return false;
       }
     },
@@ -332,27 +430,54 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
         }
       });
       
-      // Also check for divs with IDs matching the pattern even if they don't have title
-      const divsWithIdPattern = searchContainer.querySelectorAll('div[id^="page"][id*="_img"], div[id^="page"][id*="_div"]');
-      divsWithIdPattern.forEach((div) => {
+      // More flexible placeholder detection - not just regex-based
+      // Check all divs with IDs for placeholder characteristics
+      const allDivsWithId = searchContainer.querySelectorAll('div[id]');
+      allDivsWithId.forEach((div) => {
         const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
         const hasText = div.textContent.trim().length > 0;
         const hasImg = div.querySelector('img') !== null;
         const id = div.id;
+        const hasTitle = div.hasAttribute('title');
+        const computedStyle = window.getComputedStyle(div);
+        const isVisible = computedStyle.display !== 'none' && computedStyle.visibility !== 'hidden';
         
-        // If it matches the pattern, has no class, no text, no img, it's likely a placeholder
-        if (!hasClass && !hasText && !hasImg && /^page\d+_(?:img|div)\d+$/.test(id)) {
-          const placeholderArray = Array.from(allPlaceholders);
-          if (!placeholderArray.find(p => p.id === id)) {
-            console.log(`[XhtmlCanvas] Found placeholder by ID pattern: ${id}`);
-            placeholderArray.push(div);
-            allPlaceholders = placeholderArray;
+        // Skip if already in list
+        const placeholderArray = Array.from(allPlaceholders);
+        if (placeholderArray.find(p => p.id === id)) {
+          return;
+        }
+        
+        // Flexible detection criteria:
+        // 1. Has the class (most reliable)
+        // 2. Matches ID pattern (pageX_imgY or pageX_divY) - original pattern
+        // 3. Has title attribute and looks like placeholder (empty, no img)
+        // 4. Has aspect-ratio CSS (common for image placeholders)
+        const matchesIdPattern = /^page\d+_(?:img|div)\d+$/i.test(id);
+        const hasAspectRatio = computedStyle.aspectRatio && computedStyle.aspectRatio !== 'auto';
+        const looksLikePlaceholder = !hasText && !hasImg && (hasTitle || hasAspectRatio || hasClass);
+        
+        if (hasClass || (matchesIdPattern && looksLikePlaceholder) || (hasTitle && looksLikePlaceholder && isVisible)) {
+          console.log(`[XhtmlCanvas] Found placeholder (flexible): ${id}`, {
+            hasClass,
+            matchesIdPattern,
+            hasTitle,
+            hasAspectRatio,
+            isVisible
+          });
+          placeholderArray.push(div);
+          allPlaceholders = placeholderArray;
+          
+          // Ensure it has the class for future detection
+          if (!hasClass) {
             div.classList.add('image-placeholder');
-            div.style.setProperty('border', '2px dashed #007bff', 'important');
-            div.style.setProperty('background-color', '#f0f0f0', 'important');
-            div.style.setProperty('min-height', '50px', 'important');
-            div.style.setProperty('min-width', '50px', 'important');
           }
+          
+          // Ensure visibility
+          div.style.setProperty('border', '2px dashed #007bff', 'important');
+          div.style.setProperty('background-color', '#f0f0f0', 'important');
+          div.style.setProperty('min-height', '50px', 'important');
+          div.style.setProperty('min-width', '50px', 'important');
         }
       });
       
@@ -386,7 +511,122 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
         return;
       }
       
-      // Find the placeholder that contains the drop point
+      // Sort placeholders by position (top to bottom, left to right) for sequential dropping
+      const sortedPlaceholders = Array.from(allPlaceholders).sort((a, b) => {
+        const rectA = a.getBoundingClientRect();
+        const rectB = b.getBoundingClientRect();
+        // First sort by top position (vertical)
+        if (Math.abs(rectA.top - rectB.top) > 10) {
+          return rectA.top - rectB.top;
+        }
+        // If roughly on the same row, sort by left position (horizontal)
+        return rectA.left - rectB.left;
+      });
+      
+      // Find the first empty placeholder (sequential order: 1, 2, 3...)
+      const findNextEmptyPlaceholder = () => {
+        for (let i = 0; i < sortedPlaceholders.length; i++) {
+          const placeholder = sortedPlaceholders[i];
+          const hasImage = placeholder.querySelector('img') !== null;
+          if (!hasImage) {
+            return { placeholder, index: i + 1 }; // Return 1-indexed number
+          }
+        }
+        return null; // All placeholders are filled
+      };
+      
+      const nextEmpty = findNextEmptyPlaceholder();
+      
+      // In one-by-one mode: only allow drop on the next empty placeholder in sequence
+      if (oneByOneMode) {
+        if (hoveredPlaceholderIdRef.current) {
+          const hoveredPlaceholder = sortedPlaceholders.find(p => p.id === hoveredPlaceholderIdRef.current);
+          if (hoveredPlaceholder && hoveredPlaceholder.id) {
+            // Check if the hovered placeholder is the next empty one
+            if (nextEmpty && hoveredPlaceholder.id === nextEmpty.placeholder.id) {
+              console.log(`[XhtmlCanvas] Sequential mode: Dropping on placeholder #${nextEmpty.index} (${hoveredPlaceholder.id})`);
+              onDrop(hoveredPlaceholder.id, item.image);
+              return { dropped: true, placeholderId: hoveredPlaceholder.id };
+            } else if (nextEmpty) {
+              console.warn(`[XhtmlCanvas] Sequential mode: Can only drop on placeholder #${nextEmpty.index}, but hovered placeholder is different. Ignoring drop.`);
+              // Optionally show a message to the user
+              alert(`Please drop the image on placeholder #${nextEmpty.index} first.`);
+              return;
+            } else {
+              console.warn('[XhtmlCanvas] Sequential mode: All placeholders are filled');
+              alert('All placeholders are already filled.');
+              return;
+            }
+          } else {
+            console.warn('[XhtmlCanvas] Sequential mode: Hovered placeholder not found, ignoring drop');
+            return;
+          }
+        } else {
+          // No hovered placeholder, but we can still drop on the next empty one
+          if (nextEmpty) {
+            console.log(`[XhtmlCanvas] Sequential mode: Auto-dropping on next empty placeholder #${nextEmpty.index} (${nextEmpty.placeholder.id})`);
+            onDrop(nextEmpty.placeholder.id, item.image);
+            return { dropped: true, placeholderId: nextEmpty.placeholder.id };
+          } else {
+            console.warn('[XhtmlCanvas] Sequential mode: All placeholders are filled');
+            alert('All placeholders are already filled.');
+            return;
+          }
+        }
+      }
+      
+      // PRIMARY METHOD: Use DOM-based detection (elementFromPoint + closest)
+      // This is 100% accurate regardless of absolute positioning, transforms, or scroll
+      // This handles the "absolute positioning trap" you identified
+      console.log('[XhtmlCanvas] Using DOM-based drop detection (elementFromPoint)');
+      const elementAtPoint = document.elementFromPoint(dropPoint.x, dropPoint.y);
+      console.log('[XhtmlCanvas] Element at drop point:', {
+        tag: elementAtPoint?.tagName,
+        id: elementAtPoint?.id,
+        className: elementAtPoint?.className,
+        isPlaceholder: elementAtPoint?.classList?.contains('image-placeholder') || elementAtPoint?.classList?.contains('image-drop-zone')
+      });
+      
+      // Strategy 1: Check if the element itself is a placeholder
+      if (elementAtPoint && (
+        elementAtPoint.classList?.contains('image-placeholder') || 
+        elementAtPoint.classList?.contains('image-drop-zone')
+      )) {
+        const placeholderId = elementAtPoint.id;
+        if (placeholderId) {
+          console.log(`[XhtmlCanvas] ✓ Direct match: Element is placeholder ${placeholderId}`);
+          onDrop(placeholderId, item.image);
+          return { dropped: true, placeholderId };
+        }
+      }
+      
+      // Strategy 2: Use closest() to find parent placeholder (handles nested structures)
+      const placeholderAtPoint = elementAtPoint?.closest('.image-placeholder, .image-drop-zone');
+      if (placeholderAtPoint && placeholderAtPoint.id) {
+        console.log(`[XhtmlCanvas] ✓ Found via closest(): ${placeholderAtPoint.id}`);
+        onDrop(placeholderAtPoint.id, item.image);
+        return { dropped: true, placeholderId: placeholderAtPoint.id };
+      }
+      
+      // Strategy 3: Check if any placeholder contains the element (for absolute positioned children)
+      // This handles cases where the element is a child of an absolutely positioned placeholder
+      let containingPlaceholder = null;
+      for (const placeholder of allPlaceholders) {
+        if (placeholder.contains(elementAtPoint) && placeholder.id) {
+          containingPlaceholder = placeholder;
+          break;
+        }
+      }
+      
+      if (containingPlaceholder && containingPlaceholder.id) {
+        console.log(`[XhtmlCanvas] ✓ Found containing placeholder: ${containingPlaceholder.id}`);
+        onDrop(containingPlaceholder.id, item.image);
+        return { dropped: true, placeholderId: containingPlaceholder.id };
+      }
+      
+      // FALLBACK: Coordinate-based detection (only if DOM methods fail)
+      // This is less reliable but handles edge cases
+      console.warn('[XhtmlCanvas] DOM-based detection failed, falling back to coordinate-based detection');
       let targetPlaceholder = null;
       let minDistance = Infinity;
       
@@ -395,38 +635,22 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
         
         // Skip if element has zero size (might be hidden or not rendered)
         if (rect.width === 0 && rect.height === 0) {
-          console.log(`[XhtmlCanvas] Skipping placeholder ${idx} (id: ${div.id}) - zero size`);
           return;
         }
         
-        // Log detailed bounds for debugging
-        console.log(`[XhtmlCanvas] Placeholder ${idx} (${div.id}):`, {
-          bounds: {
-            left: rect.left,
-            top: rect.top,
-            right: rect.right,
-            bottom: rect.bottom,
-            width: rect.width,
-            height: rect.height
-          },
-          dropPoint: dropPoint,
-          isInsideX: dropPoint.x >= rect.left && dropPoint.x <= rect.right,
-          isInsideY: dropPoint.y >= rect.top && dropPoint.y <= rect.bottom
-        });
-        
-        // Check if drop point is inside this placeholder (with some tolerance for edge cases)
-        const tolerance = 5; // 5px tolerance for edge detection
+        // Check if drop point is inside this placeholder (with tolerance)
+        const tolerance = 10; // Increased tolerance for absolute positioned elements
         const isInside = dropPoint.x >= (rect.left - tolerance) && 
                         dropPoint.x <= (rect.right + tolerance) &&
                         dropPoint.y >= (rect.top - tolerance) && 
                         dropPoint.y <= (rect.bottom + tolerance);
         
         if (isInside) {
-          // Found exact match - use this one
+          // Found match - use this one
           if (!targetPlaceholder) {
             targetPlaceholder = div;
             minDistance = 0;
-            console.log(`[XhtmlCanvas] ✓ Exact match: Placeholder ${idx} (id: ${div.id}, size: ${rect.width}x${rect.height})`);
+            console.log(`[XhtmlCanvas] ✓ Coordinate match: Placeholder ${idx} (id: ${div.id})`);
           }
         } else {
           // Calculate distance to placeholder center
@@ -436,100 +660,30 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
             Math.pow(dropPoint.x - centerX, 2) + Math.pow(dropPoint.y - centerY, 2)
           );
           
-          // Also calculate distance to nearest edge (for very thin placeholders)
-          const distToLeft = Math.abs(dropPoint.x - rect.left);
-          const distToRight = Math.abs(dropPoint.x - rect.right);
-          const distToTop = Math.abs(dropPoint.y - rect.top);
-          const distToBottom = Math.abs(dropPoint.y - rect.bottom);
-          const minEdgeDistance = Math.min(distToLeft, distToRight, distToTop, distToBottom);
+          // For absolutely positioned elements, use larger tolerance
+          const computedStyle = window.getComputedStyle(div);
+          const isAbsolute = computedStyle.position === 'absolute';
+          const maxDistance = isAbsolute ? 200 : 150; // Larger tolerance for absolute
           
-          // Use the minimum of center distance and edge distance
-          const effectiveDistance = Math.min(distance, minEdgeDistance);
-          
-          // Increase tolerance for near matches (150px for center, 50px for edge)
-          const isNear = effectiveDistance < (minEdgeDistance < 50 ? 50 : 150);
-          
-          if (isNear && effectiveDistance < minDistance) {
-            minDistance = effectiveDistance;
+          if (distance < maxDistance && distance < minDistance) {
+            minDistance = distance;
             targetPlaceholder = div;
-            console.log(`[XhtmlCanvas] Near match: Placeholder ${idx} (id: ${div.id}), center distance: ${distance.toFixed(2)}px, edge distance: ${minEdgeDistance.toFixed(2)}px, size: ${rect.width}x${rect.height}`);
+            console.log(`[XhtmlCanvas] Near match: Placeholder ${idx} (id: ${div.id}), distance: ${distance.toFixed(2)}px, absolute: ${isAbsolute}`);
           }
         }
       });
       
       if (targetPlaceholder && targetPlaceholder.id) {
-        console.log(`[XhtmlCanvas] ✓ Selected placeholder: ${targetPlaceholder.id}`);
+        console.log(`[XhtmlCanvas] ✓ Selected placeholder via coordinates: ${targetPlaceholder.id}`);
         onDrop(targetPlaceholder.id, item.image);
+        return { dropped: true, placeholderId: targetPlaceholder.id };
       } else {
-        // Fallback: Use elementFromPoint to find what's actually at the drop location
-        console.warn('[XhtmlCanvas] ✗ No placeholder found at drop point, trying elementFromPoint fallback');
-        const elementAtPoint = document.elementFromPoint(dropPoint.x, dropPoint.y);
-        console.log('[XhtmlCanvas] Element at drop point:', elementAtPoint?.tagName, elementAtPoint?.id, elementAtPoint?.className);
-        
-        // Check if the element at point is a placeholder or inside one
-        const placeholderAtPoint = elementAtPoint?.closest('.image-placeholder, .image-drop-zone');
-        if (placeholderAtPoint && placeholderAtPoint.id) {
-          console.log(`[XhtmlCanvas] ✓ Found placeholder via elementFromPoint: ${placeholderAtPoint.id}`);
-            if (onDrop && typeof onDrop === 'function') {
-              onDrop(placeholderAtPoint.id, item.image);
-            }
-          return;
-        }
-        
-        // Last resort: Check if any placeholder contains the element at point
-        allPlaceholders.forEach((placeholder) => {
-          if (placeholder.contains(elementAtPoint) && placeholder.id) {
-            console.log(`[XhtmlCanvas] ✓ Found placeholder containing element: ${placeholder.id}`);
-            if (onDrop && typeof onDrop === 'function') {
-              onDrop(placeholder.id, item.image);
-            }
-            return;
-          }
-        });
-        
-        // Final fallback: Find the closest placeholder by distance (even if not near)
-        // This handles cases where the placeholder is very small or the drop point is slightly off
-        if (allPlaceholders.length > 0) {
-          let closestPlaceholder = null;
-          let closestDistance = Infinity;
-          
-          allPlaceholders.forEach((placeholder) => {
-            const rect = placeholder.getBoundingClientRect();
-            const centerX = rect.left + rect.width / 2;
-            const centerY = rect.top + rect.height / 2;
-            const distance = Math.sqrt(
-              Math.pow(dropPoint.x - centerX, 2) + Math.pow(dropPoint.y - centerY, 2)
-            );
-            
-            // Also check distance to edges (for very thin placeholders)
-            const distToLeft = Math.abs(dropPoint.x - rect.left);
-            const distToRight = Math.abs(dropPoint.x - rect.right);
-            const distToTop = Math.abs(dropPoint.y - rect.top);
-            const distToBottom = Math.abs(dropPoint.y - rect.bottom);
-            const minEdgeDistance = Math.min(distToLeft, distToRight, distToTop, distToBottom);
-            
-            // Use the minimum distance (center or edge)
-            const effectiveDistance = Math.min(distance, minEdgeDistance);
-            
-            if (effectiveDistance < closestDistance) {
-              closestDistance = effectiveDistance;
-              closestPlaceholder = placeholder;
-            }
-          });
-          
-          if (closestPlaceholder && closestPlaceholder.id) {
-            console.log(`[XhtmlCanvas] ✓ Using closest placeholder as final fallback: ${closestPlaceholder.id}, distance: ${closestDistance.toFixed(2)}px`);
-            if (onDrop && typeof onDrop === 'function') {
-              onDrop(closestPlaceholder.id, item.image);
-            }
-            return;
-          }
-        }
-        
-        console.warn('[XhtmlCanvas] ✗ No placeholder found at drop point after all fallbacks');
+        console.warn('[XhtmlCanvas] ✗ No placeholder found at drop point after all methods');
         console.log('[XhtmlCanvas] Drop point:', dropPoint);
+        console.log('[XhtmlCanvas] Element at point:', elementAtPoint);
         console.log('[XhtmlCanvas] Available placeholders:', Array.from(allPlaceholders).map(p => ({
           id: p.id,
+          position: window.getComputedStyle(p).position,
           bounds: p.getBoundingClientRect()
         })));
       }
@@ -602,26 +756,176 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false 
     },
   });
 
+  // Track which placeholder is currently being hovered (for one-by-one mode)
+  const [hoveredPlaceholderId, setHoveredPlaceholderId] = useState(null);
+  const hoveredPlaceholderIdRef = useRef(null);
+  
+  // Keep ref in sync with state
   useEffect(() => {
-    // Add drag-over class to placeholders when dragging over canvas
-    if (isOver && canvasRef.current) {
+    hoveredPlaceholderIdRef.current = hoveredPlaceholderId;
+  }, [hoveredPlaceholderId]);
+
+  useEffect(() => {
+    // Handle placeholder highlighting based on sequential mode
+    // DISABLED: Highlighting ONLY happens in GrapesJS mode, not in standard mode
+    // Since XhtmlCanvas only renders when useGrapesJS is false, checking for useGrapesJS 
+    // ensures this highlighting code never runs (which is what we want)
+    if (useGrapesJS && isOver && canvasRef.current) {
       // Find the draggable-canvas-container inside canvasRef
       const draggableCanvas = canvasRef.current.querySelector('[data-draggable-canvas="true"]') || 
                                canvasRef.current.querySelector('.draggable-canvas-container') ||
                                canvasRef.current;
       
       const placeholderDivs = draggableCanvas.querySelectorAll('.image-placeholder, .image-drop-zone');
-      placeholderDivs.forEach((div) => {
-        div.classList.add('drag-over');
+      
+      // Sort placeholders by position (same as in drop handler)
+      const sortedPlaceholders = Array.from(placeholderDivs).sort((a, b) => {
+        const rectA = a.getBoundingClientRect();
+        const rectB = b.getBoundingClientRect();
+        if (Math.abs(rectA.top - rectB.top) > 10) {
+          return rectA.top - rectB.top;
+        }
+        return rectA.left - rectB.left;
       });
+      
+      // Find the next empty placeholder
+      const findNextEmptyPlaceholder = () => {
+        for (let i = 0; i < sortedPlaceholders.length; i++) {
+          const placeholder = sortedPlaceholders[i];
+          const hasImage = placeholder.querySelector('img') !== null;
+          if (!hasImage) {
+            return { placeholder, index: i + 1 };
+          }
+        }
+        return null;
+      };
+      
+      const nextEmpty = findNextEmptyPlaceholder();
+      
+      if (oneByOneMode) {
+        // In sequential mode: only highlight the next empty placeholder (or the hovered one if it's the next)
+        placeholderDivs.forEach((div) => {
+          const isNextEmpty = nextEmpty && div.id === nextEmpty.placeholder.id;
+          const isHovered = div.id === hoveredPlaceholderId;
+          const isTarget = isNextEmpty && (isHovered || !hoveredPlaceholderId); // Highlight next empty, or hovered if it's the next
+          
+          if (isTarget) {
+            div.classList.add('drag-over', 'drag-over-active');
+            // Add a label showing which placeholder number
+            let label = div.querySelector('.placeholder-label');
+            if (!label) {
+              label = document.createElement('div');
+              label.className = 'placeholder-label';
+              div.style.position = 'relative';
+              div.appendChild(label);
+            }
+            label.textContent = `Drop here: Placeholder #${nextEmpty.index}`;
+            label.style.cssText = `
+              position: absolute;
+              top: 50%;
+              left: 50%;
+              transform: translate(-50%, -50%);
+              background: rgba(76, 175, 80, 0.95);
+              color: white;
+              padding: 12px 20px;
+              border-radius: 8px;
+              font-weight: bold;
+              font-size: 14px;
+              z-index: 10000;
+              pointer-events: none;
+              box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+              white-space: nowrap;
+            `;
+          } else {
+            div.classList.remove('drag-over', 'drag-over-active');
+            div.classList.add('drag-over-disabled');
+            // Remove label from other placeholders
+            const label = div.querySelector('.placeholder-label');
+            if (label) label.remove();
+          }
+        });
+      } else {
+        // In normal mode: highlight all placeholders
+        placeholderDivs.forEach((div) => {
+          div.classList.add('drag-over');
+          div.classList.remove('drag-over-disabled', 'drag-over-active');
+          // Remove labels
+          const label = div.querySelector('.placeholder-label');
+          if (label) label.remove();
+        });
+      }
       
       return () => {
         placeholderDivs.forEach((div) => {
-          div.classList.remove('drag-over');
+          div.classList.remove('drag-over', 'drag-over-active', 'drag-over-disabled');
+          const label = div.querySelector('.placeholder-label');
+          if (label) label.remove();
         });
+        setHoveredPlaceholderId(null);
       };
     }
-  }, [isOver, canvasRef]);
+  }, [isOver, canvasRef, oneByOneMode, hoveredPlaceholderId, useGrapesJS]);
+
+  // Track mouse movement to find which placeholder is being hovered
+  useEffect(() => {
+    if (!oneByOneMode || !isOver) {
+      setHoveredPlaceholderId(null);
+      return;
+    }
+
+    const handleMouseMove = (e) => {
+      if (!canvasRef?.current) return;
+
+      const draggableCanvas = canvasRef.current.querySelector('[data-draggable-canvas="true"]') || 
+                               canvasRef.current.querySelector('.draggable-canvas-container') ||
+                               canvasRef.current;
+      
+      if (!draggableCanvas) return;
+
+      // Find all placeholders
+      const allPlaceholders = draggableCanvas.querySelectorAll('.image-placeholder, .image-drop-zone');
+      
+      // Find which placeholder the mouse is over
+      let hoveredId = null;
+      let minDistance = Infinity;
+
+      allPlaceholders.forEach((placeholder) => {
+        const rect = placeholder.getBoundingClientRect();
+        const isInside = e.clientX >= rect.left && 
+                        e.clientX <= rect.right && 
+                        e.clientY >= rect.top && 
+                        e.clientY <= rect.bottom;
+        
+        if (isInside) {
+          // Calculate distance to center for tie-breaking
+          const centerX = rect.left + rect.width / 2;
+          const centerY = rect.top + rect.height / 2;
+          const distance = Math.sqrt(
+            Math.pow(e.clientX - centerX, 2) + Math.pow(e.clientY - centerY, 2)
+          );
+          
+          if (distance < minDistance) {
+            minDistance = distance;
+            hoveredId = placeholder.id;
+          }
+        }
+      });
+
+      setHoveredPlaceholderId(hoveredId);
+    };
+
+    if (canvasRef?.current) {
+      canvasRef.current.addEventListener('mousemove', handleMouseMove);
+      return () => {
+        if (canvasRef?.current) {
+          canvasRef.current.removeEventListener('mousemove', handleMouseMove);
+        }
+      };
+    }
+  }, [oneByOneMode, isOver, canvasRef]);
+
+  // Note: The GrapesJS drop handler useEffect is in the EpubImageEditor component
+  // because it needs access to useGrapesJS state which is defined there
 
   // This is a transparent overlay for drop handling
   // react-dnd needs this to always be present and active to detect drops
@@ -716,11 +1020,15 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const [placeholders, setPlaceholders] = useState([]);
   const canvasRef = useRef(null);
   const [modified, setModified] = useState(false);
-  const [editMode, setEditMode] = useState(false);
+  const [editMode, setEditMode] = useState(true);
   const [editingImage, setEditingImage] = useState(null); // {imageId, imageUrl, imageElement}
   const [imageEditorVisible, setImageEditorVisible] = useState(false);
+  const [galleryWidth, setGalleryWidth] = useState(30); // Percentage width for gallery
+  const [isResizing, setIsResizing] = useState(false);
+  const oneByOneMode = true; // One-by-one drop mode (always enabled)
+  const [useGrapesJS, setUseGrapesJS] = useState(true); // Toggle between GrapesJS and DraggableCanvas
+  const [grapesjsEditor, setGrapesjsEditor] = useState(null); // GrapesJS editor instance
 
-  // Load XHTML and images
   // Only reload if pageNumber or jobId changes, NOT if we're just modifying XHTML
   useEffect(() => {
     // Reset modified flag when page changes
@@ -748,8 +1056,45 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       });
       let xhtmlContent = xhtmlResponse.data;
       
-      // Apply reflowable CSS
+      // Apply reflowable CSS FIRST (needs full document structure)
       xhtmlContent = applyReflowableCss(xhtmlContent);
+      
+      // Extract body content if XHTML is a full document
+      // This prevents rendering issues when inserting full HTML documents via dangerouslySetInnerHTML
+      const parser = new DOMParser();
+      let doc = parser.parseFromString(xhtmlContent, 'text/html');
+      let parserError = doc.querySelector('parsererror');
+      
+      if (parserError) {
+        // Try XML parsing
+        doc = parser.parseFromString(xhtmlContent, 'application/xml');
+        parserError = doc.querySelector('parsererror');
+      }
+      
+      if (!parserError && (doc.body || doc.documentElement)) {
+        // Extract styles from head (including the reflowable CSS we just added)
+        const headStyles = doc.head ? Array.from(doc.head.querySelectorAll('style')).map(s => s.innerHTML).join('\n') : '';
+        const headLinks = doc.head ? Array.from(doc.head.querySelectorAll('link[rel="stylesheet"]')).map(l => l.outerHTML).join('\n') : '';
+        
+        // Get body content
+        const bodyContent = doc.body ? doc.body.innerHTML : (doc.documentElement ? doc.documentElement.innerHTML : xhtmlContent);
+        
+        // Reconstruct with styles in a style tag
+        if (headStyles || headLinks) {
+          xhtmlContent = `<div class="xhtml-content-wrapper">${headLinks ? headLinks : ''}${headStyles ? `<style>${headStyles}</style>` : ''}${bodyContent}</div>`;
+        } else {
+          xhtmlContent = `<div class="xhtml-content-wrapper">${bodyContent}</div>`;
+        }
+      } else {
+        // If parsing failed, wrap the content anyway to ensure it renders
+        console.warn('[EpubImageEditor] XHTML parsing had errors, wrapping content anyway');
+        xhtmlContent = `<div class="xhtml-content-wrapper">${xhtmlContent}</div>`;
+      }
+      
+      // Debug: Log the final XHTML structure
+      console.log('[EpubImageEditor] Final XHTML length:', xhtmlContent.length);
+      console.log('[EpubImageEditor] XHTML contains body content:', xhtmlContent.includes('page4') || xhtmlContent.includes('page'));
+      console.log('[EpubImageEditor] XHTML contains styles:', xhtmlContent.includes('<style'));
       
       // Convert relative image paths to absolute URLs for browser preview
       // Pattern: src="images/filename.ext" or src="../images/filename.ext" -> absolute URL
@@ -771,32 +1116,67 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       setOriginalXhtml(xhtmlContent);
       setXhtml(xhtmlContent);
       
+      // INSPECT: Check for existing images in XHTML
+      const tempDoc = parser.parseFromString(xhtmlContent, 'text/html');
+      const existingImages = tempDoc.querySelectorAll('img');
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      console.log('[EpubImageEditor] 🔍 INSPECTING XHTML for existing images');
+      console.log('[EpubImageEditor] Total images found in XHTML:', existingImages.length);
+      
+      if (existingImages.length > 0) {
+        console.log('[EpubImageEditor] ⚠️ Images already present in XHTML (these will display automatically):');
+        existingImages.forEach((img, index) => {
+          console.log(`  [${index + 1}] Image ID: "${img.id || '(no ID)'}", SRC: "${img.src || img.getAttribute('src') || '(no src)'}"`);
+        });
+      } else {
+        console.log('[EpubImageEditor] ✓ No images found in XHTML - starting with clean placeholders');
+      }
+      
+      // Also check for placeholder divs
+      const placeholderDivs = tempDoc.querySelectorAll('.image-placeholder, .image-drop-zone');
+      console.log('[EpubImageEditor] Placeholder divs found:', placeholderDivs.length);
+      placeholderDivs.forEach((div, index) => {
+        const hasImg = div.querySelector('img') !== null;
+        console.log(`  Placeholder [${index + 1}]: ID="${div.id || '(no ID)'}", Has Image=${hasImg}`);
+      });
+      
+      console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+      
       // Extract placeholders
       extractPlaceholdersFromXhtml(xhtmlContent);
       
       // Debug: Log placeholder detection after a short delay to ensure DOM is ready
       setTimeout(() => {
         if (canvasRef?.current) {
-          const draggableCanvas = canvasRef.current.querySelector('[data-draggable-canvas="true"]') || 
-                                   canvasRef.current.querySelector('.draggable-canvas-container') ||
-                                   canvasRef.current;
-          
-          if (draggableCanvas) {
-            const foundPlaceholders = draggableCanvas.querySelectorAll('.image-placeholder, .image-drop-zone');
-            console.log(`[EpubImageEditor] After load - Found ${foundPlaceholders.length} placeholders in DOM:`, 
-              Array.from(foundPlaceholders).map(p => ({
-                id: p.id,
-                classes: p.className,
-                size: `${p.getBoundingClientRect().width}x${p.getBoundingClientRect().height}`,
-                visible: p.getBoundingClientRect().width > 0 && p.getBoundingClientRect().height > 0,
-                position: {
-                  top: p.getBoundingClientRect().top,
-                  left: p.getBoundingClientRect().left,
-                  right: p.getBoundingClientRect().right,
-                  bottom: p.getBoundingClientRect().bottom
-                }
-              }))
-            );
+          // Check if GrapesJS is enabled - placeholders are in the iframe
+          const grapesJSCanvas = canvasRef.current.querySelector('.grapesjs-canvas-container');
+          if (grapesJSCanvas) {
+            // For GrapesJS, placeholders are in the iframe - we can't query them directly
+            // But we know they exist from extractPlaceholdersFromXhtml
+            console.log(`[EpubImageEditor] After load - GrapesJS mode: Found ${placeholders.length} placeholders from XHTML parsing (placeholders are in GrapesJS iframe)`);
+          } else {
+            // Standard mode - query DOM directly
+            const draggableCanvas = canvasRef.current.querySelector('[data-draggable-canvas="true"]') || 
+                                     canvasRef.current.querySelector('.draggable-canvas-container') ||
+                                     canvasRef.current;
+            
+            if (draggableCanvas) {
+              const foundPlaceholders = draggableCanvas.querySelectorAll('.image-placeholder, .image-drop-zone');
+              console.log(`[EpubImageEditor] After load - Found ${foundPlaceholders.length} placeholders in DOM:`, 
+                Array.from(foundPlaceholders).map(p => ({
+                  id: p.id,
+                  classes: p.className,
+                  size: `${p.getBoundingClientRect().width}x${p.getBoundingClientRect().height}`,
+                  visible: p.getBoundingClientRect().width > 0 && p.getBoundingClientRect().height > 0,
+                  position: {
+                    top: p.getBoundingClientRect().top,
+                    left: p.getBoundingClientRect().left,
+                    right: p.getBoundingClientRect().right,
+                    bottom: p.getBoundingClientRect().bottom
+                  }
+                }))
+              );
+            }
           }
         }
       }, 500);
@@ -1026,10 +1406,34 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
           [100, 300, 500, 1000].forEach((delay, idx) => {
             setTimeout(() => {
               if (canvasRef?.current) {
-                const img = canvasRef.current.querySelector(`img[id="${placeholderId}"]`);
+                // In GrapesJS mode, images are in the iframe document
+                // In standard mode, images are directly in canvasRef
+                let img = null;
+                let searchDoc = document;
+                
+                if (useGrapesJS) {
+                  // Look in GrapesJS iframe
+                  const grapesContainer = canvasRef.current.querySelector('.grapesjs-canvas-container');
+                  if (grapesContainer) {
+                    const iframe = grapesContainer.querySelector('iframe');
+                    if (iframe) {
+                      const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+                      if (frameDoc) {
+                        searchDoc = frameDoc;
+                        img = frameDoc.querySelector(`img[id="${placeholderId}"]`);
+                      }
+                    }
+                  }
+                } else {
+                  // Standard mode - search in canvasRef
+                  img = canvasRef.current.querySelector(`img[id="${placeholderId}"]`);
+                }
+                
                 if (img) {
                   const rect = img.getBoundingClientRect();
-                  const computedStyle = window.getComputedStyle(img);
+                  // Use the correct window object (iframe window if in GrapesJS mode)
+                  const imgWindow = useGrapesJS && searchDoc.defaultView ? searchDoc.defaultView : window;
+                  const computedStyle = imgWindow.getComputedStyle(img);
                   console.log(`[handleDrop] ✓ Verification PASSED (check ${idx + 1}) - Image persists in DOM:`, {
                     id: img.id,
                     src: img.src,
@@ -1056,6 +1460,12 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                     }, 100);
                   }
                 } else {
+                  // In GrapesJS mode, rendering is async so image might not be in DOM yet
+                  if (useGrapesJS) {
+                    console.log(`[handleDrop] Image not yet in DOM (check ${idx + 1}) - GrapesJS renders asynchronously, this is expected`);
+                    // In GrapesJS mode, we rely on the XHTML string verification which already passed
+                    // GrapesJS will update its content when it receives the new XHTML prop
+                } else {
                   console.error(`[handleDrop] ✗ Verification FAILED (check ${idx + 1}) - Image not found in DOM!`);
                   if (idx === 3) { // Last check - force restore
                     console.log('[handleDrop] Attempting to restore image by forcing re-render...');
@@ -1067,6 +1477,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                       }
                       return prev;
                     });
+                    }
                   }
                 }
               }
@@ -1085,7 +1496,611 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       console.error('Error handling drop:', err);
       setError('Failed to insert image: ' + err.message);
     }
-  }, [jobId, extractPlaceholdersFromXhtml, canvasRef]);
+  }, [jobId, extractPlaceholdersFromXhtml, canvasRef, useGrapesJS]);
+
+  // CRITICAL: Add drop handler for GrapesJS mode (bypasses react-dnd)
+  // Use document-level handler in capture phase to intercept before react-dnd
+  useEffect(() => {
+    console.log('[EpubImageEditor] Drop handler useEffect running', {
+      useGrapesJS,
+      hasCanvasRef: !!canvasRef.current,
+      hasHandleDrop: !!handleDrop
+    });
+    
+    if (!useGrapesJS) {
+      console.log('[EpubImageEditor] GrapesJS disabled, skipping drop handler setup');
+      return;
+    }
+    
+    console.log('[EpubImageEditor] ✓ GrapesJS is enabled, setting up document-level drop handler');
+    
+    // Function to initialize highlighting when drag starts - defined outside attachIframeHandlers so it persists
+    const initializeHighlighting = () => {
+      try {
+        const canvasWrapper = canvasRef.current;
+        if (!canvasWrapper) {
+          console.log('[EpubImageEditor] initializeHighlighting - no canvas wrapper');
+          return;
+        }
+        const grapesContainer = canvasWrapper.querySelector('.grapesjs-canvas-container');
+        if (!grapesContainer) {
+          console.log('[EpubImageEditor] initializeHighlighting - no grapes container');
+          return;
+        }
+        const iframe = grapesContainer.querySelector('iframe');
+        if (!iframe) {
+          console.log('[EpubImageEditor] initializeHighlighting - no iframe');
+          return;
+        }
+        const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+        if (!frameDoc) {
+          console.log('[EpubImageEditor] initializeHighlighting - cannot access frameDoc');
+          return;
+        }
+        
+        // Find all placeholders
+        const allPlaceholders = frameDoc.querySelectorAll('.image-placeholder, .image-drop-zone');
+        if (allPlaceholders.length === 0) {
+          console.log('[EpubImageEditor] initializeHighlighting - No placeholders found');
+          return;
+        }
+        
+        // Log removed to reduce console noise
+        // console.log('[EpubImageEditor] initializeHighlighting - Found', allPlaceholders.length, 'placeholders');
+        
+        // Sort placeholders
+        const sortedPlaceholders = Array.from(allPlaceholders).sort((a, b) => {
+          const rectA = a.getBoundingClientRect();
+          const rectB = b.getBoundingClientRect();
+          if (Math.abs(rectA.top - rectB.top) > 10) {
+            return rectA.top - rectB.top;
+          }
+          return rectA.left - rectB.left;
+        });
+        
+        // Find next empty placeholder
+        const findNextEmptyPlaceholder = () => {
+          for (let i = 0; i < sortedPlaceholders.length; i++) {
+            const placeholder = sortedPlaceholders[i];
+            const hasImage = placeholder.querySelector('img') !== null;
+            if (!hasImage) {
+              return { placeholder, index: i + 1 };
+            }
+          }
+          return null;
+        };
+        
+        const nextEmpty = findNextEmptyPlaceholder();
+        // Log removed to reduce console noise
+        // console.log('[EpubImageEditor] initializeHighlighting - Next empty:', nextEmpty ? nextEmpty.placeholder.id : 'none');
+        
+        // Apply initial highlighting - always use one-by-one mode
+        allPlaceholders.forEach((placeholder) => {
+          const hasImage = placeholder.querySelector('img') !== null;
+          
+          const isNextEmpty = nextEmpty && placeholder.id === nextEmpty.placeholder.id;
+          if (isNextEmpty && !hasImage) {
+            placeholder.classList.add('drag-over', 'drag-over-active');
+            placeholder.classList.remove('drag-over-disabled');
+            // Log removed to reduce console noise
+            // console.log('[EpubImageEditor] initializeHighlighting - Marked as active:', placeholder.id);
+          } else if (!hasImage) {
+            placeholder.classList.add('drag-over-disabled');
+            placeholder.classList.remove('drag-over', 'drag-over-active');
+          } else {
+            placeholder.classList.remove('drag-over', 'drag-over-active', 'drag-over-disabled');
+          }
+        });
+        
+        // Log removed to reduce console noise
+        // console.log('[EpubImageEditor] Initial placeholder highlighting applied to', allPlaceholders.length, 'placeholders');
+      } catch (err) {
+        console.warn('[EpubImageEditor] Error initializing highlighting:', err);
+      }
+    };
+    
+    // Listen for drag start to initialize highlighting - add at window level (outside attachIframeHandlers)
+    const handleImageDragStart = () => {
+      console.log('[EpubImageEditor] image-drag-start event received, currentDragImage:', !!window.currentDragImage);
+      if (window.currentDragImage) {
+        // Small delay to ensure iframe is ready
+        setTimeout(() => {
+          initializeHighlighting();
+        }, 100);
+      } else {
+        // If currentDragImage not set yet, try again after a short delay
+        setTimeout(() => {
+          if (window.currentDragImage) {
+            initializeHighlighting();
+          }
+        }, 200);
+      }
+    };
+    
+    window.addEventListener('image-drag-start', handleImageDragStart);
+    console.log('[EpubImageEditor] ✓ Added image-drag-start listener at window level');
+    
+    const handleDocumentDragOver = (e) => {
+      // Only handle if we're dragging an image
+      if (!window.currentDragImage) {
+        return; // Let other handlers process it
+      }
+      
+      // CRITICAL: Always prevent default to allow drops when dragging images
+      // Without this, the browser's default behavior prevents the drop event
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation(); // Stop react-dnd from handling it
+        e.dataTransfer.dropEffect = 'copy';
+      
+      // Log removed to reduce console noise - dragover fires many times per second
+      // console.log('[EpubImageEditor] Document dragover (GrapesJS mode)', {
+      //   clientX: e.clientX,
+      //   clientY: e.clientY,
+      //   hasCurrentDragImage: !!window.currentDragImage
+      // });
+    };
+    
+    const handleDocumentDrop = (e) => {
+      // Log EVERY drop event to see if handler is being called
+      console.log('[EpubImageEditor] ⚡⚡⚡ Document drop event FIRED ⚡⚡⚡', {
+        hasCurrentDragImage: !!window.currentDragImage,
+        currentDragImage: window.currentDragImage?.fileName,
+        target: e.target?.tagName,
+        targetClass: e.target?.className,
+        clientX: e.clientX,
+        clientY: e.clientY,
+        dataTransferTypes: Array.from(e.dataTransfer?.types || [])
+      });
+      
+      // Always prevent default to avoid browser's default drop behavior
+      e.preventDefault();
+      e.stopPropagation();
+      e.stopImmediatePropagation();
+      
+      // Only handle if we're dragging an image
+      if (!window.currentDragImage) {
+        console.log('[EpubImageEditor] No currentDragImage, ignoring drop');
+        return;
+      }
+      
+      // Check if we're over the canvas area
+      const canvasWrapper = canvasRef.current;
+      if (!canvasWrapper) {
+        console.warn('[EpubImageEditor] Canvas wrapper not found');
+        return;
+      }
+      
+      const rect = canvasWrapper.getBoundingClientRect();
+      const isOverCanvas = e.clientX >= rect.left && 
+                          e.clientX <= rect.right && 
+                          e.clientY >= rect.top && 
+                          e.clientY <= rect.bottom;
+      
+      if (!isOverCanvas) {
+        console.log('[EpubImageEditor] Drop outside canvas area, ignoring');
+        return;
+      }
+      
+      // preventDefault already called above, but keep for clarity
+      console.log('[EpubImageEditor] ✓ Document drop detected on canvas (GrapesJS mode)');
+      
+      const image = window.currentDragImage;
+      if (!image) {
+        console.warn('[EpubImageEditor] No image in window.currentDragImage after check');
+        return;
+      }
+      
+      // Find the GrapesJS iframe
+      const grapesContainer = canvasWrapper.querySelector('.grapesjs-canvas-container');
+      if (!grapesContainer) {
+        console.warn('[EpubImageEditor] GrapesJS container not found');
+        return;
+      }
+      
+      // Find the iframe inside GrapesJS
+      const iframe = grapesContainer.querySelector('iframe');
+      if (!iframe) {
+        console.warn('[EpubImageEditor] GrapesJS iframe not found');
+        return;
+      }
+      
+      const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (!frameDoc) {
+        console.warn('[EpubImageEditor] Cannot access iframe document');
+        return;
+      }
+      
+      // Get drop coordinates relative to iframe
+      const iframeRect = iframe.getBoundingClientRect();
+      const x = e.clientX - iframeRect.left;
+      const y = e.clientY - iframeRect.top;
+      
+      console.log('[EpubImageEditor] Drop coordinates in iframe:', x, y);
+      
+      // Find element at drop point
+      const elementAtPoint = frameDoc.elementFromPoint(x, y);
+      if (!elementAtPoint) {
+        console.warn('[EpubImageEditor] No element at drop point in iframe');
+        const allPlaceholders = frameDoc.querySelectorAll('.image-placeholder');
+        console.log('[EpubImageEditor] Available placeholders in iframe:', allPlaceholders.length, Array.from(allPlaceholders).map(p => p.id));
+        return;
+      }
+      
+      console.log('[EpubImageEditor] Element at drop point:', elementAtPoint.tagName, elementAtPoint.className, elementAtPoint.id);
+      
+      const placeholder = elementAtPoint.closest('.image-placeholder');
+      if (!placeholder) {
+        console.warn('[EpubImageEditor] No placeholder found at drop point');
+        return;
+      }
+      
+      const placeholderId = placeholder.id || placeholder.getAttribute('id');
+      if (!placeholderId) {
+        console.warn('[EpubImageEditor] Placeholder has no ID');
+        return;
+      }
+      
+      console.log('[EpubImageEditor] ✓ Found placeholder at drop point:', placeholderId);
+      
+      // Call the handleDrop callback
+      if (handleDrop) {
+        console.log('[EpubImageEditor] ✓ Calling handleDrop with:', placeholderId, image.fileName);
+        handleDrop(placeholderId, image);
+      } else {
+        console.warn('[EpubImageEditor] handleDrop callback not available');
+      }
+    };
+    
+    // Also add a catch-all drop handler to debug if events are reaching us
+    const debugDropHandler = (e) => {
+      console.log('[EpubImageEditor] 🔍 DEBUG: Any drop event detected', {
+        target: e.target?.tagName,
+        currentTarget: e.currentTarget?.tagName,
+        hasCurrentDragImage: !!window.currentDragImage,
+        dataTransferTypes: Array.from(e.dataTransfer?.types || [])
+      });
+    };
+    
+    // Use capture phase and add to window (highest priority) to intercept before react-dnd
+    window.addEventListener('dragover', handleDocumentDragOver, true);
+    window.addEventListener('drop', handleDocumentDrop, true);
+    window.addEventListener('drop', debugDropHandler, true); // Debug handler
+    document.addEventListener('dragover', handleDocumentDragOver, true);
+    document.addEventListener('drop', handleDocumentDrop, true);
+    document.addEventListener('drop', debugDropHandler, true); // Debug handler
+    
+    // CRITICAL: Also attach handlers to iframe document (drops into iframe happen there)
+    const attachIframeHandlers = () => {
+      const canvasWrapper = canvasRef.current;
+      if (!canvasWrapper) return;
+      
+      const grapesContainer = canvasWrapper.querySelector('.grapesjs-canvas-container');
+      if (!grapesContainer) return;
+      
+      const iframe = grapesContainer.querySelector('iframe');
+      if (!iframe) return;
+      
+      try {
+        const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+        const frameWin = iframe.contentWindow;
+        if (!frameDoc || !frameWin) {
+          console.log('[EpubImageEditor] Iframe not accessible yet, will retry');
+          return;
+        }
+        
+        console.log('[EpubImageEditor] ✓ Attaching drop handlers to iframe document');
+        
+        // Inject placeholder highlighting CSS into iframe if not already present
+        const placeholderHighlightCSS = `
+          .image-placeholder.drag-over,
+          .image-drop-zone.drag-over {
+            border: 2px solid #2196F3 !important;
+            background-color: rgba(33, 150, 243, 0.1) !important;
+            outline: 2px solid #2196F3 !important;
+            outline-offset: 2px !important;
+          }
+          .image-placeholder.drag-over-active,
+          .image-drop-zone.drag-over-active {
+            border: 3px solid #4CAF50 !important;
+            background-color: rgba(76, 175, 80, 0.15) !important;
+            outline: 3px solid #4CAF50 !important;
+            outline-offset: 3px !important;
+            box-shadow: 0 0 0 6px rgba(76, 175, 80, 0.3), 0 4px 12px rgba(76, 175, 80, 0.5) !important;
+            transform: scale(1.02) !important;
+            z-index: 1000 !important;
+            transition: all 0.2s ease !important;
+          }
+          .image-placeholder.drag-over-disabled,
+          .image-drop-zone.drag-over-disabled {
+            border: 1px dashed #ccc !important;
+            background-color: rgba(0, 0, 0, 0.03) !important;
+            opacity: 0.5 !important;
+            pointer-events: none !important;
+          }
+        `;
+        
+        // Check if placeholder highlight styles are already injected
+        let placeholderStyleEl = frameDoc.getElementById('placeholder-highlight-styles');
+        if (!placeholderStyleEl) {
+          placeholderStyleEl = frameDoc.createElement('style');
+          placeholderStyleEl.id = 'placeholder-highlight-styles';
+          placeholderStyleEl.textContent = placeholderHighlightCSS;
+          frameDoc.head.appendChild(placeholderStyleEl);
+          console.log('[EpubImageEditor] ✓ Injected placeholder highlighting CSS into iframe');
+        }
+        
+        // Iframe dragover handler - must prevent default to allow drops
+        const iframeDragOver = (e) => {
+          // Check parent window for drag image
+          if (!window.currentDragImage) {
+            return;
+          }
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          e.dataTransfer.dropEffect = 'copy';
+          
+          // Highlight placeholders in iframe
+          const x = e.clientX;
+          const y = e.clientY;
+          const elementAtPoint = frameDoc.elementFromPoint(x, y);
+          
+          // Find all placeholders in iframe
+          const allPlaceholders = frameDoc.querySelectorAll('.image-placeholder, .image-drop-zone');
+          
+          // Log removed - dragover fires too frequently
+          // console.log('[EpubImageEditor] Iframe dragover - found placeholders:', allPlaceholders.length);
+          
+          // Sort placeholders by position (top to bottom, left to right)
+          const sortedPlaceholders = Array.from(allPlaceholders).sort((a, b) => {
+            const rectA = a.getBoundingClientRect();
+            const rectB = b.getBoundingClientRect();
+            if (Math.abs(rectA.top - rectB.top) > 10) {
+              return rectA.top - rectB.top;
+            }
+            return rectA.left - rectB.left;
+          });
+          
+          // Find the next empty placeholder
+          const findNextEmptyPlaceholder = () => {
+            for (let i = 0; i < sortedPlaceholders.length; i++) {
+              const placeholder = sortedPlaceholders[i];
+              const hasImage = placeholder.querySelector('img') !== null;
+              if (!hasImage) {
+                return { placeholder, index: i + 1 };
+              }
+            }
+            return null;
+          };
+          
+          const nextEmpty = findNextEmptyPlaceholder();
+          // Log removed - dragover fires too frequently
+          // console.log('[EpubImageEditor] Next empty placeholder:', nextEmpty ? nextEmpty.placeholder.id : 'none');
+          
+          // Find which placeholder is being hovered
+          let hoveredPlaceholder = null;
+          if (elementAtPoint) {
+            hoveredPlaceholder = elementAtPoint.closest('.image-placeholder, .image-drop-zone');
+            // Log removed - dragover fires too frequently
+            // if (hoveredPlaceholder) {
+            //   console.log('[EpubImageEditor] Hovered placeholder:', hoveredPlaceholder.id);
+            // }
+          }
+          
+          // Update highlighting based on mode
+          allPlaceholders.forEach((placeholder) => {
+            const hasImage = placeholder.querySelector('img') !== null;
+            
+            if (oneByOneMode) {
+              // In one-by-one mode: highlight only the next empty placeholder (or hovered if it's the next)
+              const isNextEmpty = nextEmpty && placeholder.id === nextEmpty.placeholder.id;
+              const isHovered = hoveredPlaceholder && placeholder.id === hoveredPlaceholder.id;
+              const isTarget = isNextEmpty && (isHovered || !hoveredPlaceholder);
+              
+              if (isTarget && !hasImage) {
+                placeholder.classList.add('drag-over', 'drag-over-active');
+                placeholder.classList.remove('drag-over-disabled');
+                // Log removed - dragover fires too frequently
+                // console.log('[EpubImageEditor] Highlighting placeholder:', placeholder.id, 'as active');
+              } else if (!hasImage) {
+                placeholder.classList.add('drag-over-disabled');
+                placeholder.classList.remove('drag-over', 'drag-over-active');
+              } else {
+                placeholder.classList.remove('drag-over', 'drag-over-active', 'drag-over-disabled');
+              }
+            } else {
+              // In normal mode: highlight all empty placeholders
+              if (!hasImage) {
+                placeholder.classList.add('drag-over');
+                placeholder.classList.remove('drag-over-disabled', 'drag-over-active');
+              } else {
+                placeholder.classList.remove('drag-over', 'drag-over-active', 'drag-over-disabled');
+              }
+            }
+          });
+        };
+        
+        // Cleanup highlighting when drag ends
+        const cleanupHighlighting = () => {
+          try {
+            const canvasWrapper = canvasRef.current;
+            if (!canvasWrapper) return;
+            const grapesContainer = canvasWrapper.querySelector('.grapesjs-canvas-container');
+            if (!grapesContainer) return;
+            const iframe = grapesContainer.querySelector('iframe');
+            if (!iframe) return;
+            const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+            if (!frameDoc) return;
+            
+            const allPlaceholders = frameDoc.querySelectorAll('.image-placeholder, .image-drop-zone');
+            allPlaceholders.forEach((placeholder) => {
+              placeholder.classList.remove('drag-over', 'drag-over-active', 'drag-over-disabled');
+            });
+          } catch (err) {
+            // Ignore errors during cleanup
+          }
+        };
+        
+        // Listen for drag end events to cleanup highlighting
+        const handleIframeDragEnd = () => {
+          cleanupHighlighting();
+        };
+        
+        // Iframe drop handler - coordinates are already relative to iframe
+        const iframeDrop = (e) => {
+          console.log('[EpubImageEditor] ⚡⚡⚡ IFRAME drop event FIRED ⚡⚡⚡', {
+            hasCurrentDragImage: !!window.currentDragImage,
+            currentDragImage: window.currentDragImage?.fileName,
+            target: e.target?.tagName,
+            clientX: e.clientX,
+            clientY: e.clientY
+          });
+          
+          e.preventDefault();
+          e.stopPropagation();
+          e.stopImmediatePropagation();
+          
+          if (!window.currentDragImage) {
+            console.log('[EpubImageEditor] No currentDragImage in iframe drop');
+            return;
+          }
+          
+          const image = window.currentDragImage;
+          
+          // Use coordinates directly from iframe event (they're already relative to iframe)
+          const x = e.clientX;
+          const y = e.clientY;
+          
+          console.log('[EpubImageEditor] Iframe drop coordinates:', x, y);
+          
+          // Find element at drop point in iframe document
+          const elementAtPoint = frameDoc.elementFromPoint(x, y);
+          if (!elementAtPoint) {
+            console.warn('[EpubImageEditor] No element at drop point in iframe');
+            const allPlaceholders = frameDoc.querySelectorAll('.image-placeholder');
+            console.log('[EpubImageEditor] Available placeholders in iframe:', allPlaceholders.length, Array.from(allPlaceholders).map(p => p.id));
+            return;
+          }
+          
+          console.log('[EpubImageEditor] Element at drop point in iframe:', elementAtPoint.tagName, elementAtPoint.className, elementAtPoint.id);
+          
+          // Check if the element itself is a placeholder (has either class)
+          let placeholder = null;
+          if (elementAtPoint.classList?.contains('image-placeholder') || elementAtPoint.classList?.contains('image-drop-zone')) {
+            placeholder = elementAtPoint;
+          } else {
+            // Try to find parent placeholder
+            placeholder = elementAtPoint.closest('.image-placeholder, .image-drop-zone');
+          }
+          
+          if (!placeholder) {
+            console.warn('[EpubImageEditor] No placeholder found at drop point in iframe');
+            console.warn('[EpubImageEditor] Element classes:', elementAtPoint.className);
+            console.warn('[EpubImageEditor] Element ID:', elementAtPoint.id);
+            return;
+          }
+          
+          const placeholderId = placeholder.id || placeholder.getAttribute('id');
+          if (!placeholderId) {
+            console.warn('[EpubImageEditor] Placeholder has no ID in iframe');
+            return;
+          }
+          
+          console.log('[EpubImageEditor] ✓ Found placeholder at drop point in iframe:', placeholderId);
+          
+          // Call the handleDrop callback
+          if (handleDrop) {
+          console.log('[EpubImageEditor] ✓ Calling handleDrop from iframe with:', placeholderId, image.fileName);
+          handleDrop(placeholderId, image);
+        } else {
+          console.warn('[EpubImageEditor] handleDrop callback not available');
+        }
+        
+        // Cleanup highlighting after drop
+        cleanupHighlighting();
+      };
+      
+      
+      frameDoc.addEventListener('dragover', iframeDragOver, true);
+      frameDoc.addEventListener('drop', iframeDrop, true);
+      
+      // Also listen for dragend on window to cleanup highlighting
+      const handleWindowDragEnd = () => {
+        cleanupHighlighting();
+      };
+      window.addEventListener('dragend', handleWindowDragEnd, true);
+        
+        // Store handlers for cleanup
+        iframe._dragHandlers = { 
+          dragover: iframeDragOver, 
+          drop: iframeDrop,
+          dragend: handleWindowDragEnd,
+          cleanup: cleanupHighlighting
+        };
+      } catch (err) {
+        console.warn('[EpubImageEditor] Error attaching iframe handlers:', err);
+      }
+    };
+    
+    // Try to attach iframe handlers immediately, and also set up a retry mechanism
+    attachIframeHandlers();
+    const iframeRetryInterval = setInterval(() => {
+      const canvasWrapper = canvasRef.current;
+      if (!canvasWrapper) return;
+      const grapesContainer = canvasWrapper.querySelector('.grapesjs-canvas-container');
+      if (!grapesContainer) return;
+      const iframe = grapesContainer.querySelector('iframe');
+      if (!iframe) return;
+      const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (frameDoc && !iframe._dragHandlers) {
+        attachIframeHandlers();
+        clearInterval(iframeRetryInterval); // Stop retrying once attached
+      }
+    }, 500);
+    
+    console.log('[EpubImageEditor] ✓ Added window, document, and iframe-level GrapesJS drop handlers');
+    
+    return () => {
+      window.removeEventListener('dragover', handleDocumentDragOver, true);
+      window.removeEventListener('drop', handleDocumentDrop, true);
+      window.removeEventListener('drop', debugDropHandler, true);
+      document.removeEventListener('dragover', handleDocumentDragOver, true);
+      document.removeEventListener('drop', handleDocumentDrop, true);
+      document.removeEventListener('drop', debugDropHandler, true);
+      
+      // Cleanup iframe handlers
+      const canvasWrapper = canvasRef.current;
+      if (canvasWrapper) {
+        const grapesContainer = canvasWrapper.querySelector('.grapesjs-canvas-container');
+        if (grapesContainer) {
+          const iframe = grapesContainer.querySelector('iframe');
+          if (iframe && iframe._dragHandlers) {
+            try {
+              const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
+              if (frameDoc) {
+                frameDoc.removeEventListener('dragover', iframe._dragHandlers.dragover, true);
+                frameDoc.removeEventListener('drop', iframe._dragHandlers.drop, true);
+                window.removeEventListener('dragend', iframe._dragHandlers.dragend, true);
+                // Cleanup highlighting
+                if (iframe._dragHandlers.cleanup) {
+                  iframe._dragHandlers.cleanup();
+                }
+              }
+            } catch (err) {
+              console.warn('[EpubImageEditor] Error removing iframe handlers:', err);
+            }
+            delete iframe._dragHandlers;
+          }
+        }
+      }
+      
+      clearInterval(iframeRetryInterval);
+      // Remove image-drag-start listener
+      window.removeEventListener('image-drag-start', handleImageDragStart);
+      console.log('[EpubImageEditor] Removed window, document, and iframe-level GrapesJS drop handlers');
+    };
+  }, [useGrapesJS, canvasRef, handleDrop]);
 
   // Allow clearing a dropped image (restore placeholder div so it can be replaced)
   const handleClearImage = useCallback((placeholderId) => {
@@ -1449,15 +2464,32 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       return;
     }
     
+    console.log('[EpubImageEditor] Original image src from XHTML:', imgSrc);
+    
     // Get absolute URL if it's relative
     let imageUrl = imgSrc;
     if (!imgSrc.startsWith('http://') && !imgSrc.startsWith('https://')) {
+      // Handle different URL formats
       if (imgSrc.startsWith('images/')) {
-        imageUrl = `${api.defaults.baseURL}/conversions/${jobId}/images/${imgSrc.replace('images/', '')}`;
+        const fileName = imgSrc.replace('images/', '');
+        imageUrl = `${api.defaults.baseURL}/conversions/${jobId}/images/${fileName}`;
+      } else if (imgSrc.startsWith('../images/')) {
+        const fileName = imgSrc.replace('../images/', '');
+        imageUrl = `${api.defaults.baseURL}/conversions/${jobId}/images/${fileName}`;
+      } else if (imgSrc.startsWith('/api/')) {
+        // Already has /api/ prefix, just prepend base URL if needed
+        if (!imgSrc.startsWith(api.defaults.baseURL)) {
+          imageUrl = `${api.defaults.baseURL}${imgSrc.replace('/api', '')}`;
+        } else {
+          imageUrl = imgSrc;
+        }
       } else {
+        // Assume it's just a filename
         imageUrl = `${api.defaults.baseURL}/conversions/${jobId}/images/${imgSrc}`;
       }
     }
+    
+    console.log('[EpubImageEditor] Constructed image URL:', imageUrl);
     
     // Get image dimensions
     const width = imgElement.getAttribute('width') || imgElement.style.width;
@@ -1672,11 +2704,43 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       setSaving(true);
       setError('');
       
+      // If using GrapesJS, read HTML directly from the editor/iframe to get latest changes
+      let xhtmlToSave = xhtml;
+      if (useGrapesJS && grapesjsEditor) {
+        try {
+          const canvas = grapesjsEditor.Canvas;
+          if (canvas) {
+            const frameEl = canvas.getFrameEl();
+            if (frameEl) {
+              const frameDoc = frameEl.contentDocument || frameEl.contentWindow?.document;
+              if (frameDoc && frameDoc.body) {
+                // Read latest HTML from iframe body
+                const html = frameDoc.body.innerHTML;
+                const css = grapesjsEditor.getCss();
+                xhtmlToSave = `<style>${css}</style>${html}`;
+              } else {
+                // Fallback to editor methods
+                const html = grapesjsEditor.getHtml();
+                const css = grapesjsEditor.getCss();
+                xhtmlToSave = `<style>${css}</style>${html}`;
+              }
+            } else {
+              // Fallback to editor methods
+              const html = grapesjsEditor.getHtml();
+              const css = grapesjsEditor.getCss();
+              xhtmlToSave = `<style>${css}</style>${html}`;
+            }
+          }
+        } catch (err) {
+          console.warn('[EpubImageEditor] Error reading from GrapesJS editor, using xhtml state:', err);
+          // Fall back to xhtml state if reading from editor fails
+        }
+      }
+      
       // Convert absolute image URLs back to relative paths for EPUB
       // Find all img tags with absolute URLs and convert them to relative paths
       // EPUB structure: OEBPS/page_1.xhtml and OEBPS/images/file.jpg
       // So path should be "images/file.jpg" (not "../images/")
-      let xhtmlToSave = xhtml;
       
       // Pattern to match img src with absolute URLs pointing to our API
       const absoluteUrlPattern = new RegExp(
@@ -1722,7 +2786,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
     } finally {
       setSaving(false);
     }
-  }, [xhtml, jobId, pageNumber, onSave]);
+  }, [xhtml, jobId, pageNumber, onSave, useGrapesJS, grapesjsEditor]);
 
   const handleReset = useCallback(() => {
     if (window.confirm('Are you sure you want to reset all changes?')) {
@@ -1765,6 +2829,49 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
     });
     return result;
   }, [xhtml, placeholders]);
+
+  // Handle resizer drag
+  const editorContentRef = useRef(null);
+  
+  const handleResizeStart = useCallback((e) => {
+    e.preventDefault();
+    setIsResizing(true);
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  const handleResizeMove = useCallback((e) => {
+    if (!isResizing || !editorContentRef.current) return;
+    
+    const container = editorContentRef.current;
+    const containerRect = container.getBoundingClientRect();
+    const newWidth = ((e.clientX - containerRect.left) / containerRect.width) * 100;
+    
+    // Constrain between 20% and 70%
+    const constrainedWidth = Math.max(20, Math.min(70, newWidth));
+    setGalleryWidth(constrainedWidth);
+  }, [isResizing]);
+
+  const handleResizeEnd = useCallback(() => {
+    setIsResizing(false);
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  }, []);
+
+  useEffect(() => {
+    if (isResizing) {
+      const handleMouseMove = (e) => handleResizeMove(e);
+      const handleMouseUp = () => handleResizeEnd();
+      
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+      
+      return () => {
+        window.removeEventListener('mousemove', handleMouseMove);
+        window.removeEventListener('mouseup', handleMouseUp);
+      };
+    }
+  }, [isResizing, handleResizeMove, handleResizeEnd]);
 
   // Expose state to parent component (after functions are defined)
   // Only include state values in dependencies, not functions (they're memoized with useCallback)
@@ -1818,6 +2925,23 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             >
               {editMode ? '✏️ Edit Mode ON' : '✏️ Edit Mode OFF'}
             </button>
+            <button
+              onClick={() => setUseGrapesJS(!useGrapesJS)}
+              className={`btn-toggle-grapesjs ${useGrapesJS ? 'active' : ''}`}
+              title={useGrapesJS ? 'Switch to Standard Canvas' : 'Switch to GrapesJS Canvas (Component-based)'}
+              style={{
+                padding: '8px 16px',
+                background: useGrapesJS ? '#9C27B0' : '#f5f5f5',
+                color: useGrapesJS ? 'white' : '#666',
+                border: `1px solid ${useGrapesJS ? '#9C27B0' : '#ddd'}`,
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '14px',
+                transition: 'all 0.2s ease',
+              }}
+            >
+              {useGrapesJS ? '🎨 GrapesJS ON' : '🎨 GrapesJS OFF'}
+            </button>
             {modified && (
               <span className="modified-indicator">Modified</span>
             )}
@@ -1846,9 +2970,12 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
           </div>
         </div>
 
-        <div className="editor-content">
-          {/* Left Sidebar - Image Gallery (30%) */}
-          <div className="image-gallery">
+        <div className="editor-content" ref={editorContentRef}>
+          {/* Left Sidebar - Image Gallery (resizable) */}
+          <div 
+            className="image-gallery"
+            style={{ width: `${galleryWidth}%` }}
+          >
             <h3>Image Gallery ({images.length} images)</h3>
             {images.length === 0 ? (
               <div className="empty-gallery">
@@ -1883,8 +3010,23 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             )}
           </div>
 
-          {/* Right Canvas - XHTML Display (70%) */}
-          <div className="xhtml-canvas-wrapper" style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+          {/* Resizer */}
+          <div 
+            className="panel-resizer"
+            onMouseDown={handleResizeStart}
+            style={{ cursor: 'col-resize' }}
+          />
+
+          {/* Right Canvas - XHTML Display (resizable) */}
+          <div 
+            className="xhtml-canvas-wrapper" 
+            style={{ 
+              display: 'flex', 
+              flexDirection: 'column', 
+              height: '100%',
+              width: `${100 - galleryWidth}%`
+            }}
+          >
             <div className="canvas-header">
               <h3>XHTML Canvas</h3>
               {placeholders.length > 0 && (
@@ -1893,40 +3035,98 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                 </div>
               )}
             </div>
-            <div className="canvas-wrapper" ref={canvasRef} style={{ position: 'relative', flex: '1 1 auto', minHeight: 0 }}>
-              <DraggableCanvas
-                key={`canvas-${pageNumber}-${modified ? Date.now() : 'initial'}`} // Force re-render when XHTML changes
-                xhtml={xhtml}
-                onXhtmlChange={(updatedXhtml) => {
-                  // Use functional update to ensure we're working with latest state
-                  // This prevents overwriting changes when multiple edits happen quickly
-                  setXhtml((currentXhtml) => {
-                    // If the updated XHTML is based on DOM reading, use it directly
-                    // Otherwise, merge changes intelligently
-                    console.log('[EpubImageEditor] XHTML update:', {
-                      currentLength: currentXhtml.length,
-                      updatedLength: updatedXhtml.length,
-                      currentImgCount: (currentXhtml.match(/<img[^>]*>/gi) || []).length,
-                      updatedImgCount: (updatedXhtml.match(/<img[^>]*>/gi) || []).length
-                    });
-                    return updatedXhtml;
-                  });
-                  setModified(true);
-                }}
-                editMode={editMode}
-                onEditModeChange={setEditMode}
-                onClearImage={handleClearImage}
-                onImageEdit={handleImageEdit}
-                onOpenImageEditor={handleOpenImageEditor}
-              />
-              {/* Transparent drop zone overlay for image drops - only active when dragging images */}
-              <XhtmlCanvas
-                xhtml=""
-                placeholders={placeholders}
-                onDrop={handleDrop}
-                canvasRef={canvasRef}
-                editMode={editMode}
-              />
+            <div 
+              className="canvas-wrapper" 
+              ref={canvasRef} 
+              style={{ position: 'relative', flex: '1 1 auto', minHeight: 0 }}
+            >
+              {useGrapesJS ? (
+                <>
+                  <GrapesJSCanvas
+                    key={`grapesjs-canvas-${pageNumber}`}
+                    xhtml={xhtml}
+                    onXhtmlChange={(updatedXhtml) => {
+                      setXhtml((currentXhtml) => {
+                        console.log('[EpubImageEditor] GrapesJS XHTML update:', {
+                          currentLength: currentXhtml.length,
+                          updatedLength: updatedXhtml.length,
+                        });
+                        return updatedXhtml;
+                      });
+                      setModified(true);
+                    }}
+                    editMode={editMode}
+                    onEditModeChange={setEditMode}
+                    onClearImage={handleClearImage}
+                    onImageEdit={handleImageEdit}
+                    onOpenImageEditor={handleOpenImageEditor}
+                    images={images}
+                    onDropImage={handleDrop}
+                    placeholders={placeholders}
+                    oneByOneMode={oneByOneMode}
+                    onEditorReady={(editor) => {
+                      setGrapesjsEditor(editor);
+                    }}
+                  />
+                  {editMode && grapesjsEditor && (
+                    <GrapesJSFooter
+                      editor={grapesjsEditor}
+                      editMode={editMode}
+                      images={images}
+                      onImageReplace={(imageId, image) => {
+                        // Handle image replacement
+                        handleDrop(imageId, image);
+                      }}
+                      onXhtmlChange={(updatedXhtml) => {
+                        setXhtml(updatedXhtml);
+                        setModified(true);
+                      }}
+                    />
+                  )}
+                </>
+              ) : (
+                <>
+                  <DraggableCanvas
+                    key={`canvas-${pageNumber}-${modified ? Date.now() : 'initial'}`} // Force re-render when XHTML changes
+                    xhtml={xhtml}
+                    onXhtmlChange={(updatedXhtml) => {
+                      // Use functional update to ensure we're working with latest state
+                      // This prevents overwriting changes when multiple edits happen quickly
+                      setXhtml((currentXhtml) => {
+                        // If the updated XHTML is based on DOM reading, use it directly
+                        // Otherwise, merge changes intelligently
+                        console.log('[EpubImageEditor] XHTML update:', {
+                          currentLength: currentXhtml.length,
+                          updatedLength: updatedXhtml.length,
+                          currentImgCount: (currentXhtml.match(/<img[^>]*>/gi) || []).length,
+                          updatedImgCount: (updatedXhtml.match(/<img[^>]*>/gi) || []).length
+                        });
+                        return updatedXhtml;
+                      });
+                      setModified(true);
+                    }}
+                    editMode={editMode}
+                    onEditModeChange={setEditMode}
+                    onClearImage={handleClearImage}
+                    onImageEdit={handleImageEdit}
+                    onOpenImageEditor={handleOpenImageEditor}
+                  />
+                  {/* Transparent drop zone overlay for image drops - only active when dragging images */}
+                  {/* Only render XhtmlCanvas when NOT using GrapesJS */}
+                  {!useGrapesJS && (
+                    <ErrorBoundary fallback={<div style={{ display: 'none' }} />}>
+                      <XhtmlCanvas
+                        xhtml=""
+                        placeholders={placeholders}
+                        onDrop={handleDrop}
+                        canvasRef={canvasRef}
+                        editMode={editMode}
+                        oneByOneMode={oneByOneMode}
+                      />
+                    </ErrorBoundary>
+                  )}
+                </>
+              )}
             </div>
           </div>
         </div>
