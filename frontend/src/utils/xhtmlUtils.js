@@ -64,9 +64,45 @@ export function injectImageIntoXhtml(xhtml, targetId, imageSrc, imageWidth = nul
     console.log('[injectImageIntoXhtml] Placeholder is already an img tag, updating src');
     // Update existing img tag
     placeholder.setAttribute('src', imageSrc);
-    if (imageWidth) placeholder.setAttribute('width', imageWidth);
-    if (imageHeight) placeholder.setAttribute('height', imageHeight);
-    placeholder.setAttribute('style', 'max-width: 100%; height: auto; display: block;');
+    
+    // Preserve aspect ratio - don't force dimensions that would cause stretching
+    let imgStyle = 'max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; object-fit: contain;';
+    const currentStyle = placeholder.getAttribute('style') || '';
+    
+    // Remove any width/height that are percentages or would cause stretching
+    const cleanedStyle = currentStyle
+      .split(';')
+      .map(decl => decl.trim())
+      .filter(decl => {
+        const lower = decl.toLowerCase();
+        // Remove width/height that are 100% or would cause stretching
+        if (lower.includes('width:') && (lower.includes('100%') || lower.includes('100%'))) {
+          return false;
+        }
+        if (lower.includes('height:') && (lower.includes('100%') || lower.includes('100%'))) {
+          return false;
+        }
+        return decl.length > 0;
+      })
+      .join('; ');
+    
+    if (cleanedStyle) {
+      imgStyle = `${cleanedStyle}; ${imgStyle}`;
+    }
+    
+    placeholder.setAttribute('style', imgStyle);
+    
+    // Only set width/height if they're specific pixel values, not percentages
+    if (imageWidth && !String(imageWidth).includes('%')) {
+      placeholder.setAttribute('width', imageWidth);
+    } else {
+      placeholder.removeAttribute('width');
+    }
+    if (imageHeight && !String(imageHeight).includes('%')) {
+      placeholder.setAttribute('height', imageHeight);
+    } else {
+      placeholder.removeAttribute('height');
+    }
   } else {
     console.log('[injectImageIntoXhtml] Creating new img tag to replace placeholder div');
     // Create new img element
@@ -77,10 +113,33 @@ export function injectImageIntoXhtml(xhtml, targetId, imageSrc, imageWidth = nul
     // Get alt text from title or alt attribute, or use a default
     const altText = placeholder.getAttribute('title') || placeholder.getAttribute('alt') || 'Image';
     img.setAttribute('alt', altText);
-    img.setAttribute('style', 'max-width: 100%; height: auto; display: block;');
     
-    if (imageWidth) img.setAttribute('width', imageWidth);
-    if (imageHeight) img.setAttribute('height', imageHeight);
+    // Get placeholder dimensions to preserve them, but don't force image to stretch
+    const placeholderStyle = placeholder.getAttribute('style') || '';
+    const placeholderWidth = placeholder.getAttribute('width') || '';
+    const placeholderHeight = placeholder.getAttribute('height') || '';
+    
+    // Build style that maintains aspect ratio - don't force width/height to 100%
+    let imgStyle = 'max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; object-fit: contain;';
+    
+    // Only use placeholder dimensions if they're specific pixel values, not percentages
+    if (placeholderWidth && !placeholderWidth.includes('%')) {
+      imgStyle += ` max-width: ${placeholderWidth};`;
+    }
+    if (placeholderHeight && !placeholderHeight.includes('%')) {
+      imgStyle += ` max-height: ${placeholderHeight};`;
+    }
+    
+    img.setAttribute('style', imgStyle);
+    
+    // Don't set width/height attributes if they would cause stretching
+    // Only set them if they're specific pixel values
+    if (imageWidth && !String(imageWidth).includes('%')) {
+      img.setAttribute('width', imageWidth);
+    }
+    if (imageHeight && !String(imageHeight).includes('%')) {
+      img.setAttribute('height', imageHeight);
+    }
     
     // Copy any classes from the placeholder (except placeholder classes)
     if (placeholder.className) {
@@ -288,9 +347,10 @@ export function applyReflowableCss(xhtml) {
       width: 100% !important;
       max-width: 100% !important;
       height: auto !important;
-      min-height: auto !important;
+      min-height: 100vh !important; /* Ensure minimum height but allow growth */
       display: block !important;
       flex-direction: column !important;
+      overflow: visible !important; /* Prevent content from being clipped */
     }
     
     img {

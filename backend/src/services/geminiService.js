@@ -322,7 +322,29 @@ export class GeminiService {
       const doctypeIdx = responseContent.indexOf('<!DOCTYPE');
       const htmlEndIdx = responseContent.lastIndexOf('</html>');
       
-      if (doctypeIdx !== -1 && htmlEndIdx !== -1 && htmlEndIdx > doctypeIdx) {
+      // Check if response might be truncated (no closing </html> tag)
+      const mightBeTruncated = doctypeIdx !== -1 && htmlEndIdx === -1;
+      if (mightBeTruncated) {
+        console.warn(`[Page ${pageNumber}] WARNING: Response appears truncated - missing </html> tag. Response length: ${responseContent.length}`);
+        console.warn(`[Page ${pageNumber}] Last 500 chars of response:`, responseContent.substring(Math.max(0, responseContent.length - 500)));
+        // Try to extract what we have and add closing tags
+        let xhtml = responseContent.substring(doctypeIdx).trim();
+        // Check if we have at least a body tag
+        if (xhtml.includes('<body>') && !xhtml.includes('</body>')) {
+          // Add closing tags for truncated response
+          xhtml += '\n</body>\n</html>';
+          console.warn(`[Page ${pageNumber}] Attempting to fix truncated response by adding closing tags`);
+        } else if (!xhtml.includes('</html>')) {
+          // If no body tag either, try to add both
+          if (xhtml.includes('<html')) {
+            if (!xhtml.includes('</body>')) {
+              xhtml += '\n</body>';
+            }
+            xhtml += '\n</html>';
+            console.warn(`[Page ${pageNumber}] Attempting to fix truncated response by adding closing tags`);
+          }
+        }
+      } else if (doctypeIdx !== -1 && htmlEndIdx !== -1 && htmlEndIdx > doctypeIdx) {
         let xhtml = responseContent.substring(doctypeIdx, htmlEndIdx + '</html>'.length).trim();
         
         // Unescape any JSON-escaped characters
@@ -525,7 +547,16 @@ export class GeminiService {
         }
         
         const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
-        const model = client.getGenerativeModel({ model: modelName });
+        // Configure generation settings with higher output token limit for long pages
+        // gemini-2.5-flash supports up to 8192 output tokens
+        const generationConfig = {
+          maxOutputTokens: 8192, // Maximum for gemini-2.5-flash to handle long pages like TOC
+          temperature: 0.1, // Lower temperature for more consistent XHTML generation
+        };
+        const model = client.getGenerativeModel({ 
+          model: modelName,
+          generationConfig: generationConfig
+        });
 
         // Build prompt with image instructions if extracted images are provided
         const imageFileList = extractedImageBuffers.map((img, idx) => 

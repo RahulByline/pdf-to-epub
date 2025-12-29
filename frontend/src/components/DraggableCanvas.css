@@ -3,8 +3,41 @@
 .draggable-canvas-container {
   position: relative;
   width: 100%;
-  min-height: 100vh;
-  overflow: hidden;
+  height: 100%;
+  overflow: hidden; /* No scrolling - content will be scaled to fit viewport */
+  display: flex;
+  align-items: center;
+  justify-content: flex-start; /* Align to start instead of center for full width */
+  box-sizing: border-box;
+}
+
+/* Ensure the content div takes full width */
+.draggable-canvas-container > div {
+  width: 100% !important;
+  max-width: 100% !important;
+}
+
+/* Ensure XHTML content wrapper is visible and can expand for long content */
+.draggable-canvas-container .xhtml-content-wrapper {
+  position: relative;
+  width: 100%;
+  height: fit-content;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+  overflow: visible; /* Ensure content is not clipped */
+}
+
+/* Ensure page container is visible and can expand for long content */
+.draggable-canvas-container .xhtml-content-wrapper .page {
+  position: relative !important;
+  width: 100% !important;
+  min-height: 100vh !important;
+  height: auto !important; /* Allow page to grow beyond viewport height */
+  display: block !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  overflow: visible !important; /* Ensure content is not clipped */
 }
 
 .draggable-canvas-container .draggable-text-block {
@@ -71,6 +104,20 @@
   box-shadow: 0 0 0 2px rgba(255, 152, 0, 0.18);
   transition: border-color 0.15s ease, background-color 0.15s ease,
     box-shadow 0.15s ease, transform 0.15s ease;
+  overflow: hidden; /* Prevent content from overflowing */
+}
+
+/* When placeholder contains an image, don't force image to fill */
+.draggable-canvas-container .image-drop-zone:has(img),
+.draggable-canvas-container .image-placeholder:has(img) {
+  /* Keep flexbox centering but don't force image to stretch */
+}
+
+/* Fallback for browsers that don't support :has() */
+.draggable-canvas-container .image-drop-zone img,
+.draggable-canvas-container .image-placeholder img {
+  flex-shrink: 1;
+  align-self: center;
 }
 
 /* When dragging over, highlight placeholders */
@@ -108,6 +155,43 @@
   opacity: 1 !important;
   position: relative !important;
   z-index: 10 !important;
+  object-fit: contain !important; /* Maintain aspect ratio, don't stretch */
+  width: auto !important; /* Don't force width to 100% */
+}
+
+/* Images inside placeholders should not stretch */
+.draggable-canvas-container .image-drop-zone img,
+.draggable-canvas-container .image-placeholder img {
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+}
+
+/* All images should maintain aspect ratio - prevent any stretching */
+.draggable-canvas-container img[id^="page"] {
+  width: auto !important;
+  height: auto !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+  flex-shrink: 1 !important;
+  align-self: center !important;
+}
+
+/* Prevent placeholder from forcing image dimensions */
+.draggable-canvas-container .image-drop-zone:has(img),
+.draggable-canvas-container .image-placeholder:has(img) {
+  /* When placeholder contains an image, don't force image to fill */
+  align-items: center !important;
+  justify-content: center !important;
+}
+
+/* Fallback for browsers without :has() support */
+.draggable-canvas-container .image-drop-zone img,
+.draggable-canvas-container .image-placeholder img {
+  margin: auto !important;
 }
 
 /* Ensure images with specific IDs are visible */

@@ -7,9 +7,14 @@ import './DraggableCanvas.css';
  */
 const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeChange, onClearImage, onImageEdit, onOpenImageEditor }) => {
   const containerRef = useRef(null);
+  const contentRef = useRef(null);
   const [draggingElement, setDraggingElement] = useState(null);
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
+  const [scale, setScale] = useState(1);
+  const isCalculatingRef = useRef(false);
+  const lastDimensionsRef = useRef({ width: 0, height: 0 });
+  const currentScaleRef = useRef(1);
 
   // Track if an image is being dragged (from react-dnd)
   const [imageDragging, setImageDragging] = useState(false);
@@ -227,6 +232,47 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
   useEffect(() => {
     if (!containerRef.current) return;
 
+    // Click handler to prevent image stretching when clicking on placeholders
+    const handlePlaceholderClick = (e) => {
+      // If clicking on blank space (not on an image), prevent any dimension changes
+      const target = e.target;
+      if (target.classList.contains('image-placeholder') || target.classList.contains('image-drop-zone')) {
+        // Find any images inside this placeholder
+        const img = target.querySelector('img');
+        if (img) {
+          // Preserve aspect ratio - prevent stretching
+          const currentWidth = img.style.width;
+          const currentHeight = img.style.height;
+          
+          // If dimensions are set to 100% or percentages, reset them
+          if (currentWidth && (currentWidth.includes('%') || currentWidth === '100%')) {
+            img.style.setProperty('width', 'auto', 'important');
+          }
+          if (currentHeight && (currentHeight.includes('%') || currentHeight === '100%')) {
+            img.style.setProperty('height', 'auto', 'important');
+          }
+          
+          // Ensure object-fit is set
+          img.style.setProperty('object-fit', 'contain', 'important');
+          img.style.setProperty('max-width', '100%', 'important');
+          img.style.setProperty('max-height', '100%', 'important');
+          
+          // Also check and fix computed dimensions
+          const clickComputedStyle = window.getComputedStyle(img);
+          const parentRect = target.getBoundingClientRect();
+          const imgRect = img.getBoundingClientRect();
+          
+          // If image is stretched to parent dimensions, fix it
+          if (parentRect.width > 0 && Math.abs(imgRect.width - parentRect.width) < 10) {
+            img.style.setProperty('width', 'auto', 'important');
+          }
+          if (parentRect.height > 0 && Math.abs(imgRect.height - parentRect.height) < 10) {
+            img.style.setProperty('height', 'auto', 'important');
+          }
+        }
+      }
+    };
+
     // Wait for DOM to update after XHTML is rendered
     const timeoutId = setTimeout(() => {
       const container = containerRef.current;
@@ -241,6 +287,13 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
       // Find and ensure placeholders are visible
       const placeholders = container.querySelectorAll('.image-placeholder, .image-drop-zone');
       console.log(`[DraggableCanvas] Found ${placeholders.length} placeholders`);
+      
+      // Add click handler to prevent image stretching when clicking on placeholders
+      placeholders.forEach((placeholder) => {
+        // Remove existing listener if any, then add new one
+        placeholder.removeEventListener('click', handlePlaceholderClick);
+        placeholder.addEventListener('click', handlePlaceholderClick, true); // Use capture phase
+      });
       
       // Also check for img tags (replaced placeholders)
       const imgTags = container.querySelectorAll('img');
@@ -284,8 +337,12 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
         }
         
         // Force image visibility with important flags for ALL images
+        // But maintain aspect ratio - don't stretch
         img.style.setProperty('max-width', '100%', 'important');
+        img.style.setProperty('max-height', '100%', 'important');
+        img.style.setProperty('width', 'auto', 'important');
         img.style.setProperty('height', 'auto', 'important');
+        img.style.setProperty('object-fit', 'contain', 'important');
         img.style.setProperty('display', 'block', 'important');
         img.style.setProperty('visibility', 'visible', 'important');
         img.style.setProperty('opacity', '1', 'important');
@@ -485,6 +542,55 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
           img.style.setProperty('min-height', '100px', 'important');
         }
         
+        // Prevent image from stretching when clicked - maintain aspect ratio
+        // Remove any width/height that would cause stretching
+        const currentWidth = img.style.width;
+        const currentHeight = img.style.height;
+        const imgComputedStyle = window.getComputedStyle(img);
+        const computedWidth = imgComputedStyle.width;
+        const computedHeight = imgComputedStyle.height;
+        
+        // Check if image has percentage-based dimensions that would cause stretching
+        if (currentWidth && (currentWidth.includes('%') || currentWidth === '100%')) {
+          img.style.setProperty('width', 'auto', 'important');
+        }
+        if (currentHeight && (currentHeight.includes('%') || currentHeight === '100%')) {
+          img.style.setProperty('height', 'auto', 'important');
+        }
+        
+        // Also check computed styles - if they're 100%, remove them
+        if (computedWidth && computedWidth.includes('px')) {
+          const widthValue = parseFloat(computedWidth);
+          const parentWidth = img.parentElement ? img.parentElement.getBoundingClientRect().width : 0;
+          if (parentWidth > 0 && Math.abs(widthValue - parentWidth) < 5) {
+            // Image is stretched to parent width, fix it
+            img.style.setProperty('width', 'auto', 'important');
+          }
+        }
+        if (computedHeight && computedHeight.includes('px')) {
+          const heightValue = parseFloat(computedHeight);
+          const parentHeight = img.parentElement ? img.parentElement.getBoundingClientRect().height : 0;
+          if (parentHeight > 0 && Math.abs(heightValue - parentHeight) < 5) {
+            // Image is stretched to parent height, fix it
+            img.style.setProperty('height', 'auto', 'important');
+          }
+        }
+        
+        // Ensure object-fit is set to prevent stretching
+        img.style.setProperty('object-fit', 'contain', 'important');
+        img.style.setProperty('max-width', '100%', 'important');
+        img.style.setProperty('max-height', '100%', 'important');
+        
+        // Remove width/height attributes if they're percentages
+        const widthAttr = img.getAttribute('width');
+        const heightAttr = img.getAttribute('height');
+        if (widthAttr && (widthAttr.includes('%') || widthAttr === '100')) {
+          img.removeAttribute('width');
+        }
+        if (heightAttr && (heightAttr.includes('%') || heightAttr === '100')) {
+          img.removeAttribute('height');
+        }
+        
         // Check if image is in viewport (for ALL images, not just page1_img2)
         const isFullyInViewport = rect.top >= 0 && 
                                  rect.left >= 0 && 
@@ -555,9 +661,21 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
         }
       });
       
-      placeholders.forEach((placeholder, idx) => {
+      // Sort placeholders by position (top to bottom, left to right) for consistent numbering
+      const sortedPlaceholders = Array.from(placeholders).sort((a, b) => {
+        const rectA = a.getBoundingClientRect();
+        const rectB = b.getBoundingClientRect();
+        // First sort by top position (vertical)
+        if (Math.abs(rectA.top - rectB.top) > 10) {
+          return rectA.top - rectB.top;
+        }
+        // If roughly on the same row, sort by left position (horizontal)
+        return rectA.left - rectB.left;
+      });
+      
+      sortedPlaceholders.forEach((placeholder, idx) => {
         const rect = placeholder.getBoundingClientRect();
-        console.log(`[DraggableCanvas] Placeholder ${idx}: id=${placeholder.id}, size=${rect.width}x${rect.height}, visible=${rect.width > 0 && rect.height > 0}`);
+        console.log(`[DraggableCanvas] Placeholder ${idx + 1}: id=${placeholder.id}, size=${rect.width}x${rect.height}, visible=${rect.width > 0 && rect.height > 0}`);
         
         // Remove any image-with-options wrapper if placeholder is inside one
         // This can happen if an image was cleared but the wrapper persisted
@@ -586,6 +704,33 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
         placeholder.style.setProperty('opacity', '1', 'important');
         placeholder.style.setProperty('pointer-events', 'auto', 'important');
         placeholder.style.setProperty('z-index', '100', 'important');
+        placeholder.style.setProperty('position', 'relative', 'important');
+        
+        // Add numbering label (1, 2, 3, etc.)
+        let numberLabel = placeholder.querySelector('.placeholder-number');
+        if (!numberLabel) {
+          numberLabel = document.createElement('div');
+          numberLabel.className = 'placeholder-number';
+          numberLabel.textContent = (idx + 1).toString();
+          numberLabel.style.cssText = `
+            position: absolute;
+            top: 4px;
+            left: 4px;
+            background-color: #2196F3;
+            color: white;
+            font-weight: bold;
+            font-size: 14px;
+            padding: 4px 8px;
+            border-radius: 4px;
+            z-index: 101;
+            pointer-events: none;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+          `;
+          placeholder.appendChild(numberLabel);
+        } else {
+          // Update number if it changed
+          numberLabel.textContent = (idx + 1).toString();
+        }
       });
       
       // Debug: Log all elements with position absolute
@@ -697,6 +842,11 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
         // Cleanup input handlers
         inputHandlers.forEach((handler, node) => {
           node.removeEventListener('input', handler);
+        });
+        // Cleanup placeholder click handlers
+        const allPlaceholders = container.querySelectorAll('.image-placeholder, .image-drop-zone');
+        allPlaceholders.forEach((placeholder) => {
+          placeholder.removeEventListener('click', handlePlaceholderClick);
         });
       };
     }, 100); // Small delay to ensure DOM is updated
@@ -926,6 +1076,154 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
     }
   }, []);
 
+  // Calculate scale to fit content in viewport
+  useEffect(() => {
+    let debounceTimer = null;
+    let calculationTimer = null;
+    
+    const calculateScale = () => {
+      // Prevent concurrent calculations
+      if (isCalculatingRef.current) {
+        return;
+      }
+      
+      if (!containerRef.current || !contentRef.current) return;
+      
+      const container = containerRef.current;
+      const content = contentRef.current;
+      
+      // Get container dimensions (available viewport)
+      const containerRect = container.getBoundingClientRect();
+      const containerWidth = containerRect.width;
+      const containerHeight = containerRect.height;
+      
+      if (containerWidth === 0 || containerHeight === 0) return;
+      
+      // Check if dimensions changed significantly (more than 5px difference)
+      const lastDims = lastDimensionsRef.current;
+      const widthDiff = Math.abs(containerWidth - lastDims.width);
+      const heightDiff = Math.abs(containerHeight - lastDims.height);
+      
+      // Skip if dimensions haven't changed significantly and we already have a scale
+      if (widthDiff < 5 && heightDiff < 5 && currentScaleRef.current !== 1) {
+        return;
+      }
+      
+      // Update last dimensions
+      lastDimensionsRef.current = { width: containerWidth, height: containerHeight };
+      
+      isCalculatingRef.current = true;
+      
+      // Temporarily remove transform to measure natural size
+      const currentTransform = content.style.transform;
+      const currentWidth = content.style.width;
+      const currentHeight = content.style.height;
+      const currentMaxWidth = content.style.maxWidth;
+      const currentMaxHeight = content.style.maxHeight;
+      
+      content.style.transform = 'scale(1)';
+      content.style.width = 'auto';
+      content.style.height = 'auto';
+      content.style.maxWidth = 'none';
+      content.style.maxHeight = 'none';
+      
+      // Get content dimensions after it's rendered
+      // Use requestAnimationFrame for better timing
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (!contentRef.current || !containerRef.current) {
+            isCalculatingRef.current = false;
+            return;
+          }
+          
+          // Force a reflow to get accurate measurements
+          void content.offsetHeight;
+          void content.offsetWidth;
+          
+          // Get the actual rendered size of the content
+          const contentRect = content.getBoundingClientRect();
+          let contentWidth = contentRect.width;
+          let contentHeight = contentRect.height;
+          
+          // Fallback to scroll dimensions if bounding rect is 0
+          if (contentWidth === 0 || contentWidth < 10) {
+            contentWidth = content.scrollWidth || containerWidth;
+          }
+          if (contentHeight === 0 || contentHeight < 10) {
+            contentHeight = content.scrollHeight || containerHeight;
+          }
+          
+          // Add small padding to prevent edge cutting (3% on each side for safety)
+          const paddingFactor = 0.94; // 94% of container to leave 3% padding on each side
+          const availableWidth = containerWidth * paddingFactor;
+          const availableHeight = containerHeight * paddingFactor;
+          
+          // Calculate scale to fit both width and height
+          const scaleX = availableWidth / contentWidth;
+          const scaleY = availableHeight / contentHeight;
+          const newScale = Math.min(scaleX, scaleY, 1); // Don't scale up, only down
+          
+          // Set a minimum scale to prevent content from being too small
+          const minScale = 0.1;
+          const finalScale = Math.max(newScale, minScale);
+          
+          // Only update if scale changed significantly (more than 0.01 difference)
+          if (Math.abs(finalScale - currentScaleRef.current) > 0.01) {
+            currentScaleRef.current = finalScale;
+            setScale(finalScale);
+          }
+          
+          // Restore transform and dimensions
+          content.style.transform = currentTransform;
+          content.style.width = currentWidth;
+          content.style.height = currentHeight;
+          content.style.maxWidth = currentMaxWidth;
+          content.style.maxHeight = currentMaxHeight;
+          
+          isCalculatingRef.current = false;
+        });
+      });
+    };
+    
+    // Debounced calculation function
+    const debouncedCalculate = () => {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer);
+      }
+      debounceTimer = setTimeout(calculateScale, 200);
+    };
+    
+    // Calculate scale on mount and when xhtml changes
+    // Use a single timeout after content is likely rendered
+    calculationTimer = setTimeout(calculateScale, 300);
+    
+    // Recalculate on window resize (debounced)
+    const handleResize = () => {
+      debouncedCalculate();
+    };
+    
+    window.addEventListener('resize', handleResize);
+    
+    // Use ResizeObserver to detect container size changes (debounced)
+    let resizeObserver = null;
+    if (containerRef.current && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        debouncedCalculate();
+      });
+      resizeObserver.observe(containerRef.current);
+    }
+    
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      if (debounceTimer) clearTimeout(debounceTimer);
+      if (calculationTimer) clearTimeout(calculationTimer);
+      if (resizeObserver && containerRef.current) {
+        resizeObserver.unobserve(containerRef.current);
+      }
+      isCalculatingRef.current = false;
+    };
+  }, [xhtml]);
+
   // Force re-render when xhtml changes by using a key
   // Use a more robust key that detects actual content changes
   const xhtmlKey = useMemo(() => {
@@ -957,12 +1255,25 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
       style={{ 
         position: 'relative', 
         width: '100%', 
-        minHeight: '100vh',
+        height: '100%',
         zIndex: 1, // Below the drop overlay (z-index 1000)
         pointerEvents: 'auto' // Ensure it can receive mouse events
       }}
     >
-      <div key={xhtmlKey} dangerouslySetInnerHTML={{ __html: xhtml }} />
+      <div 
+        ref={contentRef}
+        key={xhtmlKey} 
+        dangerouslySetInnerHTML={{ __html: xhtml }}
+        style={{
+          transform: `scale(${scale})`,
+          transformOrigin: 'center center',
+          width: '100%',
+          height: 'fit-content',
+          maxWidth: `${100 / scale}%`,
+          maxHeight: `${100 / scale}%`,
+          display: 'block',
+        }}
+      />
     </div>
   );
 };
