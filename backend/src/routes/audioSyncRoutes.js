@@ -10,6 +10,8 @@ import { getUploadDir } from '../config/fileStorage.js';
 import { aeneasService } from '../services/aeneasService.js';
 import { EpubService } from '../services/epubService.js';
 import { GeminiService } from '../services/geminiService.js';
+import { TtsService } from '../services/TtsService.js';
+import { JSDOM } from 'jsdom';
 
 // Configure multer for audio file uploads
 const audioUpload = multer({
@@ -163,12 +165,35 @@ router.get('/job/:jobId/extract-text', async (req, res) => {
 // POST /api/audio-sync/generate - Generate audio for text chunks
 router.post('/generate', async (req, res) => {
   try {
-    const { pdfId, jobId, voice = 'standard', textBlocks } = req.body;
+    const { pdfId, jobId, voice = 'standard', textBlocks, ttsOptions } = req.body;
     
     if (!pdfId || !jobId) {
       return badRequestResponse(res, 'PDF ID and Job ID are required');
     }
 
+    // DIAGNOSTIC: Log what we received from frontend
+    console.log(`[DIAGNOSTIC] /api/audio-sync/generate - Received request:`, {
+      pdfId,
+      jobId,
+      voice,
+      textBlocksCount: textBlocks?.length || 0,
+      textBlocksPreview: textBlocks?.slice(0, 5).map(block => ({
+        id: block.id,
+        pageNumber: block.pageNumber,
+        textLength: block.text?.length || 0,
+        textPreview: block.text?.substring(0, 50) || '',
+        isParagraphId: block.id?.match(/^page\d+_p\d+$/),
+        hasWordId: block.id?.includes('_w'),
+        hasSentenceId: block.id?.includes('_s')
+      })) || [],
+      ttsOptions: ttsOptions ? {
+        provider: ttsOptions.provider,
+        voice: ttsOptions.voice,
+        gender: ttsOptions.gender,
+        language: ttsOptions.language
+      } : null
+    });
+    
     // Use provided text blocks if available, otherwise extract from EPUB/PDF
     let textChunks;
     if (textBlocks && Array.isArray(textBlocks) && textBlocks.length > 0) {
@@ -180,6 +205,22 @@ router.post('/generate', async (req, res) => {
         sectionId: block.sectionId,
         sectionTitle: block.sectionTitle
       }));
+      
+      // DIAGNOSTIC: Log text chunks after mapping
+      console.log(`[DIAGNOSTIC] /api/audio-sync/generate - Mapped text chunks:`, {
+        totalChunks: textChunks.length,
+        sampleChunks: textChunks.slice(0, 5).map(chunk => ({
+          id: chunk.id,
+          pageNumber: chunk.pageNumber,
+          textLength: chunk.text.length,
+          textPreview: chunk.text.substring(0, 50),
+          isParagraphId: chunk.id.match(/^page\d+_p\d+$/),
+          hasWordId: chunk.id.includes('_w')
+        })),
+        chunksWithWordIds: textChunks.filter(c => c.id.includes('_w')).length,
+        chunksWithParagraphIds: textChunks.filter(c => c.id.match(/^page\d+_p\d+$/)).length
+      });
+      
       console.log(`[Audio Generate] Using ${textChunks.length} provided text blocks`);
     } else {
       // Fallback: Extract text from EPUB if available, otherwise from PDF
@@ -195,7 +236,26 @@ router.post('/generate', async (req, res) => {
       return badRequestResponse(res, 'No text chunks available to generate audio from');
     }
     
-    const audioSegments = await AudioSyncService.generateCompleteAudio(textChunks, voice, pdfId, jobId);
+    // Use TTS options from TTS Management if provided
+    const voiceToUse = ttsOptions?.voice || voice;
+    if (ttsOptions) {
+      console.log('[Audio Generate] Using TTS Management config:', {
+        provider: ttsOptions.provider,
+        voice: voiceToUse,
+        gender: ttsOptions.gender || 'NEUTRAL',
+        speed: ttsOptions.speed,
+        pitch: ttsOptions.pitch,
+        language: ttsOptions.language
+      });
+    }
+    
+    const audioSegments = await AudioSyncService.generateCompleteAudio(
+      textChunks, 
+      voiceToUse, 
+      pdfId, 
+      jobId,
+      ttsOptions
+    );
     
     return successResponse(res, audioSegments, 201);
   } catch (error) {
@@ -1335,6 +1395,433 @@ router.get('/:id/audio', async (req, res) => {
     } catch (fileError) {
       console.error(`[AudioSync] Audio file not found: ${filePath}`);
       return notFoundResponse(res, 'Audio file not found on server');
+    }
+    } catch (error) {
+      return errorResponse(res, error.message, 500);
+    }
+  });
+
+/**
+ * Extract text from XHTML content for TTS generation
+ */
+function extractTextFromXhtml(xhtml) {
+  if (!xhtml || typeof xhtml !== 'string') return { fullText: '', blocks: [] };
+  
+  try {
+    // Use JSDOM for proper XHTML parsing
+    const dom = new JSDOM(xhtml, { contentType: 'application/xhtml+xml' });
+    const doc = dom.window.document;
+    
+    const textBlocks = [];
+    const processedParagraphs = new Set();
+    
+    // PRIORITY 1: Extract paragraph-level elements (class="paragraph-block")
+    // This groups all words/sentences within a paragraph together for natural TTS
+    const paragraphElements = doc.querySelectorAll('.paragraph-block, [class*="paragraph-block"], p.paragraph-block');
+    
+    if (paragraphElements.length > 0) {
+      paragraphElements.forEach((paragraphEl) => {
+        const id = paragraphEl.getAttribute('id') || '';
+        // Get full text content of the paragraph (includes all nested words/sentences)
+        const text = paragraphEl.textContent?.trim() || '';
+        
+        // Filter out unspoken content (TOC, nav, headers, etc.)
+        const unspokenPatterns = [
+          /toc/i, /table-of-contents/i, /contents/i, /chapter-index/i, /chapter-idx/i,
+          /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
+          /page-number/i, /page-num/i, /^skip/i, /^metadata/i
+        ];
+        
+        const isUnspoken = unspokenPatterns.some(pattern => 
+          pattern.test(id) || pattern.test(text)
+        );
+        
+        const shouldSync = paragraphEl.getAttribute('data-should-sync') !== 'false';
+        const readAloudAttr = paragraphEl.getAttribute('data-read-aloud');
+        const isExplicitlyExcluded = readAloudAttr === 'false';
+        
+        // Only include paragraphs with meaningful text
+        if (!isUnspoken && !isExplicitlyExcluded && shouldSync && text.length > 0) {
+          textBlocks.push({ id, text });
+          processedParagraphs.add(paragraphEl);
+        }
+      });
+    }
+    
+    // PRIORITY 2: Fallback - If no paragraph-block elements found, use data-read-aloud elements
+    // But skip elements that are inside already-processed paragraphs
+    if (textBlocks.length === 0) {
+      const readAloudElements = doc.querySelectorAll('[data-read-aloud="true"]');
+      
+      readAloudElements.forEach((el) => {
+        // Skip if this element is inside a processed paragraph
+        if (Array.from(processedParagraphs).some(p => p.contains(el))) {
+          return;
+        }
+        
+        const id = el.getAttribute('id') || '';
+        const text = el.textContent?.trim() || '';
+        
+        // Filter out unspoken content
+        const unspokenPatterns = [
+          /toc/i, /table-of-contents/i, /contents/i, /chapter-index/i, /chapter-idx/i,
+          /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
+          /page-number/i, /page-num/i, /^skip/i, /^metadata/i
+        ];
+        
+        const isUnspoken = unspokenPatterns.some(pattern => 
+          pattern.test(id) || pattern.test(text)
+        );
+        
+        const shouldSync = el.getAttribute('data-should-sync') !== 'false';
+        const readAloudAttr = el.getAttribute('data-read-aloud');
+        const isExplicitlyExcluded = readAloudAttr === 'false';
+        
+        // Skip word-level elements - we want sentence or paragraph level
+        const isWordLevel = el.classList.contains('sync-word') || id.includes('_w');
+        
+        if (!isUnspoken && !isExplicitlyExcluded && shouldSync && text.length > 0 && !isWordLevel) {
+          textBlocks.push({ id, text });
+        }
+      });
+    }
+    
+    // Combine all text blocks
+    const combinedText = textBlocks.map(block => block.text).join(' ');
+    
+    console.log(`[TTS Generation] Extracted ${textBlocks.length} paragraph-level blocks (${combinedText.length} chars total)`);
+    
+    return {
+      fullText: combinedText,
+      blocks: textBlocks
+    };
+  } catch (error) {
+    console.error('[TTS Generation] Error extracting text from XHTML:', error);
+    return { fullText: '', blocks: [] };
+  }
+}
+
+// POST /api/audio-sync/job/:jobId/generate-tts - Generate TTS audio from XHTML content
+router.post('/job/:jobId/generate-tts', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const { voice = {}, sectionId } = req.body;
+    
+    if (!jobId || isNaN(jobId)) {
+      return badRequestResponse(res, 'Invalid job ID');
+    }
+    
+    // Get EPUB sections
+    const sections = await EpubService.getEpubSections(jobId);
+    if (!sections || sections.length === 0) {
+      return badRequestResponse(res, 'No EPUB sections found for this job');
+    }
+    
+    // Extract text from XHTML
+    let allTextBlocks = [];
+    let allText = '';
+    
+    if (sectionId !== undefined) {
+      // Generate TTS for a specific section
+      const section = sections[sectionId];
+      if (!section) {
+        return badRequestResponse(res, `Section ${sectionId} not found`);
+      }
+      const extracted = extractTextFromXhtml(section.xhtml || section.content || '');
+      allText = extracted.fullText;
+      allTextBlocks = extracted.blocks;
+    } else {
+      // Generate TTS for all sections
+      for (const section of sections) {
+        const extracted = extractTextFromXhtml(section.xhtml || section.content || '');
+        if (extracted.fullText) {
+          allText += extracted.fullText + ' ';
+          allTextBlocks.push(...extracted.blocks);
+        }
+      }
+      allText = allText.trim();
+    }
+    
+    if (!allText || allText.length === 0) {
+      return badRequestResponse(res, 'No readable text found in XHTML content');
+    }
+    
+    console.log(`[TTS Generation] Extracted ${allText.length} characters from ${allTextBlocks.length} blocks`);
+    
+    // Check if TTS service is available
+    const ttsClient = TtsService.getClient();
+    if (!ttsClient && ttsClient !== 'free-tts') {
+      return badRequestResponse(res, 'TTS service not available. Please configure Google Cloud TTS credentials.');
+    }
+    
+    // Generate audio file path
+    const { getTtsOutputDir } = await import('../config/fileStorage.js');
+    const ttsDir = getTtsOutputDir();
+    await fs.mkdir(ttsDir, { recursive: true }).catch(() => {});
+    
+    const audioFileName = sectionId !== undefined 
+      ? `tts_audio_${jobId}_section_${sectionId}.mp3`
+      : `tts_audio_${jobId}_combined.mp3`;
+    const audioFilePath = path.join(ttsDir, audioFileName);
+    
+    // Generate TTS audio
+    console.log(`[TTS Generation] Generating audio for job ${jobId}...`);
+    const ttsResult = await TtsService.synthesizePageAudio({
+      text: allText,
+      audioOutPath: audioFilePath,
+      voice: {
+        languageCode: voice.languageCode || 'en-US',
+        name: voice.name,
+        ssmlGender: voice.ssmlGender || 'NEUTRAL'
+      }
+    });
+    
+    if (!ttsResult.audioFilePath && !ttsResult.audioBuffer) {
+      return errorResponse(res, 'Failed to generate TTS audio', 500);
+    }
+    
+    // Generate audio script (text blocks with their IDs)
+    const audioScript = {
+      sentences: {},
+      words: {}
+    };
+    
+    // Create sentence-level script entries
+    allTextBlocks.forEach((block, index) => {
+      audioScript.sentences[block.id] = {
+        text: block.text,
+        start: 0, // Will be set by sync process
+        end: 0,
+        pageNumber: sectionId !== undefined ? (sectionId + 1) : (Math.floor(index / 10) + 1)
+      };
+    });
+    
+    // If we have word-level timings, populate them
+    if (ttsResult.timings && ttsResult.timings.length > 0) {
+      // Map word timings to blocks (simplified - would need better mapping)
+      let timingIndex = 0;
+      allTextBlocks.forEach((block) => {
+        const words = block.text.split(/\s+/).filter(w => w.trim().length > 0);
+        words.forEach((word, wordIndex) => {
+          if (timingIndex < ttsResult.timings.length) {
+            const timing = ttsResult.timings[timingIndex];
+            audioScript.words[`${block.id}_w${wordIndex}`] = {
+              parentId: block.id,
+              text: word,
+              start: timing.startTimeSec,
+              end: timing.endTimeSec
+            };
+            timingIndex++;
+          }
+        });
+      });
+    }
+    
+    return successResponse(res, {
+      audioUrl: `/audio-sync/job/${jobId}/tts-audio/${audioFileName}`,
+      audioFileName,
+      audioFilePath,
+      audioScript,
+      textBlocks: allTextBlocks,
+      totalTextLength: allText.length,
+      timings: ttsResult.timings || []
+    });
+    
+  } catch (error) {
+    console.error('[TTS Generation] Error:', error);
+    return errorResponse(res, error.message || 'Failed to generate TTS audio', 500);
+  }
+});
+
+// POST /api/audio-sync/job/:jobId/generate-transcript - Generate transcript from audio sync data
+router.post('/job/:jobId/generate-transcript', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    
+    if (!jobId || isNaN(jobId)) {
+      return badRequestResponse(res, 'Invalid job ID');
+    }
+    
+    // Get all audio syncs for this job
+    const audioSyncs = await AudioSyncService.getAudioSyncsByJobId(jobId);
+    
+    if (!audioSyncs || audioSyncs.length === 0) {
+      return badRequestResponse(res, 'No audio sync data found for this job. Please generate audio first.');
+    }
+    
+    // Group syncs by page number
+    const syncsByPage = {};
+    audioSyncs.forEach(sync => {
+      const pageNum = sync.pageNumber || 1;
+      if (!syncsByPage[pageNum]) {
+        syncsByPage[pageNum] = [];
+      }
+      syncsByPage[pageNum].push(sync);
+    });
+    
+    // Get EPUB sections to extract text if customText is missing
+    let epubSections = [];
+    try {
+      epubSections = await EpubService.getEpubSections(jobId);
+    } catch (error) {
+      console.warn('[Transcript] Could not load EPUB sections for text extraction:', error.message);
+    }
+    
+    // Generate transcript for each page
+    const transcripts = {};
+    const transcriptText = [];
+    
+    Object.entries(syncsByPage).forEach(([pageNum, syncs]) => {
+      // Sort syncs by start time
+      const sortedSyncs = syncs.sort((a, b) => a.startTime - b.startTime);
+      
+      // Get XHTML for this page if available
+      const pageIndex = parseInt(pageNum) - 1;
+      const pageXhtml = epubSections[pageIndex]?.xhtml || epubSections[pageIndex]?.content || '';
+      
+      // Create transcript fragments
+      const fragments = sortedSyncs.map((sync, idx) => {
+        // Get text from customText (user-edited text) - this should be populated
+        let text = sync.customText || '';
+        
+        // If no customText, try to extract from XHTML using blockId
+        if (!text && sync.blockId && pageXhtml) {
+          try {
+            const dom = new JSDOM(pageXhtml, { contentType: 'application/xhtml+xml' });
+            const doc = dom.window.document;
+            const element = doc.getElementById(sync.blockId);
+            if (element) {
+              text = element.textContent?.trim() || '';
+            }
+          } catch (error) {
+            console.warn(`[Transcript] Could not extract text for block ${sync.blockId}:`, error.message);
+          }
+        }
+        
+        // Fallback: use blockId if still no text
+        if (!text) {
+          text = sync.blockId || `fragment_${pageNum}_${idx}`;
+        }
+        
+        return {
+          id: sync.blockId || `fragment_${pageNum}_${idx}`,
+          text: text,
+          startTime: sync.startTime || 0,
+          endTime: sync.endTime || 0,
+          type: sync.blockId?.includes('_w') ? 'word' : sync.blockId?.includes('_s') ? 'sentence' : 'paragraph'
+        };
+      });
+      
+      // Create transcript object
+      const transcript = {
+        jobId: jobId,
+        pageNumber: parseInt(pageNum),
+        audioFilePath: syncs[0]?.audioFilePath || '',
+        fragments: fragments,
+        totalDuration: fragments.length > 0 ? Math.max(...fragments.map(f => f.endTime)) : 0,
+        createdAt: new Date().toISOString()
+      };
+      
+      transcripts[pageNum] = transcript;
+      
+      // Build plain text transcript
+      const pageText = fragments.map(f => f.text).join(' ').trim();
+      transcriptText.push(`Page ${pageNum}:\n${pageText}\n`);
+    });
+    
+    // Save transcripts to files
+    const { TranscriptModel } = await import('../models/Transcript.js');
+    const savedTranscripts = {};
+    
+    for (const [pageNum, transcript] of Object.entries(transcripts)) {
+      try {
+        const transcriptPath = await TranscriptModel.saveTranscript(jobId, parseInt(pageNum), transcript);
+        savedTranscripts[pageNum] = transcriptPath;
+      } catch (error) {
+        console.error(`[Transcript] Error saving transcript for page ${pageNum}:`, error);
+      }
+    }
+    
+    // Create combined transcript text
+    const combinedTranscriptText = transcriptText.join('\n---\n\n');
+    
+    // Save combined text file
+    const transcriptDir = TranscriptModel.getTranscriptDir(jobId);
+    await TranscriptModel.ensureTranscriptDir(jobId);
+    const combinedTextPath = path.join(transcriptDir, `combined_transcript.txt`);
+    await fs.writeFile(combinedTextPath, combinedTranscriptText, 'utf8');
+    
+    console.log(`[Transcript] Generated transcripts for job ${jobId}: ${Object.keys(transcripts).length} pages`);
+    
+    return successResponse(res, {
+      jobId,
+      transcripts: savedTranscripts,
+      combinedTextPath: combinedTextPath,
+      combinedTextUrl: `/api/audio-sync/job/${jobId}/download-transcript`,
+      pageCount: Object.keys(transcripts).length,
+      totalFragments: Object.values(transcripts).reduce((sum, t) => sum + t.fragments.length, 0)
+    });
+    
+  } catch (error) {
+    console.error('[Transcript] Error generating transcript:', error);
+    return errorResponse(res, error.message || 'Failed to generate transcript', 500);
+  }
+});
+
+// GET /api/audio-sync/job/:jobId/download-transcript - Download transcript file
+router.get('/job/:jobId/download-transcript', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    
+    if (!jobId || isNaN(jobId)) {
+      return badRequestResponse(res, 'Invalid job ID');
+    }
+    
+    const { TranscriptModel } = await import('../models/Transcript.js');
+    const transcriptDir = TranscriptModel.getTranscriptDir(jobId);
+    const combinedTextPath = path.join(transcriptDir, 'combined_transcript.txt');
+    
+    // Check if file exists
+    try {
+      await fs.access(combinedTextPath);
+    } catch (error) {
+      return notFoundResponse(res, 'Transcript file not found. Please generate transcript first.');
+    }
+    
+    // Set headers for file download
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="transcript_job_${jobId}.txt"`);
+    
+    // Stream the file
+    const fileContent = await fs.readFile(combinedTextPath, 'utf8');
+    res.send(fileContent);
+    
+  } catch (error) {
+    console.error('[Transcript] Error downloading transcript:', error);
+    return errorResponse(res, error.message || 'Failed to download transcript', 500);
+  }
+});
+
+router.get('/job/:jobId/tts-audio/:fileName', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const fileName = req.params.fileName;
+    
+    const { getTtsOutputDir } = await import('../config/fileStorage.js');
+    const ttsDir = getTtsOutputDir();
+    const audioFilePath = path.join(ttsDir, fileName);
+    
+    // Security: Ensure fileName doesn't contain path traversal
+    if (fileName.includes('..') || fileName.includes('/') || fileName.includes('\\')) {
+      return badRequestResponse(res, 'Invalid file name');
+    }
+    
+    try {
+      await fs.access(audioFilePath);
+      res.setHeader('Content-Type', 'audio/mpeg');
+      return res.sendFile(path.resolve(audioFilePath));
+    } catch (fileError) {
+      return notFoundResponse(res, 'TTS audio file not found');
     }
   } catch (error) {
     return errorResponse(res, error.message, 500);

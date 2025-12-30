@@ -26,8 +26,8 @@ export const audioSyncService = {
   extractTextFromEpub: (jobId) =>
     api.get(`/audio-sync/job/${jobId}/extract-text`).then(res => res.data.data),
   
-  generateAudio: (pdfId, jobId, voice, textBlocks) =>
-    api.post('/audio-sync/generate', { pdfId, jobId, voice, textBlocks }).then(res => res.data.data),
+  generateAudio: (pdfId, jobId, voice, textBlocks, ttsOptions = null) =>
+    api.post('/audio-sync/generate', { pdfId, jobId, voice, textBlocks, ttsOptions }).then(res => res.data.data),
   
   getAvailableVoices: () =>
     api.get('/audio-sync/voices').then(res => res.data.data),
@@ -87,6 +87,23 @@ export const audioSyncService = {
       language: options.language || 'eng',
       granularity: options.granularity || 'sentence',
       audioPath: options.audioPath
-    }).then(res => res.data.data)
+    }).then(res => res.data.data),
+
+  // Generate TTS audio from XHTML content
+  generateTtsFromXhtml: (jobId, options = {}) =>
+    api.post(`/audio-sync/job/${jobId}/generate-tts`, {
+      voice: options.voice || {},
+      sectionId: options.sectionId
+    }).then(res => res.data.data),
+
+  // Generate transcript from audio sync data
+  generateTranscript: (jobId) =>
+    api.post(`/audio-sync/job/${jobId}/generate-transcript`).then(res => res.data.data),
+
+  // Download transcript file
+  downloadTranscript: (jobId) => {
+    const apiBaseUrl = api.defaults.baseURL || 'http://localhost:8082/api';
+    return `${apiBaseUrl}/audio-sync/job/${jobId}/download-transcript`;
+  }
 };
 
