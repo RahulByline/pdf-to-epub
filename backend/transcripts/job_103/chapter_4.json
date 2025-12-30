@@ -1,0 +1,23 @@
+{
+  "jobId": 103,
+  "pageNumber": 4,
+  "audioFilePath": "C:\\Users\\ADMIN\\Desktop\\pdf-to-epub-converter\\backend\\uploads\\tts_audio\\combined_audio_103.mp3",
+  "fragments": [
+    {
+      "id": "page4_p1",
+      "text": "Have\n          you\n          ever\n          wished\n          you\n          were\n          a\n          horse?",
+      "startTime": 0.5005005005005005,
+      "endTime": 2.5025025025025025,
+      "type": "paragraph"
+    },
+    {
+      "id": "page4_p1",
+      "text": "Have\n          you\n          ever\n          wished\n          you\n          were\n          a\n          horse?",
+      "startTime": 0.5005005005005005,
+      "endTime": 2.5025025025025025,
+      "type": "paragraph"
+    }
+  ],
+  "totalDuration": 2.5025025025025025,
+  "createdAt": "2025-12-30T09:51:42.017Z"
+}

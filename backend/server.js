@@ -12,6 +12,7 @@ import aiConfigRoutes from './src/routes/aiConfigRoutes.js';
 import audioSyncRoutes from './src/routes/audioSyncRoutes.js';
 import jobPagesRoutes from './src/routes/jobPagesRoutes.js';
 import transcriptRoutes from './src/routes/transcriptRoutes.js';
+import ttsManagementRoutes from './src/routes/ttsManagementRoutes.js';
 
 // Import middleware
 import { errorHandler } from './src/middlewares/errorHandler.js';
@@ -48,6 +49,7 @@ app.use('/api/ai', aiConfigRoutes);
 app.use('/api/audio-sync', audioSyncRoutes);
 app.use('/api/jobs', jobPagesRoutes);
 app.use('/api/transcripts', transcriptRoutes);
+app.use('/api/tts-management', ttsManagementRoutes);
 
 // Error handling middleware (must be last)
 app.use(errorHandler);

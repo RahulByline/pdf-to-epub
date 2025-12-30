@@ -1,0 +1,23 @@
+{
+  "jobId": 103,
+  "pageNumber": 1,
+  "audioFilePath": "C:\\Users\\ADMIN\\Desktop\\pdf-to-epub-converter\\backend\\uploads\\tts_audio\\combined_audio_103.mp3",
+  "fragments": [
+    {
+      "id": "page1_p1",
+      "text": "Christopher\n            Blazeman",
+      "startTime": 0,
+      "endTime": 0.5005005005005005,
+      "type": "paragraph"
+    },
+    {
+      "id": "page1_p1",
+      "text": "Christopher\n            Blazeman",
+      "startTime": 0,
+      "endTime": 0.5005005005005005,
+      "type": "paragraph"
+    }
+  ],
+  "totalDuration": 0.5005005005005005,
+  "createdAt": "2025-12-30T09:51:42.016Z"
+}
