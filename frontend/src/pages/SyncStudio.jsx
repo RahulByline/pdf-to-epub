@@ -227,7 +227,7 @@ const SyncStudio = () => {
         const shouldSync = el.getAttribute('data-should-sync') !== 'false';
         const readAloudAttr = el.getAttribute('data-read-aloud');
         const isExplicitlyExcluded = readAloudAttr === 'false';
-        
+
         // Skip unspoken content entirely (don't create elements for them)
         if (isUnspoken || isExplicitlyExcluded || !shouldSync) {
           console.log(`[SyncStudio] Excluding unspoken content: ${id} (${text.substring(0, 30)}...)`);
@@ -242,6 +242,17 @@ const SyncStudio = () => {
           type = 'sentence';
         }
 
+        // Extract parentId for word-level elements
+        let parentId = undefined;
+        if (type === 'word' && id.includes('_w')) {
+          const parentMatch = id.match(/^((?:page\d+_)?p\d+_s\d+)_w\d+$/);
+          if (parentMatch) {
+            parentId = parentMatch[1];
+          } else {
+            parentId = id.replace(/_w\d+$/, '');
+          }
+        }
+
         // Add the parent element (sentence/paragraph)
         elements.push({
           id,
@@ -250,7 +261,8 @@ const SyncStudio = () => {
           tagName,
           sectionId,
           sectionIndex: sectionId, // Store section index for page filtering
-          pageNumber: sectionId + 1
+          pageNumber: sectionId + 1,
+          parentId: parentId
         });
 
         // Also extract word elements nested inside this element (for word-level granularity)
@@ -264,6 +276,10 @@ const SyncStudio = () => {
             const wordText = wordEl.textContent?.trim() || '';
             if (!wordText) return; // Skip empty words
 
+            // Extract parentId for word elements
+            const wordParentMatch = wordId.match(/^((?:page\d+_)?p\d+_s\d+)_w\d+$/);
+            const wordParentId = wordParentMatch ? wordParentMatch[1] : wordId.replace(/_w\d+$/, '');
+
             elements.push({
               id: wordId,
               text: wordText,
@@ -271,7 +287,8 @@ const SyncStudio = () => {
               tagName: wordEl.tagName.toLowerCase(),
               sectionId,
               sectionIndex: sectionId,
-              pageNumber: sectionId + 1
+              pageNumber: sectionId + 1,
+              parentId: wordParentId
             });
           });
         }
