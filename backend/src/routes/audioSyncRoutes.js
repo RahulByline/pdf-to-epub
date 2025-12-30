@@ -1027,6 +1027,20 @@ router.post('/magic-align', async (req, res) => {
           pageNumber: parseInt(aligned.id.match(/page(\d+)/)?.[1]) || 1
         };
         
+        // CRITICAL FIX: Extract parentId for word-level blocks
+        // Word IDs have pattern: page{N}_p{N}_s{N}_w{N}
+        // Parent sentence ID: page{N}_p{N}_s{N}
+        if (granularity === 'word' && aligned.id.includes('_w')) {
+          const parentMatch = aligned.id.match(/^((?:page\d+_)?p\d+_s\d+)_w\d+$/);
+          if (parentMatch) {
+            resultItem.parentId = parentMatch[1];
+          } else {
+            // Fallback: try to extract parent by removing _w{N} suffix
+            resultItem.parentId = aligned.id.replace(/_w\d+$/, '');
+          }
+          console.log(`[MagicAlign] Word ${aligned.id} -> parent: ${resultItem.parentId}`);
+        }
+        
         // Categorize based on granularity
         if (granularity === 'word') {
           finalResults.words.push(resultItem);
