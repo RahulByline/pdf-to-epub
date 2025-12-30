@@ -30,7 +30,8 @@ import {
   HiOutlineClock,
   HiOutlineChevronLeft,
   HiOutlineChevronRight,
-  HiOutlineInformationCircle
+  HiOutlineInformationCircle,
+  HiOutlineXCircle
 } from 'react-icons/hi';
 import { HiOutlineSparkles } from 'react-icons/hi2';
 import { audioSyncService } from '../services/audioSyncService';
@@ -51,7 +52,8 @@ const SyncStudio = () => {
   const viewerRef = useRef(null);
   const isSpaceDownRef = useRef(false);
   const spaceDownTimeRef = useRef(0);
-  const lastSyncTimeRef = useRef(0); // Track last sync time to prevent rapid syncing
+  const lastSyncTimeRef = useRef(0);
+  const tapSyncStartTimeRef = useRef(null); // Store start time for tap-to-sync (two-tap method)
 
   // State for content
   const [xhtmlContent, setXhtmlContent] = useState('');
@@ -69,10 +71,7 @@ const SyncStudio = () => {
   const [duration, setDuration] = useState(0);
   const [isReady, setIsReady] = useState(false);
   const [zoom, setZoom] = useState(50);
-  // Playback speed control
-  const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
-  const [originalVoice, setOriginalVoice] = useState('standard'); // Track original voice when audio was generated
-  const [isAudioModified, setIsAudioModified] = useState(false); // Track if audio settings have been modified
+  const [playbackSpeed] = useState(1.0); // Audio playback speed (fixed at 1.0x)
 
   // State for sync data
   const [syncData, setSyncData] = useState({
@@ -81,7 +80,9 @@ const SyncStudio = () => {
   });
   const [activeRegionId, setActiveRegionId] = useState(null);
   const [isRecording, setIsRecording] = useState(false);
+  const isRecordingRef = useRef(false); // Ref to track recording state for event handlers
   const [currentSentenceIndex, setCurrentSentenceIndex] = useState(0);
+  const [selectedBlockForSync, setSelectedBlockForSync] = useState(null); // Block ID selected for manual tap-to-sync
   const [parsedElements, setParsedElements] = useState([]);
   const [playingSegmentId, setPlayingSegmentId] = useState(null); // Track which segment is playing
   const [showAudioScript, setShowAudioScript] = useState(false); // Track if audio script modal is open
@@ -107,6 +108,8 @@ const SyncStudio = () => {
   const isProgrammaticPlayRef = useRef(false); // Flag to prevent infinite loops during programmatic playback
   const audioScriptDataRef = useRef(audioScriptData);
   const pendingRegionUpdatesRef = useRef(new Map()); // Track regions that need to be recreated after audio reload
+  const segmentEndIntervalRef = useRef(null); // Interval for checking segment end
+  const isScrubbingRef = useRef(false); // Flag to prevent infinite loops during scrubbing
   
   // Keep refs in sync with state
   useEffect(() => {
@@ -124,6 +127,10 @@ const SyncStudio = () => {
   useEffect(() => {
     audioScriptDataRef.current = audioScriptData;
   }, [audioScriptData]);
+
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
 
   // Cleanup speech recognition when modal closes
   useEffect(() => {
@@ -150,10 +157,9 @@ const SyncStudio = () => {
   const [ttsConfig, setTtsConfig] = useState(null);
   const [ttsRestrictions, setTtsRestrictions] = useState(null);
 
-  // State for Auto-Sync (Kitaboo-style)
+  // State for Magic Sync
   const [autoSyncing, setAutoSyncing] = useState(false);
   const [aeneasAvailable, setAeneasAvailable] = useState(null);
-  const [autoSyncLanguage, setAutoSyncLanguage] = useState('eng');
   const [autoSyncProgress, setAutoSyncProgress] = useState(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [downloading, setDownloading] = useState(false);
@@ -253,65 +259,86 @@ const SyncStudio = () => {
         });
       }
 
-      // PRIORITY 2: Fallback - If no paragraph-block elements found, use data-read-aloud elements
-      // But skip elements that are inside already-processed paragraphs and skip word-level elements
-      if (elements.length === 0) {
-        console.log(`[DIAGNOSTIC] parseXhtmlElements - No paragraph-block found, falling back to data-read-aloud elements`);
-        const readAloudElements = doc.querySelectorAll('[data-read-aloud="true"]');
-        console.log(`[DIAGNOSTIC] parseXhtmlElements - Found ${readAloudElements.length} data-read-aloud elements`);
+        // Skip elements whose id contains "div"
+        if (id.includes('div')) {
+          return; // Skip this element
+        }
 
-        readAloudElements.forEach((el, idx) => {
-          // Skip if this element is inside a processed paragraph
-          if (Array.from(processedParagraphs).some(p => p.contains(el))) {
-            console.log(`[DIAGNOSTIC] parseXhtmlElements - Skipping element ${el.id} (inside processed paragraph)`);
-            return;
-          }
-          
-          const id = el.getAttribute('id') || `sync-${sectionId}-${idx}`;
-          const text = el.textContent?.trim() || '';
-          const tagName = el.tagName.toLowerCase();
-          const classList = el.className || '';
+        // CRITICAL FIX: Filter out unspoken content (TOC, nav, headers, etc.)
+        // These patterns match common unspoken structural elements
+        const unspokenPatterns = [
+          /toc/i,                    // Table of Contents
+          /table-of-contents/i,      // Table of Contents (hyphenated)
+          /contents/i,               // Contents page
+          /chapter-index/i,          // Chapter index
+          /chapter-idx/i,            // Chapter index (abbreviated)
+          /^nav/i,                   // Navigation elements
+          /^header/i,                // Headers
+          /^footer/i,                // Footers
+          /^sidebar/i,               // Sidebars
+          /^menu/i,                  // Menus
+          /page-number/i,            // Page numbers
+          /page-num/i,               // Page numbers (abbreviated)
+          /^skip/i,                  // Skip links
+          /^metadata/i               // Metadata
+        ];
+        
+        // Check if this element should be excluded
+        const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+        
+        // Also check for explicit exclusion attributes
+        const shouldSync = el.getAttribute('data-should-sync') !== 'false';
+        const readAloudAttr = el.getAttribute('data-read-aloud');
+        const isExplicitlyExcluded = readAloudAttr === 'false';
+        
+        // Skip unspoken content entirely (don't create elements for them)
+        if (isUnspoken || isExplicitlyExcluded || !shouldSync) {
+          console.log(`[SyncStudio] Excluding unspoken content: ${id} (${text.substring(0, 30)}...)`);
+          return; // Skip this element
+        }
 
-          // Skip word-level elements - we want sentence or paragraph level
-          const isWordLevel = classList.includes('sync-word') || (tagName === 'span' && id.includes('_w'));
-          if (isWordLevel) {
-            console.log(`[DIAGNOSTIC] parseXhtmlElements - Skipping word-level element: ${id}`);
-            return; // Skip individual words
-          }
+        // Determine element type
+        let type = 'paragraph';
+        if (classList.includes('sync-word') || tagName === 'span' && id.includes('_w')) {
+          type = 'word';
+        } else if (classList.includes('sync-sentence') || id.includes('_s')) {
+          type = 'sentence';
+        }
 
-          // CRITICAL FIX: Filter out unspoken content
-          const unspokenPatterns = [
-            /toc/i, /table-of-contents/i, /contents/i, /chapter-index/i, /chapter-idx/i,
-            /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
-            /page-number/i, /page-num/i, /^skip/i, /^metadata/i
-          ];
-          
-          const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
-          
-          const shouldSync = el.getAttribute('data-should-sync') !== 'false';
-          const readAloudAttr = el.getAttribute('data-read-aloud');
-          const isExplicitlyExcluded = readAloudAttr === 'false';
-          
-          if (isUnspoken || isExplicitlyExcluded || !shouldSync) {
-            return; // Skip this element
-          }
-
-          let type = 'paragraph';
-          if (classList.includes('sync-sentence') || id.includes('_s')) {
-            type = 'sentence';
-          }
-
-          elements.push({
-            id,
-            text,
-            type,
-            tagName,
-            sectionId,
-            sectionIndex: sectionId,
-            pageNumber: sectionId + 1
-          });
+        // Add the parent element (sentence/paragraph)
+        elements.push({
+          id,
+          text,
+          type,
+          tagName,
+          sectionId,
+          sectionIndex: sectionId, // Store section index for page filtering
+          pageNumber: sectionId + 1
         });
-      }
+
+        // Also extract word elements nested inside this element (for word-level granularity)
+        // Words don't have data-read-aloud="true" but are children of elements that do
+        if (type !== 'word') {
+          const wordElements = el.querySelectorAll('.sync-word[id], span[id*="_w"]');
+          wordElements.forEach((wordEl) => {
+            const wordId = wordEl.getAttribute('id');
+            if (!wordId || wordId.includes('div')) return; // Skip if no ID or contains "div"
+            
+            const wordText = wordEl.textContent?.trim() || '';
+            if (!wordText) return; // Skip empty words
+
+            elements.push({
+              id: wordId,
+              text: wordText,
+              type: 'word',
+              tagName: wordEl.tagName.toLowerCase(),
+              sectionId,
+              sectionIndex: sectionId,
+              pageNumber: sectionId + 1
+            });
+          });
+        }
+      });
 
       const paragraphCount = elements.filter(el => el.type === 'paragraph').length;
       const sentenceCount = elements.filter(el => el.type === 'sentence').length;
@@ -435,17 +462,25 @@ const SyncStudio = () => {
    */
   const scrubAudio = useCallback((time, duration = 0.1) => {
     if (!wavesurferRef.current || !scrubOnDrag) return;
+    
+    // Prevent infinite loops - if already scrubbing, skip
+    if (isScrubbingRef.current) {
+      return;
+    }
 
     try {
+      isScrubbingRef.current = true;
       wavesurferRef.current.setTime(time);
       wavesurferRef.current.play();
       setTimeout(() => {
         if (wavesurferRef.current) {
           wavesurferRef.current.pause();
         }
+        isScrubbingRef.current = false;
       }, duration * 1000);
     } catch (err) {
       console.warn('Error scrubbing:', err);
+      isScrubbingRef.current = false;
     }
   }, [scrubOnDrag]);
 
@@ -526,7 +561,7 @@ const SyncStudio = () => {
   /**
    * Update sync data and recreate word regions
    */
-  const updateSentenceWithWords = useCallback((sentenceId, start, end, text = '') => {
+  const updateSentenceWithWords = useCallback((sentenceId, start, end, text = '', shouldCreateWords = null) => {
     // Update sentence
     setSyncData(prev => ({
       ...prev,
@@ -537,13 +572,20 @@ const SyncStudio = () => {
           start, 
           end, 
           text, 
-          pageNumber: currentSectionIndex + 1 
+          pageNumber: currentSectionIndex + 1,
+          status: 'SYNCED' // CRITICAL: Mark as synced when manually synced
         }
       }
     }));
 
-    // Auto-propagate word timings
-    if (showWordTrack) {
+    // Auto-propagate word timings ONLY if:
+    // 1. showWordTrack is enabled AND
+    // 2. granularity is "word" (user wants word-level syncs) OR shouldCreateWords is explicitly true
+    // For manual sentence-level syncs, shouldCreateWords will be false/undefined, so words won't be created
+    const shouldCreateWordTimings = (shouldCreateWords === true) || 
+                                     (shouldCreateWords !== false && showWordTrack && granularity === 'word');
+    
+    if (shouldCreateWordTimings) {
       const words = calculateWordTimings(sentenceId, start, end);
       
       // Remove old word regions for this sentence
@@ -575,8 +617,35 @@ const SyncStudio = () => {
           ...wordData
         }
       }));
+    } else {
+      // Remove any existing word regions for this sentence if we're not creating words
+      if (regionsPluginRef.current) {
+        const regions = regionsPluginRef.current.getRegions();
+        regions.forEach(r => {
+          if (r.id.includes('_w')) {
+            const wordData = syncData.words[r.id];
+            if (wordData && wordData.parentId === sentenceId) {
+              r.remove();
+            }
+          }
+        });
+      }
+      
+      // Remove word data from syncData
+      setSyncData(prev => {
+        const newWords = { ...prev.words };
+        Object.keys(newWords).forEach(wordId => {
+          if (newWords[wordId]?.parentId === sentenceId) {
+            delete newWords[wordId];
+          }
+        });
+        return {
+          ...prev,
+          words: newWords
+        };
+      });
     }
-  }, [calculateWordTimings, createRegion, currentSectionIndex, showWordTrack]);
+  }, [calculateWordTimings, createRegion, currentSectionIndex, showWordTrack, granularity, syncData.words]);
 
   /**
    * Handle region update (drag/resize)
@@ -621,8 +690,8 @@ const SyncStudio = () => {
         }
       }));
     } else {
-      // SENTENCE: Update and re-propagate words
-      updateSentenceWithWords(id, start, end, syncData.sentences[id]?.text || '');
+      // SENTENCE: Update and re-propagate words only if granularity is "word"
+      updateSentenceWithWords(id, start, end, syncData.sentences[id]?.text || '', granularity === 'word');
     }
 
     highlightElement(id);
@@ -632,17 +701,41 @@ const SyncStudio = () => {
    * Handle region drag (scrubbing)
    */
   const handleRegionDrag = useCallback((region) => {
+    // CRITICAL: During full audio playback (main play button), completely skip this handler
+    // This prevents any region-related interference with main playback
+    // Full audio playback = not recording, not playing a segment, and no segment ID ref
+    // Check BOTH refs and state to be absolutely sure
+    const isFullAudioPlayback = !isProgrammaticPlayRef.current && 
+                                !isRecordingRef.current && 
+                                !playingSegmentIdRef.current &&
+                                !playingSegmentId; // Also check state for extra safety
+    
+    if (isFullAudioPlayback) {
+      // During full audio playback, only update highlight - don't scrub or interfere
+      // This is the most important safeguard - completely prevent any interference
+      highlightElement(region.id);
+      setActiveRegionId(region.id);
+      return; // Early return to prevent any other logic
+    }
+    
     // Skip if we're programmatically playing a segment to prevent infinite loops
     if (isProgrammaticPlayRef.current) {
       return;
     }
     
+    // Skip if we're already scrubbing to prevent infinite loops
+    if (isScrubbingRef.current) {
+      return;
+    }
+    
+    // Only scrub if scrubOnDrag is enabled and we're not in full audio playback
     if (scrubOnDrag) {
+      // Only scrub if user is actively interacting, not during full audio playback
       scrubAudio(region.start, 0.08);
     }
     highlightElement(region.id);
     setActiveRegionId(region.id);
-  }, [highlightElement, scrubAudio, scrubOnDrag]);
+  }, [highlightElement, scrubAudio, scrubOnDrag, playingSegmentId]);
 
   /**
    * Initialize WaveSurfer
@@ -768,51 +861,92 @@ const SyncStudio = () => {
     wavesurferRef.current.on('audioprocess', (time) => {
       setCurrentTime(time);
       
-      // Stop playback if we've reached the end of the playing segment
-      const currentPlayingSegmentId = playingSegmentIdRef.current;
-      if (currentPlayingSegmentId && wavesurferRef.current && isProgrammaticPlayRef.current) {
-        // Check both syncData and audioScriptData
-        const segmentData = syncDataRef.current.sentences[currentPlayingSegmentId] || 
-                           audioScriptDataRef.current.sentences[currentPlayingSegmentId];
-        if (segmentData) {
-          // Stop when we reach or exceed the end time
-          if (time >= segmentData.end) {
-            isProgrammaticPlayRef.current = false;
-            wavesurferRef.current.pause();
-            // Ensure we're exactly at the end time
-            wavesurferRef.current.setTime(segmentData.end);
-            setPlayingSegmentId(null);
-            setPlayingScriptSegmentId(null);
-            playingScriptSegmentIdRef.current = null;
-            return; // Exit early to prevent other handlers from running
+      // CRITICAL FIX: Don't stop playback at region boundaries when in recording mode
+      // This allows users to sync blocks that come after already-synced regions
+      if (isRecordingRef.current) {
+        // When recording, completely skip all programmatic play stopping logic
+        // Let audio play continuously so users can sync blocks that come after synced regions
+        // Just continue to region highlighting below
+      } else {
+        // CRITICAL: Only process segment stopping logic if we're explicitly playing a segment
+        // If isProgrammaticPlayRef is false, skip ALL segment-related checks to allow full audio playback
+        if (!isProgrammaticPlayRef.current) {
+          // Not playing a segment - skip ALL segment stopping logic completely
+          // This ensures main play button (full audio) is never interrupted
+          // Continue to region highlighting below - do NOT process any segment logic
+          // Early return to ensure no segment logic runs - this is the key fix
+        } else {
+          // Only enter this block if isProgrammaticPlayRef is TRUE
+          // Normal playback mode: Stop playback if we've reached the end of the playing segment
+          // CRITICAL: Only stop if BOTH isProgrammaticPlayRef AND playingSegmentIdRef are set
+          const currentPlayingSegmentId = playingSegmentIdRef.current;
+          if (currentPlayingSegmentId && wavesurferRef.current) {
+            // Double-check: verify state matches ref (safety check)
+            if (!playingSegmentId) {
+              // State doesn't match ref - clear refs to prevent false stops
+              console.warn('[Play] audioprocess: State mismatch detected. Clearing segment refs.');
+              isProgrammaticPlayRef.current = false;
+              playingSegmentIdRef.current = null;
+              playingScriptSegmentIdRef.current = null;
+              return;
+            }
+          
+          // Check both syncData and audioScriptData
+          const segmentData = syncDataRef.current.sentences[currentPlayingSegmentId] || 
+                             audioScriptDataRef.current.sentences[currentPlayingSegmentId];
+          if (segmentData && segmentData.start !== undefined && segmentData.end !== undefined) {
+            // Stop when we reach or exceed the end time (with small buffer to account for timing precision)
+            if (time >= segmentData.end - 0.01) {
+              console.log(`[Play] audioprocess: Reached end time for segment ${currentPlayingSegmentId}: ${segmentData.end.toFixed(3)}s (current: ${time.toFixed(3)}s)`);
+              isProgrammaticPlayRef.current = false;
+              wavesurferRef.current.pause();
+              // Ensure we're exactly at the end time
+              wavesurferRef.current.setTime(segmentData.end);
+              setPlayingSegmentId(null);
+              setPlayingScriptSegmentId(null);
+              playingSegmentIdRef.current = null;
+              playingScriptSegmentIdRef.current = null;
+              return; // Exit early to prevent other handlers from running
+            }
+            // Also prevent playback if we somehow went before the start
+            // BUT only if we're actually programmatically playing this specific segment
+            // This prevents interference with full audio playback
+            // CRITICAL: Only do this if we're explicitly playing this segment (not full audio)
+            else if (time < segmentData.start && isProgrammaticPlayRef.current && playingSegmentId === currentPlayingSegmentId && playingSegmentIdRef.current === currentPlayingSegmentId) {
+              // Only seek to start if we're actually playing this specific segment
+              wavesurferRef.current.setTime(segmentData.start);
+            }
+          } else {
+            console.warn(`[Play] Segment ${currentPlayingSegmentId} missing start/end data:`, segmentData);
           }
-          // Also prevent playback if we somehow went before the start
-          else if (time < segmentData.start) {
-            wavesurferRef.current.setTime(segmentData.start);
           }
-        }
-      }
-      
-      // Also check script segment playback - ensure we only play within the segment bounds
-      const currentPlayingScriptSegmentId = playingScriptSegmentIdRef.current;
-      if (currentPlayingScriptSegmentId && wavesurferRef.current && isProgrammaticPlayRef.current) {
-        const scriptSegmentData = audioScriptDataRef.current.sentences[currentPlayingScriptSegmentId];
-        if (scriptSegmentData && scriptSegmentData.start !== undefined && scriptSegmentData.end !== undefined) {
-          // Stop when we reach or exceed the end time
-          if (time >= scriptSegmentData.end) {
-            console.log('[Script Play] Reached end time, stopping at:', scriptSegmentData.end.toFixed(3), 'current time:', time.toFixed(3));
-            isProgrammaticPlayRef.current = false;
-            wavesurferRef.current.pause();
-            // Ensure we're exactly at the end time
-            wavesurferRef.current.setTime(scriptSegmentData.end);
-            setPlayingScriptSegmentId(null);
-            playingScriptSegmentIdRef.current = null;
-            return; // Exit early to prevent other handlers
-          }
-          // Prevent playback if we somehow went before the start
-          else if (time < scriptSegmentData.start) {
-            console.log('[Script Play] Time before start, resetting to:', scriptSegmentData.start.toFixed(3), 'current time:', time.toFixed(3));
-            wavesurferRef.current.setTime(scriptSegmentData.start);
+          
+          // Also check script segment playback - ensure we only play within the segment bounds
+          // Only check if we're still in programmatic play mode
+          const currentPlayingScriptSegmentId = playingScriptSegmentIdRef.current;
+          if (currentPlayingScriptSegmentId && wavesurferRef.current) {
+            const scriptSegmentData = audioScriptDataRef.current.sentences[currentPlayingScriptSegmentId];
+            if (scriptSegmentData && scriptSegmentData.start !== undefined && scriptSegmentData.end !== undefined) {
+              // Stop when we reach or exceed the end time
+              if (time >= scriptSegmentData.end) {
+                console.log('[Script Play] Reached end time, stopping at:', scriptSegmentData.end.toFixed(3), 'current time:', time.toFixed(3));
+                isProgrammaticPlayRef.current = false;
+                wavesurferRef.current.pause();
+                // Ensure we're exactly at the end time
+                wavesurferRef.current.setTime(scriptSegmentData.end);
+                setPlayingScriptSegmentId(null);
+                playingScriptSegmentIdRef.current = null;
+                return; // Exit early to prevent other handlers
+              }
+              // Prevent playback if we somehow went before the start
+              // BUT only if we're actually programmatically playing this specific segment
+              // CRITICAL: Only do this if we're explicitly playing this segment (not full audio)
+              else if (time < scriptSegmentData.start && isProgrammaticPlayRef.current && playingScriptSegmentId === currentPlayingScriptSegmentId && playingScriptSegmentIdRef.current === currentPlayingScriptSegmentId) {
+                // Only seek to start if we're actually playing this specific segment
+                console.log('[Script Play] Time before start, resetting to:', scriptSegmentData.start.toFixed(3), 'current time:', time.toFixed(3));
+                wavesurferRef.current.setTime(scriptSegmentData.start);
+              }
+            }
           }
         }
       }
@@ -852,44 +986,88 @@ const SyncStudio = () => {
       isProgrammaticPlayRef.current = false;
     });
 
-    // Click-to-seek functionality - handle clicks on waveform to seek
-    // WaveSurfer automatically handles clicks when interact: true, but we add explicit handler for better control
-    let clickHandlerCleanup = null;
-    if (waveformRef.current) {
-      const handleWaveformClick = (e) => {
-        if (!wavesurferRef.current || !isReady) return;
-        
-        // Only handle clicks on the waveform itself, not on regions
-        if (e.target.closest('.wavesurfer-region')) {
-          return; // Let region click handler handle it
-        }
-        
-        try {
-          const rect = waveformRef.current.getBoundingClientRect();
-          const x = e.clientX - rect.left;
-          const width = rect.width;
-          const duration = wavesurferRef.current.getDuration();
-          
-          if (duration > 0 && width > 0) {
-            const seekTime = (x / width) * duration;
-            wavesurferRef.current.seekTo(seekTime / duration);
-            setCurrentTime(seekTime);
-            console.log(`[WaveSurfer] Clicked to seek: ${seekTime.toFixed(2)}s`);
-          }
-        } catch (err) {
-          console.warn('[WaveSurfer] Error seeking on click:', err);
-        }
-      };
+    // Additional check using timeupdate for more reliable stopping
+    // Only stops playback if we're explicitly playing a segment (not full audio)
+    const checkSegmentEnd = () => {
+      // CRITICAL: Early exit if not in programmatic play mode
+      // This is the most important check - must be first
+      if (!isProgrammaticPlayRef.current) {
+        // Not playing a segment - definitely skip
+        return;
+      }
       
-      waveformRef.current.addEventListener('click', handleWaveformClick);
-      
-      // Store cleanup function
-      clickHandlerCleanup = () => {
-        if (waveformRef.current) {
-          waveformRef.current.removeEventListener('click', handleWaveformClick);
+      // CRITICAL: Only check segment end if BOTH flags are set
+      // This ensures full audio playback (main play button) is not interrupted
+      // Double-check both the ref and the state to be absolutely sure
+      if (!wavesurferRef.current || !isReady) {
+        return;
+      }
+
+      const currentPlayingSegmentId = playingSegmentIdRef.current;
+      // Must have a specific segment ID - if null, we're playing full audio
+      // Also verify that playingSegmentId state is set (double-check)
+      if (!currentPlayingSegmentId || !playingSegmentId) {
+        // If refs don't match state, clear everything to be safe
+        if (currentPlayingSegmentId && !playingSegmentId) {
+          console.warn('[Play] Mismatch: ref has segment but state does not. Clearing refs.');
+          isProgrammaticPlayRef.current = false;
+          playingSegmentIdRef.current = null;
+          playingScriptSegmentIdRef.current = null;
         }
-      };
-    }
+        return;
+      }
+
+      const segmentData = syncDataRef.current.sentences[currentPlayingSegmentId] || 
+                         audioScriptDataRef.current.sentences[currentPlayingSegmentId];
+      
+      if (segmentData && segmentData.start !== undefined && segmentData.end !== undefined) {
+        const currentTime = wavesurferRef.current.getCurrentTime();
+        
+        // Stop when we reach or exceed the end time (with small buffer to account for timing)
+        if (currentTime >= segmentData.end - 0.01) {
+          console.log(`[Play] Timeupdate check: Reached end time for segment ${currentPlayingSegmentId}: ${segmentData.end.toFixed(3)}s (current: ${currentTime.toFixed(3)}s)`);
+          isProgrammaticPlayRef.current = false;
+          wavesurferRef.current.pause();
+          wavesurferRef.current.setTime(segmentData.end);
+          setPlayingSegmentId(null);
+          setPlayingScriptSegmentId(null);
+          playingSegmentIdRef.current = null;
+          playingScriptSegmentIdRef.current = null;
+        }
+      }
+    };
+
+    // Check segment end periodically when playing
+    // CRITICAL: Only check if we're explicitly playing a segment (not full audio)
+    segmentEndIntervalRef.current = setInterval(() => {
+      // CRITICAL: Use refs, not state, to avoid stale closure issues
+      // Must have BOTH isProgrammaticPlayRef AND playingSegmentIdRef set
+      // This ensures the interval doesn't interfere with main play button
+      
+      // Early exit if not in programmatic play mode - this is the most important check
+      if (!isProgrammaticPlayRef.current) {
+        // Not playing a segment - definitely skip
+        return;
+      }
+      
+      if (wavesurferRef.current && playingSegmentIdRef.current) {
+        // Double-check state matches ref (safety check)
+        if (!playingSegmentId) {
+          // State doesn't match - clear refs and skip
+          console.warn('[Play] Interval: State mismatch. Clearing refs.');
+          isProgrammaticPlayRef.current = false;
+          playingSegmentIdRef.current = null;
+          playingScriptSegmentIdRef.current = null;
+          return;
+        }
+        // Check if actually playing by checking WaveSurfer's internal state
+        const mediaElement = wavesurferRef.current.getMediaElement();
+        const isActuallyPlaying = mediaElement && !mediaElement.paused;
+        if (isActuallyPlaying) {
+          checkSegmentEnd();
+        }
+      }
+    }, 50); // Check every 50ms for responsive stopping
 
     // Region events
     regionsPluginRef.current.on('region-updated', handleRegionUpdate);
@@ -907,9 +1085,10 @@ const SyncStudio = () => {
     });
 
     return () => {
-      // Clean up click handler
-      if (clickHandlerCleanup) {
-        clickHandlerCleanup();
+      // Clear interval on cleanup
+      if (segmentEndIntervalRef.current) {
+        clearInterval(segmentEndIntervalRef.current);
+        segmentEndIntervalRef.current = null;
       }
       
       if (wavesurferRef.current) {
@@ -923,7 +1102,7 @@ const SyncStudio = () => {
         }
       }
     };
-  }, [audioUrl, handleRegionUpdate, handleRegionDrag, highlightElement, activeRegionId]);
+  }, [audioUrl, handleRegionUpdate, handleRegionDrag, highlightElement]);
 
   /**
    * Update zoom level
@@ -990,139 +1169,133 @@ const SyncStudio = () => {
   }, [xhtmlContent, leftPanelWidth]);
 
   /**
-   * Spacebar tap-in/tap-out handler
+   * Simplified tap-to-sync: Two spacebar presses (start and end)
+   * First press: Record start time
+   * Second press: Record end time and sync the block
    */
   useEffect(() => {
-    const handleKeyDown = (e) => {
-      if (e.code === 'Space' && !e.repeat && isRecording && !isSpaceDownRef.current) {
-        e.preventDefault();
-        isSpaceDownRef.current = true;
-        spaceDownTimeRef.current = wavesurferRef.current?.getCurrentTime() || 0;
-        console.log('[TapIn] Started at', spaceDownTimeRef.current.toFixed(3));
+    const handleKeyPress = (e) => {
+      // Only handle spacebar when in recording mode
+      if (e.code !== 'Space' || !isRecording) return;
+      
+      // Prevent default scrolling behavior
+      e.preventDefault();
+      
+      // Check if a block is selected
+      if (!selectedBlockForSync) {
+        console.warn(`[TapSync] No block selected. Please click on a text block first.`);
+        return;
       }
+
+      const currentTime = wavesurferRef.current?.getCurrentTime() || 0;
+
+      // First tap: Record start time
+      if (tapSyncStartTimeRef.current === null) {
+        tapSyncStartTimeRef.current = currentTime;
+        console.log(`[TapSync] Start time recorded: ${currentTime.toFixed(3)}s`);
+        return;
+      }
+
+      // Second tap: Record end time and sync
+      const startTime = tapSyncStartTimeRef.current;
+      const endTime = currentTime;
+
+      // Validate timing
+      if (endTime <= startTime) {
+        console.warn(`[TapSync] End time (${endTime.toFixed(3)}s) must be after start time (${startTime.toFixed(3)}s). Resetting.`);
+        tapSyncStartTimeRef.current = null;
+        return;
+      }
+
+      // Minimum duration check (0.1 seconds)
+      const duration = endTime - startTime;
+      if (duration < 0.1) {
+        console.warn(`[TapSync] Duration too short (${(duration * 1000).toFixed(0)}ms). Minimum: 100ms. Resetting.`);
+        tapSyncStartTimeRef.current = null;
+        return;
+      }
+
+      // Find the selected element
+      const element = parsedElements.find(el => el.id === selectedBlockForSync);
+      
+      if (!element) {
+        console.error(`[TapSync] ERROR: Selected block ${selectedBlockForSync} not found in parsedElements`);
+        tapSyncStartTimeRef.current = null;
+        return;
+      }
+
+      // Validate element has an ID
+      if (!element.id) {
+        console.error(`[TapSync] ERROR: Element has no ID!`, element);
+        tapSyncStartTimeRef.current = null;
+        return;
+      }
+
+      // CRITICAL: Validate that the selected block matches the current granularity
+      const elementType = element.type || (element.id.includes('_w') ? 'word' : element.id.includes('_s') ? 'sentence' : 'paragraph');
+      if (granularity === 'word' && elementType !== 'word') {
+        console.warn(`[TapSync] Block ${element.id} is ${elementType} level, but granularity is ${granularity}. Cannot sync.`);
+        tapSyncStartTimeRef.current = null;
+        setSelectedBlockForSync(null);
+        return;
+      }
+      if (granularity === 'sentence' && elementType !== 'sentence') {
+        console.warn(`[TapSync] Block ${element.id} is ${elementType} level, but granularity is ${granularity}. Cannot sync.`);
+        tapSyncStartTimeRef.current = null;
+        setSelectedBlockForSync(null);
+        return;
+      }
+      if (granularity === 'paragraph' && elementType !== 'paragraph') {
+        console.warn(`[TapSync] Block ${element.id} is ${elementType} level, but granularity is ${granularity}. Cannot sync.`);
+        tapSyncStartTimeRef.current = null;
+        setSelectedBlockForSync(null);
+        return;
+      }
+
+      // Check if element is on current page
+      const pageMatch = element.id.match(/page(\d+)/);
+      const elementPageNum = pageMatch ? parseInt(pageMatch[1]) : null;
+      const isOnCurrentPage = elementPageNum === (currentSectionIndex + 1) || element.sectionIndex === currentSectionIndex;
+      
+      if (!isOnCurrentPage) {
+        console.warn(`[TapSync] Selected block is not on current page. Selected: ${selectedBlockForSync}, Current page: ${currentSectionIndex + 1}`);
+        tapSyncStartTimeRef.current = null;
+        return;
+      }
+
+      // Apply snap to silence
+      const snappedStart = findNearestSilence(startTime);
+      const snappedEnd = findNearestSilence(endTime);
+
+      console.log(`[TapSync] Syncing selected element:`, {
+        id: element.id,
+        text: element.text?.substring(0, 50),
+        type: element.type,
+        startTime: snappedStart.toFixed(3),
+        endTime: snappedEnd.toFixed(3),
+        duration: (duration * 1000).toFixed(0) + 'ms'
+      });
+
+      // Create region
+      createRegion(element.id, snappedStart, snappedEnd, 'sentence');
+      // For manual syncs, only create word timings if granularity is "word"
+      // Pass false to prevent word creation for sentence-level manual syncs
+      updateSentenceWithWords(element.id, snappedStart, snappedEnd, element.text, granularity === 'word');
+
+      console.log(`[TapSync] ✓ Page ${currentSectionIndex + 1} - ${element.id}: ${snappedStart.toFixed(3)}s - ${snappedEnd.toFixed(3)}s`);
+      
+      // Reset for next sync
+      tapSyncStartTimeRef.current = null;
+      setSelectedBlockForSync(null);
+      lastSyncTimeRef.current = Date.now();
     };
 
-    const handleKeyUp = (e) => {
-      if (e.code === 'Space' && isSpaceDownRef.current && isRecording) {
-        e.preventDefault();
-        isSpaceDownRef.current = false;
-        
-        const endTime = wavesurferRef.current?.getCurrentTime() || 0;
-        const startTime = spaceDownTimeRef.current;
-        
-        // CRITICAL FIX: Require minimum hold duration (0.15 seconds) to prevent accidental fast syncing
-        const holdDuration = endTime - startTime;
-        const MIN_HOLD_DURATION = 0.15; // Minimum 150ms hold time
-        
-        if (holdDuration < MIN_HOLD_DURATION) {
-          console.log(`[TapOut] Hold too short (${(holdDuration * 1000).toFixed(0)}ms), ignoring. Minimum: ${(MIN_HOLD_DURATION * 1000).toFixed(0)}ms`);
-          return; // Ignore very quick taps
-        }
-
-        // CRITICAL FIX: Filter elements to only current page
-        const currentPageElements = parsedElements.filter(el => {
-          // Validate element has required properties
-          if (!el || !el.id) {
-            console.warn(`[TapOut] Element missing ID:`, el);
-            return false;
-          }
-          
-          // Extract page number from element ID (e.g., "page4_p1_s1" -> 4)
-          const pageMatch = el.id.match(/page(\d+)/);
-          const elementPageNum = pageMatch ? parseInt(pageMatch[1]) : null;
-          
-          // If element has page number, match it to current section
-          if (elementPageNum !== null) {
-            return elementPageNum === (currentSectionIndex + 1);
-          }
-          
-          // Fallback: if element was parsed from current section, include it
-          // This handles legacy IDs without page prefix
-          return el.sectionIndex === currentSectionIndex;
-        }).filter(el => 
-          el.type === 'sentence' || el.type === 'paragraph'
-        );
-        
-        console.log(`[TapOut] Current page elements (Page ${currentSectionIndex + 1}): ${currentPageElements.length} found`, 
-          currentPageElements.map(el => ({ id: el.id, type: el.type, text: el.text?.substring(0, 30) }))
-        );
-
-        // CRITICAL FIX: Debounce - prevent syncing too fast (minimum 0.3 seconds between syncs)
-        const timeSinceLastSync = Date.now() - lastSyncTimeRef.current;
-        const MIN_SYNC_INTERVAL = 300; // 300ms minimum between syncs
-        
-        if (timeSinceLastSync < MIN_SYNC_INTERVAL) {
-          console.log(`[TapOut] Too fast! Wait ${((MIN_SYNC_INTERVAL - timeSinceLastSync) / 1000).toFixed(2)}s before next sync`);
-          return; // Ignore if syncing too fast
-        }
-
-        // Debug logging
-        console.log(`[TapOut] Debug info:`, {
-          endTime,
-          startTime,
-          holdDuration: (holdDuration * 1000).toFixed(0) + 'ms',
-          currentSentenceIndex,
-          currentPageElementsLength: currentPageElements.length,
-          currentPage: currentSectionIndex + 1,
-          availableElements: currentPageElements.map(el => ({ id: el.id, text: el.text?.substring(0, 30) }))
-        });
-
-        if (endTime > startTime && currentSentenceIndex < currentPageElements.length) {
-          const element = currentPageElements[currentSentenceIndex];
-
-          if (element) {
-            // CRITICAL FIX: Validate element has an ID
-            if (!element.id) {
-              console.error(`[TapOut] ERROR: Element at index ${currentSentenceIndex} has no ID!`, element);
-              return; // Skip this element
-            }
-
-            // Apply snap to silence
-            const snappedStart = findNearestSilence(startTime);
-            const snappedEnd = findNearestSilence(endTime);
-
-            console.log(`[TapOut] Syncing element:`, {
-              id: element.id,
-              text: element.text?.substring(0, 50),
-              type: element.type,
-              startTime: snappedStart.toFixed(3),
-              endTime: snappedEnd.toFixed(3)
-            });
-
-            // Create region
-            createRegion(element.id, snappedStart, snappedEnd, 'sentence');
-            updateSentenceWithWords(element.id, snappedStart, snappedEnd, element.text);
-
-            console.log(`[TapOut] ✓ Page ${currentSectionIndex + 1} - ${element.id}: ${snappedStart.toFixed(3)}s - ${snappedEnd.toFixed(3)}s (held for ${(holdDuration * 1000).toFixed(0)}ms)`);
-            
-            // Update last sync time
-            lastSyncTimeRef.current = Date.now();
-            
-            setCurrentSentenceIndex(prev => prev + 1);
-          } else {
-            console.warn(`[TapOut] Element at index ${currentSentenceIndex} is null/undefined`);
-          }
-        } else if (currentSentenceIndex >= currentPageElements.length) {
-          console.log(`[TapOut] All sentences on page ${currentSectionIndex + 1} synced (${currentPageElements.length} total)`);
-        } else {
-          console.warn(`[TapOut] Invalid sync attempt:`, {
-            endTime,
-            startTime,
-            endTimeGreater: endTime > startTime,
-            indexInRange: currentSentenceIndex < currentPageElements.length
-          });
-        }
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('keydown', handleKeyPress);
 
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('keydown', handleKeyPress);
     };
-  }, [isRecording, currentSentenceIndex, parsedElements, createRegion, findNearestSilence, updateSentenceWithWords]);
+  }, [isRecording, selectedBlockForSync, parsedElements, currentSectionIndex, createRegion, findNearestSilence, updateSentenceWithWords]);
 
   /**
    * Load EPUB content and voices
@@ -1171,7 +1344,7 @@ const SyncStudio = () => {
         if (jobData?.pdfDocumentId) {
           setPdfId(jobData.pdfDocumentId);
         }
-        // Playback speed is always 1.0x (normal speed) - no longer loading from metadata
+        // Playback speed is fixed at 1.0x (no longer configurable)
 
         // Load EPUB sections
         const sectionsData = await conversionService.getEpubSections(parseInt(jobId));
@@ -1257,7 +1430,7 @@ const SyncStudio = () => {
                   const pageNumber = sync.page_number || sync.pageNumber || 1;
                   
                   // CRITICAL FIX: Use original XHTML ID as key for consistency
-                  // This matches how handleAutoSync and handleLinearSpread store data
+                  // This matches how Magic Sync stores data
                   const key = blockId;
                   
                   // Preserve status from backend (SKIPPED or SYNCED)
@@ -1302,15 +1475,138 @@ const SyncStudio = () => {
                 page2Sentences: Object.values(sentences).filter(s => s.pageNumber === 2).length
               });
               
+              // Merge with all parsedElements to ensure all blocks are visible
+              // Add all elements (sentences, paragraphs, and words) that aren't already in syncData
+              let mergedCount = 0;
+              allElements.forEach(element => {
+                // Skip if already in syncData
+                if (sentences[element.id]) return;
+                
+                // Extract page number from ID (e.g., "page6_p1_s1" -> 6)
+                // This is the most reliable method since IDs contain the page number
+                const pageMatch = element.id.match(/page(\d+)/);
+                let pageNum = 1;
+                if (pageMatch) {
+                  pageNum = parseInt(pageMatch[1]);
+                } else if (element.sectionIndex !== undefined) {
+                  pageNum = element.sectionIndex + 1;
+                } else if (element.pageNumber) {
+                  pageNum = element.pageNumber;
+                }
+                
+                // Add as unsynced block (no timestamps, but visible in UI)
+                sentences[element.id] = {
+                  id: element.id,
+                  start: undefined,
+                  end: undefined,
+                  text: element.text || '',
+                  pageNumber: pageNum,
+                  status: 'UNSYNCED' // Mark as unsynced by default
+                };
+                mergedCount++;
+              });
+              
+              console.log(`[Load] After merging parsedElements: ${Object.keys(sentences).length} total sentences (added ${mergedCount} unsynced blocks)`);
+              console.log(`[Load] Page distribution after merge:`, {
+                page1: Object.values(sentences).filter(s => s.pageNumber === 1).length,
+                page2: Object.values(sentences).filter(s => s.pageNumber === 2).length,
+                page3: Object.values(sentences).filter(s => s.pageNumber === 3).length,
+                page4: Object.values(sentences).filter(s => s.pageNumber === 4).length,
+                page5: Object.values(sentences).filter(s => s.pageNumber === 5).length,
+                page6: Object.values(sentences).filter(s => s.pageNumber === 6).length,
+                page7: Object.values(sentences).filter(s => s.pageNumber === 7).length,
+                page8: Object.values(sentences).filter(s => s.pageNumber === 8).length
+              });
+              setSyncData({ sentences, words });
+            } else {
+              // No existing sync data, initialize with all parsedElements (including words)
+              const sentences = {};
+              const words = {};
+              
+              allElements.forEach(element => {
+                // Extract page number from ID (e.g., "page6_p1_s1" -> 6)
+                const pageMatch = element.id.match(/page(\d+)/);
+                let pageNum = 1;
+                if (pageMatch) {
+                  pageNum = parseInt(pageMatch[1]);
+                } else if (element.sectionIndex !== undefined) {
+                  pageNum = element.sectionIndex + 1;
+                } else if (element.pageNumber) {
+                  pageNum = element.pageNumber;
+                }
+                
+                sentences[element.id] = {
+                  id: element.id,
+                  start: undefined,
+                  end: undefined,
+                  text: element.text || '',
+                  pageNumber: pageNum,
+                  status: 'UNSYNCED'
+                };
+              });
+              
+              console.log(`[Load] Initialized with ${Object.keys(sentences).length} unsynced text blocks`);
+              console.log(`[Load] Page distribution:`, {
+                page1: Object.values(sentences).filter(s => s.pageNumber === 1).length,
+                page2: Object.values(sentences).filter(s => s.pageNumber === 2).length,
+                page3: Object.values(sentences).filter(s => s.pageNumber === 3).length,
+                page4: Object.values(sentences).filter(s => s.pageNumber === 4).length,
+                page5: Object.values(sentences).filter(s => s.pageNumber === 5).length,
+                page6: Object.values(sentences).filter(s => s.pageNumber === 6).length,
+                page7: Object.values(sentences).filter(s => s.pageNumber === 7).length,
+                page8: Object.values(sentences).filter(s => s.pageNumber === 8).length
+              });
               setSyncData({ sentences, words });
             }
           } catch (audioErr) {
             console.warn('No existing audio:', audioErr);
+            // Initialize with all parsedElements (including words) if no audio data
+            const sentences = {};
+            const words = {};
+            
+            allElements.forEach(element => {
+              // Extract page number from ID (e.g., "page6_p1_s1" -> 6)
+              const pageMatch = element.id.match(/page(\d+)/);
+              let pageNum = 1;
+              if (pageMatch) {
+                pageNum = parseInt(pageMatch[1]);
+              } else if (element.sectionIndex !== undefined) {
+                pageNum = element.sectionIndex + 1;
+              } else if (element.pageNumber) {
+                pageNum = element.pageNumber;
+              }
+              
+              sentences[element.id] = {
+                id: element.id,
+                start: undefined,
+                end: undefined,
+                text: element.text || '',
+                pageNumber: pageNum,
+                status: 'UNSYNCED'
+              };
+            });
+            
+            console.log(`[Load] Initialized with ${Object.keys(sentences).length} unsynced text blocks (no audio data)`);
+            console.log(`[Load] Page distribution:`, {
+              page1: Object.values(sentences).filter(s => s.pageNumber === 1).length,
+              page2: Object.values(sentences).filter(s => s.pageNumber === 2).length,
+              page3: Object.values(sentences).filter(s => s.pageNumber === 3).length,
+              page4: Object.values(sentences).filter(s => s.pageNumber === 4).length,
+              page5: Object.values(sentences).filter(s => s.pageNumber === 5).length,
+              page6: Object.values(sentences).filter(s => s.pageNumber === 6).length,
+              page7: Object.values(sentences).filter(s => s.pageNumber === 7).length,
+              page8: Object.values(sentences).filter(s => s.pageNumber === 8).length
+            });
+            setSyncData({ sentences, words });
           }
+        } else {
+          // No sections loaded, initialize with empty objects
+          setSyncData({ sentences: {}, words: {} });
         }
       } catch (err) {
         console.error('Error loading content:', err);
         setError('Failed to load content: ' + err.message);
+        setSyncData({ sentences: {}, words: {} });
       } finally {
         setLoading(false);
       }
@@ -1320,6 +1616,84 @@ const SyncStudio = () => {
       loadContent();
     }
   }, [jobId, parseXhtmlElements]);
+
+  /**
+   * Backup: Initialize syncData with all text blocks from parsedElements
+   * This runs as a safety net in case elements weren't added during loadContent
+   * Only adds blocks that aren't already in syncData
+   */
+  useEffect(() => {
+    if (parsedElements.length === 0) return;
+    
+    setSyncData(prev => {
+      // Check if we already have blocks - if so, don't overwrite
+      const hasBlocks = Object.keys(prev.sentences).length > 0;
+      if (hasBlocks) {
+        // Just merge in any missing blocks
+        const newSentences = { ...prev.sentences };
+        let addedCount = 0;
+        
+        parsedElements.forEach(element => {
+          if (newSentences[element.id]) return;
+          
+          const pageMatch = element.id.match(/page(\d+)/);
+          let pageNum = 1;
+          if (pageMatch) {
+            pageNum = parseInt(pageMatch[1]);
+          } else if (element.sectionIndex !== undefined) {
+            pageNum = element.sectionIndex + 1;
+          } else if (element.pageNumber) {
+            pageNum = element.pageNumber;
+          }
+          
+          newSentences[element.id] = {
+            id: element.id,
+            start: undefined,
+            end: undefined,
+            text: element.text || '',
+            pageNumber: pageNum,
+            status: 'UNSYNCED'
+          };
+          addedCount++;
+        });
+        
+        if (addedCount > 0) {
+          console.log(`[SyncStudio] Backup: Added ${addedCount} missing text blocks to syncData`);
+          return { sentences: newSentences, words: prev.words };
+        }
+      } else {
+        // No blocks yet, initialize with all parsedElements
+        const sentences = {};
+        const words = {};
+        
+        parsedElements.forEach(element => {
+          const pageMatch = element.id.match(/page(\d+)/);
+          let pageNum = 1;
+          if (pageMatch) {
+            pageNum = parseInt(pageMatch[1]);
+          } else if (element.sectionIndex !== undefined) {
+            pageNum = element.sectionIndex + 1;
+          } else if (element.pageNumber) {
+            pageNum = element.pageNumber;
+          }
+          
+          sentences[element.id] = {
+            id: element.id,
+            start: undefined,
+            end: undefined,
+            text: element.text || '',
+            pageNumber: pageNum,
+            status: 'UNSYNCED'
+          };
+        });
+        
+        console.log(`[SyncStudio] Backup: Initialized syncData with ${Object.keys(sentences).length} text blocks`);
+        return { sentences, words };
+      }
+      
+      return prev;
+    });
+  }, [parsedElements]);
 
   /**
    * Recreate regions when sync data changes (on load)
@@ -2283,12 +2657,23 @@ const SyncStudio = () => {
   const toggleRecording = () => {
     if (isRecording) {
       setIsRecording(false);
+      setSelectedBlockForSync(null); // Clear selection when stopping recording
+      tapSyncStartTimeRef.current = null; // Reset tap sync state
       if (wavesurferRef.current) {
         wavesurferRef.current.pause();
       }
     } else {
       setIsRecording(true);
+      setSelectedBlockForSync(null); // Clear any previous selection when starting
+      tapSyncStartTimeRef.current = null; // Reset tap sync state
       setCurrentSentenceIndex(0);
+      // CRITICAL: Clear all programmatic play flags when starting recording
+      // This ensures audio won't stop at previous segment boundaries
+      isProgrammaticPlayRef.current = false;
+      setPlayingSegmentId(null);
+      setPlayingScriptSegmentId(null);
+      playingSegmentIdRef.current = null;
+      playingScriptSegmentIdRef.current = null;
       if (wavesurferRef.current) {
         wavesurferRef.current.setTime(0);
         wavesurferRef.current.play();
@@ -2296,145 +2681,6 @@ const SyncStudio = () => {
     }
   };
 
-  /**
-   * Automated forced alignment (Kitaboo-style)
-   * This is the "magic button" that syncs everything instantly
-   */
-  const handleAutoSync = async () => {
-    if (!audioUrl) {
-      setError('Please upload or generate audio first');
-      return;
-    }
-
-    try {
-      setAutoSyncing(true);
-      setError('');
-
-      // If we have a local audio file (blob URL), upload it first
-      if (audioFile || audioUrl.startsWith('blob:')) {
-        setAutoSyncProgress('Uploading audio to server...');
-        console.log('[AutoSync] Audio is local, uploading first...');
-        
-        let fileToUpload = audioFile;
-        
-        // If we only have a blob URL, fetch it and create a File
-        if (!fileToUpload && audioUrl.startsWith('blob:')) {
-          try {
-            const response = await fetch(audioUrl);
-            const blob = await response.blob();
-            fileToUpload = new File([blob], `audio_${jobId}.mp3`, { type: 'audio/mpeg' });
-          } catch (fetchErr) {
-            console.error('[AutoSync] Failed to fetch blob:', fetchErr);
-            setError('Failed to process audio file. Please upload a file directly.');
-            setAutoSyncing(false);
-            return;
-          }
-        }
-        
-        if (fileToUpload) {
-          try {
-            const uploadResult = await audioSyncService.uploadAudioFile(parseInt(jobId), fileToUpload);
-            console.log('[AutoSync] Audio uploaded:', uploadResult);
-          } catch (uploadErr) {
-            console.error('[AutoSync] Upload failed:', uploadErr);
-            setError('Failed to upload audio: ' + uploadErr.message);
-            setAutoSyncing(false);
-            return;
-          }
-        }
-      }
-
-      setAutoSyncProgress('Analyzing audio and text...');
-      console.log('[AutoSync] Starting automated alignment...');
-
-      const result = await audioSyncService.autoSync(parseInt(jobId), {
-        language: autoSyncLanguage,
-        granularity: granularity,
-        propagateWords: showWordTrack
-      });
-
-      console.log('[AutoSync] Result:', result);
-      setAutoSyncProgress(`Aligned ${result.sentences?.length || 0} sentences`);
-
-      // Update local sync data
-      const newSentences = {};
-      const newWords = {};
-
-      console.log('[AutoSync] Processing result sentences:', result.sentences?.length);
-      console.log('[AutoSync] Processing result words:', result.words?.length);
-
-      if (result.sentences) {
-        result.sentences.forEach(s => {
-          // Use the pageNumber directly from backend (it now correctly tracks per-page)
-          const pageNum = s.pageNumber || 1;
-          // Use original ID to match XHTML - this is critical for SMIL to work!
-          const key = s.id;
-          
-          newSentences[key] = {
-            id: s.id,
-            start: s.startTime,
-            end: s.endTime,
-            text: s.text,
-            pageNumber: pageNum
-          };
-          
-          console.log(`[AutoSync] Sentence: ${key} -> Page ${pageNum}, ${s.startTime?.toFixed(2)}s-${s.endTime?.toFixed(2)}s`);
-        });
-      }
-
-      if (result.words) {
-        result.words.forEach(w => {
-          const pageNum = w.pageNumber || 1;
-          // Use original ID to match XHTML - this is critical for SMIL to work!
-          const key = w.id;
-          
-          newWords[key] = {
-            id: w.id,
-            parentId: w.parentId,
-            start: w.startTime,
-            end: w.endTime,
-            text: w.text,
-            pageNumber: pageNum
-          };
-        });
-      }
-      
-      console.log(`[AutoSync] Mapped: ${Object.keys(newSentences).length} sentences, ${Object.keys(newWords).length} words`);
-
-      setSyncData({ sentences: newSentences, words: newWords });
-
-      // Clear and recreate regions
-      if (regionsPluginRef.current) {
-        regionsPluginRef.current.clearRegions();
-
-        Object.entries(newSentences).forEach(([id, data]) => {
-          // Skip SKIPPED blocks - don't create regions for them
-          if (data.status === 'SKIPPED') return;
-          if (data.start >= 0 && data.end > data.start) {
-            createRegion(id, data.start, data.end, 'sentence');
-          }
-        });
-
-        if (showWordTrack) {
-          Object.entries(newWords).forEach(([id, data]) => {
-            if (data.start >= 0 && data.end > data.start) {
-              createRegion(id, data.start, data.end, 'word');
-            }
-          });
-        }
-      }
-
-      setAutoSyncProgress(null);
-      alert(`✓ Auto-sync complete!\n\nMethod: ${result.method === 'aeneas' ? 'Aeneas Forced Alignment' : 'Linear Spread'}\nSentences: ${result.sentences?.length || 0}\nWords: ${result.words?.length || 0}\n\nYou can now fine-tune by dragging regions on the waveform.`);
-
-    } catch (err) {
-      console.error('[AutoSync] Error:', err);
-      setError('Auto-sync failed: ' + err.message);
-      setAutoSyncProgress(null);
-    } finally {
-      setAutoSyncing(false);
-    }
-  };
 
   /**
    * Hybrid Gemini Alignment (Magic Sync)
@@ -2494,10 +2740,10 @@ const SyncStudio = () => {
 
       setAutoSyncProgress('Phase 1: Getting transcript from audio...');
       console.log('[MagicSync] Starting hybrid alignment for job:', numericJobId);
-      console.log('[MagicSync] Options:', { language: autoSyncLanguage, granularity });
+      console.log('[MagicSync] Options:', { language: 'eng', granularity });
 
       const result = await audioSyncService.magicSync(numericJobId, {
-        language: autoSyncLanguage || 'eng',
+        language: 'eng',
         granularity: granularity || 'sentence'
       });
 
@@ -2564,6 +2810,28 @@ const SyncStudio = () => {
         });
       }
 
+      // CRITICAL FIX: Include ALL text blocks from parsedElements that aren't already in syncData
+      // This ensures all text blocks appear in the UI, even if they weren't synced or skipped
+      // This ensures all blocks are visible in the UI (including words)
+      parsedElements.forEach(element => {
+        // Skip if already in newSentences (synced or skipped)
+        if (newSentences[element.id]) return;
+        
+        // Extract page number from ID
+        const pageMatch = element.id.match(/page(\d+)/);
+        const pageNum = pageMatch ? parseInt(pageMatch[1]) : currentSectionIndex + 1;
+        
+        // Add as unsynced block (no timestamps, but visible in UI)
+        newSentences[element.id] = {
+          id: element.id,
+          start: undefined,
+          end: undefined,
+          text: element.text || '',
+          pageNumber: pageNum,
+          status: 'UNSYNCED' // New status for blocks that weren't processed
+        };
+      });
+
       setSyncData({ sentences: newSentences, words: newWords });
 
       // Clear and recreate regions
@@ -2621,109 +2889,6 @@ const SyncStudio = () => {
     }
   };
 
-  /**
-   * Linear Spread sync (manual bounds)
-   * User marks start and end, system spreads evenly based on character count
-   */
-  const handleLinearSpread = async () => {
-    if (!wavesurferRef.current) {
-      setError('Please load audio first');
-      return;
-    }
-
-    const startTime = 0;
-    const endTime = wavesurferRef.current.getDuration();
-
-    if (endTime <= 0) {
-      setError('Invalid audio duration');
-      return;
-    }
-
-    try {
-      setAutoSyncing(true);
-      setAutoSyncProgress('Calculating proportional timings...');
-
-      const result = await audioSyncService.linearSpread(parseInt(jobId), startTime, endTime, {
-        granularity: granularity,
-        propagateWords: showWordTrack
-      });
-
-      // Update local state (same as autoSync)
-      const newSentences = {};
-      const newWords = {};
-
-      if (result.sentences) {
-        result.sentences.forEach(s => {
-          // Extract page number from ID - supports both formats:
-          // New: "page1_p1_s1" -> page 1
-          // Legacy: "p1_s1" -> page 1 (from paragraph number)
-          const newMatch = s.id.match(/^page(\d+)_/);
-          const legacyMatch = s.id.match(/^p(\d+)/);
-          const pageNum = newMatch ? parseInt(newMatch[1]) : 
-                         legacyMatch ? parseInt(legacyMatch[1]) : 1;
-          
-          newSentences[s.id] = {
-            id: s.id,
-            start: s.startTime,
-            end: s.endTime,
-            text: s.text,
-            pageNumber: pageNum
-          };
-        });
-      }
-
-      if (result.words) {
-        result.words.forEach(w => {
-          // Extract page number from ID - supports both formats
-          const newMatch = w.id.match(/^page(\d+)_/);
-          const legacyMatch = w.id.match(/^p(\d+)/);
-          const pageNum = newMatch ? parseInt(newMatch[1]) : 
-                         legacyMatch ? parseInt(legacyMatch[1]) : 1;
-          
-          newWords[w.id] = {
-            id: w.id,
-            parentId: w.parentId,
-            start: w.startTime,
-            end: w.endTime,
-            text: w.text,
-            pageNumber: pageNum
-          };
-        });
-      }
-
-      setSyncData({ sentences: newSentences, words: newWords });
-
-      // Recreate regions
-      if (regionsPluginRef.current) {
-        regionsPluginRef.current.clearRegions();
-
-        Object.entries(newSentences).forEach(([id, data]) => {
-          // Skip SKIPPED blocks - don't create regions for them
-          if (data.status === 'SKIPPED') return;
-          if (data.start >= 0 && data.end > data.start) {
-            createRegion(id, data.start, data.end, 'sentence');
-          }
-        });
-
-        if (showWordTrack) {
-          Object.entries(newWords).forEach(([id, data]) => {
-            if (data.start >= 0 && data.end > data.start) {
-              createRegion(id, data.start, data.end, 'word');
-            }
-          });
-        }
-      }
-
-      setAutoSyncProgress(null);
-      alert(`✓ Linear spread complete!\n\nSentences: ${result.sentences?.length || 0}\nWords: ${result.words?.length || 0}\n\nTip: Enable "Snap to Silence" and drag regions to refine.`);
-
-    } catch (err) {
-      setError('Linear spread failed: ' + err.message);
-      setAutoSyncProgress(null);
-    } finally {
-      setAutoSyncing(false);
-    }
-  };
 
   /**
    * Re-propagate all word timings
@@ -2731,7 +2896,8 @@ const SyncStudio = () => {
   const handleRefreshWordMap = () => {
     Object.entries(syncData.sentences).forEach(([id, data]) => {
       if (data.start >= 0 && data.end > data.start) {
-        updateSentenceWithWords(id, data.start, data.end, data.text);
+        // Only create word timings if granularity is "word"
+        updateSentenceWithWords(id, data.start, data.end, data.text, granularity === 'word');
       }
     });
   };
@@ -3180,9 +3346,12 @@ const SyncStudio = () => {
     // Set flag to prevent region handlers from interfering
     isProgrammaticPlayRef.current = true;
     
+    // Set refs immediately to ensure audioprocess handler can stop at the right time
+    playingSegmentIdRef.current = segmentId;
+    setPlayingSegmentId(segmentId);
+    
     // Set time to segment start
     wavesurferRef.current.setTime(segmentData.start);
-    setPlayingSegmentId(segmentId);
     
     // Small delay to ensure setTime completes before play
     setTimeout(() => {
@@ -3532,6 +3701,72 @@ const SyncStudio = () => {
       setLoadingDiagnostics(false);
     }
   };
+
+  /**
+   * Handle clearing sync for a block (reset to unsynced state)
+   */
+  const handleClearSync = useCallback((blockId) => {
+    if (!blockId) return;
+
+    // Remove region from waveform
+    if (regionsPluginRef.current) {
+      const regions = regionsPluginRef.current.getRegions();
+      const region = regions.find(r => r.id === blockId);
+      if (region) {
+        region.remove();
+      }
+
+      // Also remove word regions for this block
+      const blockData = syncDataRef.current.sentences[blockId];
+      if (blockData) {
+        Object.keys(syncDataRef.current.words || {}).forEach(wordId => {
+          const wordData = syncDataRef.current.words[wordId];
+          if (wordData && wordData.parentId === blockId) {
+            const wordRegion = regions.find(r => r.id === wordId);
+            if (wordRegion) {
+              wordRegion.remove();
+            }
+          }
+        });
+      }
+    }
+
+    // Clear sync data - set to unsynced state
+    setSyncData(prev => {
+      const newSentences = { ...prev.sentences };
+      const newWords = { ...prev.words };
+
+      // Reset block to unsynced state
+      if (newSentences[blockId]) {
+        newSentences[blockId] = {
+          ...newSentences[blockId],
+          start: undefined,
+          end: undefined,
+          status: 'UNSYNCED'
+        };
+      }
+
+      // Remove word timings for this block
+      Object.keys(newWords).forEach(wordId => {
+        const wordData = newWords[wordId];
+        if (wordData && wordData.parentId === blockId) {
+          delete newWords[wordId];
+        }
+      });
+
+      return {
+        sentences: newSentences,
+        words: newWords
+      };
+    });
+
+    // Clear active region if it was the cleared one
+    if (activeRegionId === blockId) {
+      setActiveRegionId(null);
+    }
+
+    console.log(`[ClearSync] Cleared sync for block: ${blockId}`);
+  }, [activeRegionId]);
 
   /**
    * Handle deleting a segment
@@ -3933,6 +4168,13 @@ const SyncStudio = () => {
           return;
         }
         
+        // CRITICAL: Only save blocks that have valid start and end timestamps
+        // This ensures manual sync data is included (it has start/end) but unsynced blocks are excluded
+        if (data.start === undefined || data.end === undefined || data.start === null || data.end === null) {
+          console.log(`[handleSave] Skipping sentence without timestamps: ${id}`);
+          return;
+        }
+        
         if (isUnspoken(id, data.text || '')) {
           console.log(`[handleSave] Excluding unspoken sentence from save: ${id}`);
           return; // Skip unspoken content
@@ -3955,6 +4197,13 @@ const SyncStudio = () => {
         // Skip SKIPPED blocks - they shouldn't be saved
         if (data.status === 'SKIPPED') {
           console.log(`[handleSave] Skipping SKIPPED word: ${id}`);
+          return;
+        }
+        
+        // CRITICAL: Only save blocks that have valid start and end timestamps
+        // This ensures manual sync data is included (it has start/end) but unsynced blocks are excluded
+        if (data.start === undefined || data.end === undefined || data.start === null || data.end === null) {
+          console.log(`[handleSave] Skipping word without timestamps: ${id}`);
           return;
         }
         
@@ -4403,12 +4652,22 @@ const SyncStudio = () => {
             <div className="playback-controls">
               <button 
                 onClick={() => {
-                  // Clear segment playback when using main controls
-                  if (playingSegmentId) {
-                    isProgrammaticPlayRef.current = false;
-                    setPlayingSegmentId(null);
-                  }
+                  // CRITICAL: Clear all segment playback flags BEFORE toggling playback
+                  // Clear refs first, then state, to ensure no race conditions
+                  console.log('[Main Play] Clearing all segment flags for full audio playback');
+                  
+                  // Clear all flags synchronously
+                  playingSegmentIdRef.current = null;
+                  playingScriptSegmentIdRef.current = null;
+                  isProgrammaticPlayRef.current = false;
+                  setPlayingSegmentId(null);
+                  setPlayingScriptSegmentId(null);
+                  
+                  // Toggle playback immediately - flags are now cleared
+                  // The audioprocess handler will skip all segment logic because isProgrammaticPlayRef is false
                   wavesurferRef.current?.playPause();
+                  
+                  console.log('[Main Play] Playback toggled. isProgrammaticPlayRef:', isProgrammaticPlayRef.current, 'playingSegmentIdRef:', playingSegmentIdRef.current);
                 }}
                 disabled={!isReady}
                 className="btn-play"
@@ -4537,10 +4796,10 @@ const SyncStudio = () => {
             </div>
           </div>
 
-          {/* Auto-Sync Section (Kitaboo-style) */}
+          {/* Magic Sync Section */}
           <div className="auto-sync-section">
             <div className="auto-sync-header">
-              <h3><HiOutlineCog size={18} style={{ marginRight: '6px', verticalAlign: 'middle' }} /> Auto-Sync</h3>
+              <h3><HiOutlineCog size={18} style={{ marginRight: '6px', verticalAlign: 'middle' }} /> Magic Sync</h3>
               <span className={`aeneas-badge ${aeneasAvailable ? 'available' : 'unavailable'}`}>
                 {aeneasAvailable === null ? '...' : aeneasAvailable ? (
                   <>
@@ -4549,49 +4808,14 @@ const SyncStudio = () => {
                   </>
                 ) : (
                   <>
-                    <HiOutlineCalculator size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-                    Linear Spread Mode
+                    <HiOutlineXCircle size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+                    Aeneas Not Available
                   </>
                 )}
               </span>
             </div>
 
             <div className="auto-sync-controls">
-              <select 
-                value={autoSyncLanguage} 
-                onChange={(e) => setAutoSyncLanguage(e.target.value)}
-                className="language-select"
-              >
-                <option value="eng">English</option>
-                <option value="fra">French</option>
-                <option value="deu">German</option>
-                <option value="spa">Spanish</option>
-                <option value="ita">Italian</option>
-                <option value="por">Portuguese</option>
-                <option value="hin">Hindi</option>
-                <option value="cmn">Chinese (Mandarin)</option>
-                <option value="jpn">Japanese</option>
-              </select>
-
-              <button 
-                onClick={handleAutoSync}
-                disabled={!isReady || autoSyncing}
-                className="btn-auto-sync"
-                title="Standard Aeneas forced alignment"
-              >
-                {autoSyncing ? (
-                  <>
-                    <HiOutlineClock size={16} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-                    Syncing...
-                  </>
-                ) : (
-                  <>
-                    <HiOutlineArrowUp size={16} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
-                    Auto-Sync
-                  </>
-                )}
-              </button>
-
               <button 
                 onClick={handleMagicSync}
                 disabled={!isReady || autoSyncing}
@@ -4605,8 +4829,7 @@ const SyncStudio = () => {
                   borderRadius: '6px',
                   cursor: autoSyncing || !isReady ? 'not-allowed' : 'pointer',
                   opacity: autoSyncing || !isReady ? 0.6 : 1,
-                  fontWeight: 'bold',
-                  marginLeft: '10px'
+                  fontWeight: 'bold'
                 }}
               >
                 {autoSyncing ? (
@@ -4623,24 +4846,56 @@ const SyncStudio = () => {
               </button>
 
               <button 
-                onClick={handleLinearSpread}
-                disabled={!isReady || autoSyncing}
-                className="btn-linear-spread"
-                title="Spread timings proportionally based on character count"
-              >
-                <HiOutlineCalculator size={16} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> Linear Spread
-              </button>
-
-              <button 
                 onClick={async () => {
                   if (window.confirm('Clear all sync data for this job? You will need to re-sync.')) {
                     try {
                       await audioSyncService.deleteAudioSyncsByJob(parseInt(jobId));
-                      setSyncData({ sentences: {}, words: {} });
+                      
+                      // Clear waveform regions
                       if (regionsPluginRef.current) {
                         regionsPluginRef.current.clearRegions();
                       }
-                      alert('Sync data cleared. Click Auto-Sync to re-generate.');
+                      
+                      // Re-initialize syncData with all parsedElements as UNSYNCED
+                      // This ensures text blocks remain visible after clearing
+                      const newSentences = {};
+                      const newWords = {};
+                      
+                      parsedElements.forEach(element => {
+                        // Extract page number from ID
+                        const pageMatch = element.id.match(/page(\d+)/);
+                        let pageNum = 1;
+                        if (pageMatch) {
+                          pageNum = parseInt(pageMatch[1]);
+                        } else if (element.sectionIndex !== undefined) {
+                          pageNum = element.sectionIndex + 1;
+                        } else if (element.pageNumber) {
+                          pageNum = element.pageNumber;
+                        }
+                        
+                        // Determine if it's a word or sentence/paragraph
+                        if (element.type === 'word' || element.id.includes('_w')) {
+                          newWords[element.id] = {
+                            id: element.id,
+                            text: element.text || '',
+                            pageNumber: pageNum,
+                            status: 'UNSYNCED',
+                            parentId: element.parentId
+                          };
+                        } else {
+                          newSentences[element.id] = {
+                            id: element.id,
+                            text: element.text || '',
+                            pageNumber: pageNum,
+                            status: 'UNSYNCED'
+                          };
+                        }
+                      });
+                      
+                      setSyncData({ sentences: newSentences, words: newWords });
+                      console.log(`[Clear] Re-initialized ${Object.keys(newSentences).length} sentences and ${Object.keys(newWords).length} words as UNSYNCED`);
+                      
+                      alert('Sync data cleared. All text blocks are now available for syncing.');
                     } catch (err) {
                       setError('Failed to clear sync data: ' + err.message);
                     }
@@ -4801,7 +5056,25 @@ const SyncStudio = () => {
           {/* Page Stats */}
           <div className="page-stats">
             <span className="stat">
-              <HiOutlineDocumentText size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> {Object.entries(syncData.sentences).filter(([id, data]) => data.pageNumber === currentSectionIndex + 1).length} sentences
+              <HiOutlineDocumentText size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> {Object.entries(syncData.sentences).filter(([id, data]) => {
+                if (data.pageNumber !== currentSectionIndex + 1) return false;
+                // Filter by granularity
+                let elementType = 'paragraph';
+                if (id.includes('_w')) {
+                  elementType = 'word';
+                } else if (id.includes('_s')) {
+                  elementType = 'sentence';
+                } else {
+                  const parsedElement = parsedElements.find(el => el.id === id);
+                  if (parsedElement) {
+                    elementType = parsedElement.type || 'paragraph';
+                  }
+                }
+                if (granularity === 'word' && elementType !== 'word') return false;
+                if (granularity === 'sentence' && elementType !== 'sentence') return false;
+                if (granularity === 'paragraph' && elementType !== 'paragraph') return false;
+                return true;
+              }).length} {granularity === 'word' ? 'words' : granularity === 'sentence' ? 'sentences' : 'paragraphs'}
             </span>
             <span className="stat">
               <HiOutlineHashtag size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> {Object.entries(syncData.words).filter(([, data]) => 
@@ -4812,21 +5085,91 @@ const SyncStudio = () => {
           
           <div className="sync-list">
             {Object.entries(syncData.sentences)
-              .filter(([id, data]) => data.pageNumber === currentSectionIndex + 1)
+              .filter(([id, data]) => {
+                // Filter by page number
+                if (data.pageNumber !== currentSectionIndex + 1) return false;
+                
+                // Filter by granularity (export level)
+                // Determine element type from ID pattern or parsedElements
+                let elementType = 'paragraph'; // default
+                
+                // Check ID pattern first (fastest)
+                if (id.includes('_w')) {
+                  elementType = 'word';
+                } else if (id.includes('_s')) {
+                  elementType = 'sentence';
+                } else {
+                  // Check parsedElements for type
+                  const parsedElement = parsedElements.find(el => el.id === id);
+                  if (parsedElement) {
+                    elementType = parsedElement.type || 'paragraph';
+                  }
+                }
+                
+                // Match granularity filter
+                if (granularity === 'word' && elementType !== 'word') return false;
+                if (granularity === 'sentence' && elementType !== 'sentence') return false;
+                if (granularity === 'paragraph' && elementType !== 'paragraph') return false;
+                
+                return true;
+              })
               .sort((a, b) => {
-                // Sort SKIPPED blocks to the end, then by start time
+                // Sort SKIPPED and UNSYNCED blocks to the end, then by start time
                 if (a[1].status === 'SKIPPED' && b[1].status !== 'SKIPPED') return 1;
                 if (a[1].status !== 'SKIPPED' && b[1].status === 'SKIPPED') return -1;
+                if (a[1].status === 'UNSYNCED' && b[1].status !== 'UNSYNCED' && b[1].status !== 'SKIPPED') return 1;
+                if (a[1].status !== 'UNSYNCED' && b[1].status === 'UNSYNCED' && a[1].status !== 'SKIPPED') return -1;
                 return (a[1].start || 0) - (b[1].start || 0);
               })
               .map(([id, data]) => {
                 const isSkipped = data.status === 'SKIPPED';
+                const isUnsynced = data.status === 'UNSYNCED';
                 return (
               <div 
                 key={id}
-                className={`sync-item ${activeRegionId === id ? 'active' : ''} ${isSkipped ? 'skipped' : ''}`}
+                className={`sync-item ${activeRegionId === id ? 'active' : ''} ${isSkipped ? 'skipped' : ''} ${isUnsynced ? 'unsynced' : ''} ${selectedBlockForSync === id && isRecording ? 'selected-for-sync' : ''}`}
                 onClick={() => {
                   if (isSkipped) return; // Don't allow interaction with skipped blocks
+                  
+                  // Determine element type from ID pattern or parsedElements
+                  let elementType = 'paragraph'; // default
+                  if (id.includes('_w')) {
+                    elementType = 'word';
+                  } else if (id.includes('_s')) {
+                    elementType = 'sentence';
+                  } else {
+                    const parsedElement = parsedElements.find(el => el.id === id);
+                    if (parsedElement) {
+                      elementType = parsedElement.type || 'paragraph';
+                    }
+                  }
+                  
+                  // If in recording mode, select block for tap-to-sync
+                  // CRITICAL: Only allow selecting blocks that match the current granularity
+                  if (isRecording) {
+                    // Check if this block matches the current granularity
+                    if (granularity === 'word' && elementType !== 'word') {
+                      console.log(`[TapSync] Block ${id} is ${elementType} level, but granularity is ${granularity}. Cannot sync.`);
+                      return;
+                    }
+                    if (granularity === 'sentence' && elementType !== 'sentence') {
+                      console.log(`[TapSync] Block ${id} is ${elementType} level, but granularity is ${granularity}. Cannot sync.`);
+                      return;
+                    }
+                    if (granularity === 'paragraph' && elementType !== 'paragraph') {
+                      console.log(`[TapSync] Block ${id} is ${elementType} level, but granularity is ${granularity}. Cannot sync.`);
+                      return;
+                    }
+                    
+                    setSelectedBlockForSync(id);
+                    setActiveRegionId(id);
+                    highlightElement(data.id);
+                    console.log(`[TapSync] Selected block for sync: ${id} (${elementType} level, granularity: ${granularity})`);
+                    return;
+                  }
+                  
+                  // Normal click behavior (when not recording)
+                  if (isUnsynced) return; // Don't allow interaction with unsynced blocks
                   setActiveRegionId(id);
                   highlightElement(data.id); // Use original XHTML ID
                   if (wavesurferRef.current && data.start !== undefined) {
@@ -4838,6 +5181,8 @@ const SyncStudio = () => {
                   <span className="sync-id" title={data.id || id}>{data.id || id || 'No ID'}</span>
                   {isSkipped ? (
                     <span className="badge-skipped">Not in Audio</span>
+                  ) : isUnsynced ? (
+                    <span className="badge-unsynced">Not Synced</span>
                   ) : (
                     <span className="sync-time">
                       {formatTime(data.start)} - {formatTime(data.end)}
@@ -4866,58 +5211,30 @@ const SyncStudio = () => {
                     />
                     <div style={{ display: 'flex', gap: '6px', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
                       <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                        {!isSkipped && (
+                        {!isUnsynced && (
                           <button
                             onClick={(e) => {
                               e.stopPropagation();
-                              handlePlaySegment(id);
+                              handleClearSync(id);
                             }}
-                            disabled={regeneratingBlock !== null || !isReady}
                             style={{
                               padding: '4px 8px',
-                              border: '1px solid #4caf50',
+                              border: '1px solid #f44336',
                               borderRadius: '4px',
-                              backgroundColor: playingSegmentId === id && isPlaying ? '#c8e6c9' : '#e8f5e9',
-                              color: '#2e7d32',
-                              cursor: regeneratingBlock !== null || !isReady ? 'not-allowed' : 'pointer',
+                              backgroundColor: '#ffebee',
+                              color: '#c62828',
+                              cursor: 'pointer',
                               fontSize: '11px',
                               display: 'flex',
                               alignItems: 'center',
-                              gap: '4px',
-                              opacity: regeneratingBlock !== null || !isReady ? 0.5 : 1
+                              gap: '4px'
                             }}
-                            title={playingSegmentId === id && isPlaying ? "Pause playback" : "Play this segment"}
+                            title="Clear sync timing to allow resyncing"
                           >
-                            {playingSegmentId === id && isPlaying ? (
-                              <HiOutlinePause size={14} />
-                            ) : (
-                              <HiOutlinePlay size={14} />
-                            )}
-                            {playingSegmentId === id && isPlaying ? 'Pause' : 'Play'}
+                            <HiOutlineRefresh size={12} />
+                            Clear Sync
                           </button>
                         )}
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDiagnostics(id);
-                          }}
-                          style={{
-                            padding: '4px 8px',
-                            border: '1px solid #ff9800',
-                            borderRadius: '4px',
-                            backgroundColor: '#fff3e0',
-                            color: '#e65100',
-                            cursor: 'pointer',
-                            fontSize: '11px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px'
-                          }}
-                          title="Show diagnostic information about this segment"
-                        >
-                          <HiOutlineInformationCircle size={14} />
-                          Diagnostics
-                        </button>
                       </div>
                       <div style={{ display: 'flex', gap: '6px' }}>
                       <button
@@ -4980,104 +5297,30 @@ const SyncStudio = () => {
                     <span style={{ flex: 1 }}>{data.text || 'No text'}</span>
                     {!isSkipped && (
                       <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handlePlaySegment(id);
-                          }}
-                          disabled={regeneratingBlock !== null || !isReady}
-                          style={{
-                            padding: '4px 8px',
-                            border: '1px solid #4caf50',
-                            borderRadius: '4px',
-                            backgroundColor: playingSegmentId === id && isPlaying ? '#c8e6c9' : '#e8f5e9',
-                            color: '#2e7d32',
-                            cursor: regeneratingBlock !== null || !isReady ? 'not-allowed' : 'pointer',
-                            fontSize: '11px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px',
-                            opacity: regeneratingBlock !== null || !isReady ? 0.5 : 1
-                          }}
-                          title={playingSegmentId === id && isPlaying ? "Pause playback" : "Play this segment"}
-                        >
-                          {playingSegmentId === id && isPlaying ? (
-                            <>
-                              <HiOutlinePause size={12} /> Pause
-                            </>
-                          ) : (
-                            <>
-                              <HiOutlinePlay size={12} /> Play
-                            </>
-                          )}
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDiagnostics(id);
-                          }}
-                          style={{
-                            padding: '4px 8px',
-                            border: '1px solid #ff9800',
-                            borderRadius: '4px',
-                            backgroundColor: '#fff3e0',
-                            color: '#e65100',
-                            cursor: 'pointer',
-                            fontSize: '11px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px'
-                          }}
-                          title="Show diagnostic information about this segment"
-                        >
-                          <HiOutlineInformationCircle size={12} /> Diagnostics
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleStartEdit(id, data.text);
-                          }}
-                          disabled={regeneratingBlock !== null}
-                          style={{
-                            padding: '4px 8px',
-                            border: '1px solid #1976d2',
-                            borderRadius: '4px',
-                            backgroundColor: '#e3f2fd',
-                            color: '#1976d2',
-                            cursor: regeneratingBlock !== null ? 'not-allowed' : 'pointer',
-                            fontSize: '11px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px',
-                            opacity: regeneratingBlock !== null ? 0.5 : 1
-                          }}
-                          title="Edit text (audio will be regenerated)"
-                        >
-                          <HiOutlinePencil size={12} /> Edit
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteSegment(id);
-                          }}
-                          disabled={regeneratingBlock !== null}
-                          style={{
-                            padding: '4px 8px',
-                            border: '1px solid #d32f2f',
-                            borderRadius: '4px',
-                            backgroundColor: '#ffebee',
-                            color: '#d32f2f',
-                            cursor: regeneratingBlock !== null ? 'not-allowed' : 'pointer',
-                            fontSize: '11px',
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '4px',
-                            opacity: regeneratingBlock !== null ? 0.5 : 1
-                          }}
-                          title="Delete this segment from the audio sequence"
-                        >
-                          <HiOutlineTrash size={12} /> Delete
-                        </button>
+                        {!isUnsynced && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleClearSync(id);
+                            }}
+                            style={{
+                              padding: '4px 8px',
+                              border: '1px solid #f44336',
+                              borderRadius: '4px',
+                              backgroundColor: '#ffebee',
+                              color: '#c62828',
+                              cursor: 'pointer',
+                              fontSize: '11px',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px'
+                            }}
+                            title="Clear sync timing to allow resyncing"
+                          >
+                            <HiOutlineRefresh size={12} />
+                            Clear Sync
+                          </button>
+                        )}
                       </div>
                     )}
                   </div>
@@ -5117,13 +5360,28 @@ const SyncStudio = () => {
             );
             })}
 
-            {Object.entries(syncData.sentences).filter(([id, data]) => data.pageNumber === currentSectionIndex + 1).length === 0 && (
+            {Object.entries(syncData.sentences).filter(([id, data]) => {
+              if (data.pageNumber !== currentSectionIndex + 1) return false;
+              // Filter by granularity
+              let elementType = 'paragraph';
+              if (id.includes('_w')) {
+                elementType = 'word';
+              } else if (id.includes('_s')) {
+                elementType = 'sentence';
+              } else {
+                const parsedElement = parsedElements.find(el => el.id === id);
+                if (parsedElement) {
+                  elementType = parsedElement.type || 'paragraph';
+                }
+              }
+              if (granularity === 'word' && elementType !== 'word') return false;
+              if (granularity === 'sentence' && elementType !== 'sentence') return false;
+              if (granularity === 'paragraph' && elementType !== 'paragraph') return false;
+              return true;
+            }).length === 0 && (
               <div className="empty-state">
-                <p>No sync points for Page {currentSectionIndex + 1}.</p>
-                <p>Use Auto-Sync or Tap-to-Sync to create regions.</p>
-                {Object.keys(syncData.sentences).length > 0 && (
-                  <p className="hint"><HiOutlineSun size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> Total: {Object.keys(syncData.sentences).length} sentences synced across all pages</p>
-                )}
+                <p>No {granularity === 'word' ? 'words' : granularity === 'sentence' ? 'sentences' : 'paragraphs'} found for Page {currentSectionIndex + 1}.</p>
+                <p>Text blocks will appear here once the page content is loaded.</p>
               </div>
             )}
           </div>

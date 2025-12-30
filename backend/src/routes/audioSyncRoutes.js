@@ -383,13 +383,22 @@ router.post('/save-sync-blocks', async (req, res) => {
         else if (!block.id.includes('_s') && !block.id.includes('_w')) blockType = 'paragraph';
       }
       
+      // CRITICAL: Ensure start and end are valid numbers
+      const startTime = typeof block.start === 'number' ? block.start : parseFloat(block.start) || 0;
+      const endTime = typeof block.end === 'number' ? block.end : parseFloat(block.end) || 0;
+      
+      // Log manual sync data for debugging
+      if (startTime > 0 || endTime > 0) {
+        console.log(`[AudioSync] Saving sync block: ${block.id}, start=${startTime.toFixed(3)}s, end=${endTime.toFixed(3)}s, page=${pageNumber}`);
+      }
+      
       const syncData = {
         pdfDocumentId: job.pdf_document_id,
         conversionJobId: jobId,
         blockId: block.id,
         pageNumber: pageNumber,
-        startTime: block.start || 0,
-        endTime: block.end || 0,
+        startTime: startTime,
+        endTime: endTime,
         audioFilePath: audioFileName ? `audio/${audioFileName}` : null,
         notes: `Audio sync. Type: ${blockType}. Granularity: ${block.granularity || granularity}`,
         customText: block.text || '',
