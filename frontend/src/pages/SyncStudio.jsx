@@ -35,6 +35,7 @@ import {
 import { HiOutlineSparkles } from 'react-icons/hi2';
 import { audioSyncService } from '../services/audioSyncService';
 import { conversionService } from '../services/conversionService';
+import { ttsManagementService } from '../services/ttsManagementService';
 import api from '../services/api';
 import './SyncStudio.css';
 
@@ -68,7 +69,10 @@ const SyncStudio = () => {
   const [duration, setDuration] = useState(0);
   const [isReady, setIsReady] = useState(false);
   const [zoom, setZoom] = useState(50);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1.0); // Audio playback speed (0.5x to 2.0x)
+  // Playback speed control
+  const [playbackSpeed, setPlaybackSpeed] = useState(1.0);
+  const [originalVoice, setOriginalVoice] = useState('standard'); // Track original voice when audio was generated
+  const [isAudioModified, setIsAudioModified] = useState(false); // Track if audio settings have been modified
 
   // State for sync data
   const [syncData, setSyncData] = useState({
@@ -138,8 +142,13 @@ const SyncStudio = () => {
   // State for TTS generation
   const [voices, setVoices] = useState([]);
   const [selectedVoice, setSelectedVoice] = useState('standard');
+  const [ttsGranularity, setTtsGranularity] = useState('sentence'); // 'page', 'sentence', 'word'
   const [generating, setGenerating] = useState(false);
   const [pdfId, setPdfId] = useState(null);
+  
+  // TTS Management configurations
+  const [ttsConfig, setTtsConfig] = useState(null);
+  const [ttsRestrictions, setTtsRestrictions] = useState(null);
 
   // State for Auto-Sync (Kitaboo-style)
   const [autoSyncing, setAutoSyncing] = useState(false);
@@ -148,6 +157,8 @@ const SyncStudio = () => {
   const [autoSyncProgress, setAutoSyncProgress] = useState(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [generatingTranscript, setGeneratingTranscript] = useState(false);
+  const [transcriptReady, setTranscriptReady] = useState(false);
 
   // State for text block editing
   const [editingBlockId, setEditingBlockId] = useState(null);
@@ -177,67 +188,143 @@ const SyncStudio = () => {
       const parser = new DOMParser();
       const doc = parser.parseFromString(xhtml, 'text/html');
       const elements = [];
+      const processedParagraphs = new Set();
 
-      // Find all elements with data-read-aloud="true"
-      const readAloudElements = doc.querySelectorAll('[data-read-aloud="true"]');
+      // DIAGNOSTIC: Log XHTML structure
+      console.log(`[DIAGNOSTIC] parseXhtmlElements - Section ${sectionId}: Starting parse`);
+      
+      // PRIORITY 1: Extract paragraph-level elements (class="paragraph-block")
+      // This groups all words/sentences within a paragraph together for natural TTS
+      const paragraphElements = doc.querySelectorAll('.paragraph-block, [class*="paragraph-block"], p.paragraph-block');
+      
+      console.log(`[DIAGNOSTIC] parseXhtmlElements - Found ${paragraphElements.length} paragraph-block elements`);
+      
+      if (paragraphElements.length > 0) {
+        paragraphElements.forEach((paragraphEl, idx) => {
+          const id = paragraphEl.getAttribute('id') || `para-${sectionId}-${idx}`;
+          // Get full text content of the paragraph (includes all nested words/sentences)
+          const text = paragraphEl.textContent?.trim() || '';
+          const tagName = paragraphEl.tagName.toLowerCase();
+          const classList = paragraphEl.className || '';
 
-      readAloudElements.forEach((el, idx) => {
-        const id = el.getAttribute('id') || `sync-${sectionId}-${idx}`;
-        const text = el.textContent?.trim() || '';
-        const tagName = el.tagName.toLowerCase();
-        const classList = el.className || '';
+          console.log(`[DIAGNOSTIC] parseXhtmlElements - Paragraph ${idx + 1}:`, {
+            id,
+            textLength: text.length,
+            textPreview: text.substring(0, 50),
+            tagName,
+            classList,
+            hasNestedWords: paragraphEl.querySelectorAll('.sync-word').length,
+            hasNestedSentences: paragraphEl.querySelectorAll('.sync-sentence').length
+          });
 
-        // CRITICAL FIX: Filter out unspoken content (TOC, nav, headers, etc.)
-        // These patterns match common unspoken structural elements
-        const unspokenPatterns = [
-          /toc/i,                    // Table of Contents
-          /table-of-contents/i,      // Table of Contents (hyphenated)
-          /contents/i,               // Contents page
-          /chapter-index/i,          // Chapter index
-          /chapter-idx/i,            // Chapter index (abbreviated)
-          /^nav/i,                   // Navigation elements
-          /^header/i,                // Headers
-          /^footer/i,                // Footers
-          /^sidebar/i,               // Sidebars
-          /^menu/i,                  // Menus
-          /page-number/i,            // Page numbers
-          /page-num/i,               // Page numbers (abbreviated)
-          /^skip/i,                  // Skip links
-          /^metadata/i               // Metadata
-        ];
-        
-        // Check if this element should be excluded
-        const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
-        
-        // Also check for explicit exclusion attributes
-        const shouldSync = el.getAttribute('data-should-sync') !== 'false';
-        const readAloudAttr = el.getAttribute('data-read-aloud');
-        const isExplicitlyExcluded = readAloudAttr === 'false';
-        
-        // Skip unspoken content entirely (don't create elements for them)
-        if (isUnspoken || isExplicitlyExcluded || !shouldSync) {
-          console.log(`[SyncStudio] Excluding unspoken content: ${id} (${text.substring(0, 30)}...)`);
-          return; // Skip this element
-        }
-
-        let type = 'paragraph';
-        if (classList.includes('sync-word') || tagName === 'span' && id.includes('_w')) {
-          type = 'word';
-        } else if (classList.includes('sync-sentence') || id.includes('_s')) {
-          type = 'sentence';
-        }
-
-        elements.push({
-          id,
-          text,
-          type,
-          tagName,
-          sectionId,
-          sectionIndex: sectionId, // Store section index for page filtering
-          pageNumber: sectionId + 1
+          // CRITICAL FIX: Filter out unspoken content (TOC, nav, headers, etc.)
+          const unspokenPatterns = [
+            /toc/i, /table-of-contents/i, /contents/i, /chapter-index/i, /chapter-idx/i,
+            /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
+            /page-number/i, /page-num/i, /^skip/i, /^metadata/i
+          ];
+          
+          const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+          
+          const shouldSync = paragraphEl.getAttribute('data-should-sync') !== 'false';
+          const readAloudAttr = paragraphEl.getAttribute('data-read-aloud');
+          const isExplicitlyExcluded = readAloudAttr === 'false';
+          
+          if (!isUnspoken && !isExplicitlyExcluded && shouldSync && text.length > 0) {
+            elements.push({
+              id,
+              text,
+              type: 'paragraph',
+              tagName,
+              sectionId,
+              sectionIndex: sectionId,
+              pageNumber: sectionId + 1
+            });
+            processedParagraphs.add(paragraphEl);
+            console.log(`[DIAGNOSTIC] parseXhtmlElements - Added paragraph element: ${id} (${text.length} chars)`);
+          } else {
+            console.log(`[DIAGNOSTIC] parseXhtmlElements - Skipped paragraph ${id}:`, {
+              isUnspoken,
+              isExplicitlyExcluded,
+              shouldSync,
+              textLength: text.length
+            });
+          }
         });
-      });
+      }
 
+      // PRIORITY 2: Fallback - If no paragraph-block elements found, use data-read-aloud elements
+      // But skip elements that are inside already-processed paragraphs and skip word-level elements
+      if (elements.length === 0) {
+        console.log(`[DIAGNOSTIC] parseXhtmlElements - No paragraph-block found, falling back to data-read-aloud elements`);
+        const readAloudElements = doc.querySelectorAll('[data-read-aloud="true"]');
+        console.log(`[DIAGNOSTIC] parseXhtmlElements - Found ${readAloudElements.length} data-read-aloud elements`);
+
+        readAloudElements.forEach((el, idx) => {
+          // Skip if this element is inside a processed paragraph
+          if (Array.from(processedParagraphs).some(p => p.contains(el))) {
+            console.log(`[DIAGNOSTIC] parseXhtmlElements - Skipping element ${el.id} (inside processed paragraph)`);
+            return;
+          }
+          
+          const id = el.getAttribute('id') || `sync-${sectionId}-${idx}`;
+          const text = el.textContent?.trim() || '';
+          const tagName = el.tagName.toLowerCase();
+          const classList = el.className || '';
+
+          // Skip word-level elements - we want sentence or paragraph level
+          const isWordLevel = classList.includes('sync-word') || (tagName === 'span' && id.includes('_w'));
+          if (isWordLevel) {
+            console.log(`[DIAGNOSTIC] parseXhtmlElements - Skipping word-level element: ${id}`);
+            return; // Skip individual words
+          }
+
+          // CRITICAL FIX: Filter out unspoken content
+          const unspokenPatterns = [
+            /toc/i, /table-of-contents/i, /contents/i, /chapter-index/i, /chapter-idx/i,
+            /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
+            /page-number/i, /page-num/i, /^skip/i, /^metadata/i
+          ];
+          
+          const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+          
+          const shouldSync = el.getAttribute('data-should-sync') !== 'false';
+          const readAloudAttr = el.getAttribute('data-read-aloud');
+          const isExplicitlyExcluded = readAloudAttr === 'false';
+          
+          if (isUnspoken || isExplicitlyExcluded || !shouldSync) {
+            return; // Skip this element
+          }
+
+          let type = 'paragraph';
+          if (classList.includes('sync-sentence') || id.includes('_s')) {
+            type = 'sentence';
+          }
+
+          elements.push({
+            id,
+            text,
+            type,
+            tagName,
+            sectionId,
+            sectionIndex: sectionId,
+            pageNumber: sectionId + 1
+          });
+        });
+      }
+
+      const paragraphCount = elements.filter(el => el.type === 'paragraph').length;
+      const sentenceCount = elements.filter(el => el.type === 'sentence').length;
+      const wordCount = elements.filter(el => el.type === 'word').length;
+      
+      console.log(`[DIAGNOSTIC] parseXhtmlElements - Section ${sectionId} Summary:`, {
+        totalElements: elements.length,
+        paragraphCount,
+        sentenceCount,
+        wordCount,
+        sampleIds: elements.slice(0, 5).map(el => ({ id: el.id, type: el.type, textLength: el.text?.length }))
+      });
+      
       return elements;
     } catch (err) {
       console.error('Error parsing XHTML:', err);
@@ -596,6 +683,7 @@ const SyncStudio = () => {
       barRadius: 2,
       responsive: true,
       normalize: true,
+      interact: true, // Enable interaction (click to seek)
       plugins: [
         regionsPluginRef.current,
         TimelinePlugin.create({
@@ -764,6 +852,45 @@ const SyncStudio = () => {
       isProgrammaticPlayRef.current = false;
     });
 
+    // Click-to-seek functionality - handle clicks on waveform to seek
+    // WaveSurfer automatically handles clicks when interact: true, but we add explicit handler for better control
+    let clickHandlerCleanup = null;
+    if (waveformRef.current) {
+      const handleWaveformClick = (e) => {
+        if (!wavesurferRef.current || !isReady) return;
+        
+        // Only handle clicks on the waveform itself, not on regions
+        if (e.target.closest('.wavesurfer-region')) {
+          return; // Let region click handler handle it
+        }
+        
+        try {
+          const rect = waveformRef.current.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const width = rect.width;
+          const duration = wavesurferRef.current.getDuration();
+          
+          if (duration > 0 && width > 0) {
+            const seekTime = (x / width) * duration;
+            wavesurferRef.current.seekTo(seekTime / duration);
+            setCurrentTime(seekTime);
+            console.log(`[WaveSurfer] Clicked to seek: ${seekTime.toFixed(2)}s`);
+          }
+        } catch (err) {
+          console.warn('[WaveSurfer] Error seeking on click:', err);
+        }
+      };
+      
+      waveformRef.current.addEventListener('click', handleWaveformClick);
+      
+      // Store cleanup function
+      clickHandlerCleanup = () => {
+        if (waveformRef.current) {
+          waveformRef.current.removeEventListener('click', handleWaveformClick);
+        }
+      };
+    }
+
     // Region events
     regionsPluginRef.current.on('region-updated', handleRegionUpdate);
     regionsPluginRef.current.on('region-in', handleRegionDrag);
@@ -780,6 +907,11 @@ const SyncStudio = () => {
     });
 
     return () => {
+      // Clean up click handler
+      if (clickHandlerCleanup) {
+        clickHandlerCleanup();
+      }
+      
       if (wavesurferRef.current) {
         try {
           // Reset ready state before destroying
@@ -812,7 +944,7 @@ const SyncStudio = () => {
   }, [zoom, isReady]);
 
   /**
-   * Update playback speed
+   * Set playback speed dynamically
    */
   useEffect(() => {
     if (wavesurferRef.current && isReady) {
@@ -826,7 +958,7 @@ const SyncStudio = () => {
         console.warn('[SyncStudio] Cannot set playback speed: audio not loaded yet', err.message);
       }
     }
-  }, [playbackSpeed, isReady]);
+  }, [isReady, playbackSpeed]);
 
   /**
    * Ensure XHTML content is properly reflowable
@@ -1004,6 +1136,25 @@ const SyncStudio = () => {
         // Load voices
         const voicesData = await audioSyncService.getAvailableVoices();
         setVoices(voicesData);
+        
+        // Load TTS Management configurations
+        try {
+          const [ttsConfigData, ttsRestrictionsData] = await Promise.all([
+            ttsManagementService.getConfig(),
+            ttsManagementService.getRestrictions()
+          ]);
+          setTtsConfig(ttsConfigData);
+          setTtsRestrictions(ttsRestrictionsData);
+          console.log('[SyncStudio] Loaded TTS Management config:', ttsConfigData);
+          console.log('[SyncStudio] Loaded TTS Management restrictions:', ttsRestrictionsData);
+          
+          // Apply TTS config to selected voice if available
+          if (ttsConfigData?.voice) {
+            setSelectedVoice(ttsConfigData.voice);
+          }
+        } catch (ttsErr) {
+          console.warn('[SyncStudio] Could not load TTS Management config:', ttsErr);
+        }
 
         // Check if Aeneas is available
         try {
@@ -1020,14 +1171,7 @@ const SyncStudio = () => {
         if (jobData?.pdfDocumentId) {
           setPdfId(jobData.pdfDocumentId);
         }
-        // Load playback speed from job metadata if available
-        if (jobData?.metadata?.playbackSpeed !== undefined && jobData.metadata.playbackSpeed !== null) {
-          const savedSpeed = parseFloat(jobData.metadata.playbackSpeed);
-          if (!isNaN(savedSpeed) && savedSpeed > 0) {
-            setPlaybackSpeed(savedSpeed);
-            console.log(`[SyncStudio] Loaded playback speed from job metadata: ${savedSpeed}x`);
-          }
-        }
+        // Playback speed is always 1.0x (normal speed) - no longer loading from metadata
 
         // Load EPUB sections
         const sectionsData = await conversionService.getEpubSections(parseInt(jobId));
@@ -1082,6 +1226,9 @@ const SyncStudio = () => {
               if (audioData[0]?.audioFilePath) {
                 const url = audioSyncService.getAudioUrl(audioData[0].id);
                 setAudioUrl(url);
+                // Reset modification state when loading existing audio
+                setIsAudioModified(false);
+                setPlaybackSpeed(1.0);
               }
 
               // Build a map of ID -> pageNumber from XHTML sections (use processed sections)
@@ -1237,10 +1384,120 @@ const SyncStudio = () => {
 
       // CRITICAL FIX: Filter out unspoken content (TOC, nav, headers, etc.)
       // This prevents TOC from being sent to TTS, which would cause sync drift
-      const textBlocks = parsedElements
+      
+      // Enhanced TOC page detection - check multiple sources
+      const tocPageNumbers = new Set();
+      
+      // Method 1: Check section XHTML content for TOC indicators
+      if (sections && sections.length > 0) {
+        sections.forEach((section, idx) => {
+          const pageNum = idx + 1;
+          const xhtml = section.xhtml || section.content || '';
+          const sectionTitle = section.title || section.name || '';
+          const sectionId = section.id || '';
+          
+          // Comprehensive TOC detection patterns
+          const tocPatterns = [
+            /table\s+of\s+contents/i,
+            /table\s+of\s+content/i,
+            /^contents$/i,
+            /^content$/i,
+            /^toc$/i,
+            /chapter\s+index/i,
+            /chapter\s+idx/i,
+            /chapter\s+list/i,
+            /index\s+of\s+chapters/i,
+            /list\s+of\s+chapters/i
+          ];
+          
+          // Check section title, ID, and XHTML content
+          const hasTocInTitle = tocPatterns.some(pattern => pattern.test(sectionTitle) || pattern.test(sectionId));
+          const hasTocInContent = tocPatterns.some(pattern => pattern.test(xhtml));
+          
+          if (hasTocInTitle || hasTocInContent) {
+            tocPageNumbers.add(pageNum);
+            console.log(`[handleGenerateAudio] Identified TOC page ${pageNum} from section metadata (title: "${sectionTitle}", id: "${sectionId}")`);
+          }
+        });
+      }
+      
+      // Method 2: Check parsed elements for TOC indicators (more granular)
+      const pageTocIndicators = {}; // Track TOC indicators per page
+      parsedElements.forEach(el => {
+        const id = el.id || '';
+        const text = el.text || '';
+        const pageNum = el.pageNumber || 1;
+        
+        // Enhanced TOC detection patterns
+        const tocIndicators = [
+          /table\s+of\s+contents/i,
+          /table\s+of\s+content/i,
+          /^contents$/i,
+          /^content$/i,
+          /^toc$/i,
+          /chapter\s+index/i,
+          /chapter\s+idx/i,
+          /chapter\s+list/i,
+          /index\s+of\s+chapters/i,
+          /list\s+of\s+chapters/i,
+          /^\s*chapter\s+\d+/i,  // "Chapter 1", "Chapter 2" at start of line (common in TOC)
+          /\.\.\.\s*\d+$/i  // "..." followed by page number (common TOC format)
+        ];
+        
+        const isTocIndicator = tocIndicators.some(pattern => pattern.test(id) || pattern.test(text));
+        if (isTocIndicator) {
+          if (!pageTocIndicators[pageNum]) {
+            pageTocIndicators[pageNum] = 0;
+          }
+          pageTocIndicators[pageNum]++;
+          tocPageNumbers.add(pageNum);
+          console.log(`[handleGenerateAudio] TOC indicator found on page ${pageNum}: "${text.substring(0, 50)}" (id: ${id})`);
+        }
+      });
+      
+      // Method 3: If a page has multiple TOC-like elements, it's definitely a TOC page
+      Object.entries(pageTocIndicators).forEach(([pageNum, count]) => {
+        if (count >= 2) {
+          tocPageNumbers.add(parseInt(pageNum));
+          console.log(`[handleGenerateAudio] Page ${pageNum} has ${count} TOC indicators - confirmed as TOC page`);
+        }
+      });
+      
+      if (tocPageNumbers.size > 0) {
+        console.log(`[handleGenerateAudio] ⚠️ SKIPPING ${tocPageNumbers.size} TOC page(s): ${Array.from(tocPageNumbers).sort((a, b) => a - b).join(', ')}`);
+      } else {
+        console.log(`[handleGenerateAudio] No TOC pages detected - processing all pages`);
+      }
+      
+      // DIAGNOSTIC: Log parsed elements before filtering
+      console.log(`[DIAGNOSTIC] handleGenerateAudio - Parsed elements before filtering:`, {
+        total: parsedElements.length,
+        byType: {
+          paragraph: parsedElements.filter(el => el.type === 'paragraph').length,
+          sentence: parsedElements.filter(el => el.type === 'sentence').length,
+          word: parsedElements.filter(el => el.type === 'word').length,
+          other: parsedElements.filter(el => !['paragraph', 'sentence', 'word'].includes(el.type)).length
+        },
+        sampleElements: parsedElements.slice(0, 5).map(el => ({
+          id: el.id,
+          type: el.type,
+          text: el.text?.substring(0, 30),
+          pageNumber: el.pageNumber
+        }))
+      });
+      
+      let filteredElements = parsedElements
         .filter(el => {
-          // Must be sentence or paragraph type
+          // Always use sentence-wise mode: ONLY include sentence and paragraph types (exclude word types)
           if (el.type !== 'sentence' && el.type !== 'paragraph') {
+            console.log(`[DIAGNOSTIC] handleGenerateAudio - Filtered out element (wrong type): ${el.id} (type: ${el.type})`);
+            return false; // Exclude word-level elements
+          }
+          
+          // Skip entire TOC pages
+          const pageNum = el.pageNumber || 1;
+          if (tocPageNumbers.has(pageNum)) {
+            console.log(`[handleGenerateAudio] Excluding element from TOC page ${pageNum}: ${el.id}`);
             return false;
           }
           
@@ -1248,38 +1505,282 @@ const SyncStudio = () => {
           const id = el.id || '';
           const text = el.text || '';
           
+          // Enhanced unspoken content patterns
           const unspokenPatterns = [
-            /toc/i, /table-of-contents/i, /contents/i,
-            /chapter-index/i, /chapter-idx/i,
-            /^nav/i, /^header/i, /^footer/i, /^sidebar/i, /^menu/i,
-            /page-number/i, /page-num/i, /^skip/i, /^metadata/i
+            /toc/i, 
+            /table\s+of\s+contents/i, 
+            /^contents$/i,
+            /chapter-index/i, 
+            /chapter-idx/i,
+            /^nav/i, 
+            /^header/i, 
+            /^footer/i, 
+            /^sidebar/i, 
+            /^menu/i,
+            /page-number/i, 
+            /page-num/i,
+            /^page\s+\d+$/i,  // "Page 1", "Page 2", etc.
+            /^\d+$/i,  // Standalone numbers (likely page numbers)
+            /^skip/i, 
+            /^metadata/i
           ];
           
+          // Check if text is a page number (standalone number 1-3 digits or "Page X" format)
+          // Only filter very short standalone numbers (1-3 digits) which are likely page numbers
+          // Longer numbers or numbers in sentences should be kept
+          const trimmedText = text.trim();
+          const isPageNumber = /^page\s*\d+$/i.test(trimmedText) || /^\d{1,3}$/.test(trimmedText);
+          
+          // Check for unspoken patterns in ID or text
           const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
           
-          if (isUnspoken) {
-            console.log(`[handleGenerateAudio] Excluding unspoken content: ${id}`);
+          if (isUnspoken || isPageNumber) {
+            console.log(`[handleGenerateAudio] Excluding unspoken content: ${id} (text: "${text.substring(0, 30)}...")`);
             return false;
           }
           
           return true;
-        })
-        .map(el => ({
+        });
+
+      // DIAGNOSTIC: Log filtered elements
+      console.log(`[DIAGNOSTIC] handleGenerateAudio - Filtered elements:`, {
+        total: filteredElements.length,
+        byType: {
+          paragraph: filteredElements.filter(el => el.type === 'paragraph').length,
+          sentence: filteredElements.filter(el => el.type === 'sentence').length
+        },
+        sampleFiltered: filteredElements.slice(0, 5).map(el => ({
           id: el.id,
-          pageNumber: el.pageNumber,
-          text: el.text
-        }));
+          type: el.type,
+          text: el.text?.substring(0, 50),
+          pageNumber: el.pageNumber
+        }))
+      });
+
+      // Process text blocks - PARAGRAPH-LEVEL MODE: Keep paragraphs intact
+      let textBlocks = [];
+      
+      {
+        // PRIORITY: Keep paragraph-level elements as complete paragraphs
+        // This ensures one audio segment per paragraph, not word-by-word
+        const seenIds = new Set();
+        const seenTexts = new Set();
+        
+        // Separate paragraph-level elements from sentence-level elements
+        const paragraphBlocks = [];
+        const sentenceBlocks = [];
+        const smallFragments = [];
+        
+        filteredElements.forEach(el => {
+          // Double-check: exclude explicitly marked word-level elements
+          if (el.type === 'word') {
+            console.warn(`[handleGenerateAudio] Warning: Word-level element detected: ${el.id}`);
+            return;
+          }
+          
+          const text = el.text?.trim();
+          const id = el.id;
+          
+          // Skip if empty or duplicate ID
+          if (!text || !id || seenIds.has(id)) {
+            return;
+          }
+          
+          seenIds.add(id);
+          
+          // PRIORITY 1: Paragraph-level elements - keep as complete paragraphs
+          if (el.type === 'paragraph') {
+            paragraphBlocks.push({ ...el, text, id });
+            return;
+          }
+          
+          // PRIORITY 2: Sentence-level elements
+          if (el.type === 'sentence') {
+            sentenceBlocks.push({ ...el, text, id });
+            return;
+          }
+          
+          // PRIORITY 3: Small fragments (likely words) - group by paragraph parent
+          // Check if text is likely a sentence: has ending punctuation, is long enough
+          const hasEndPunctuation = /[.!?]$/.test(text.trim());
+          const isLongEnough = text.length > 20;
+          
+          if (hasEndPunctuation || isLongEnough) {
+            sentenceBlocks.push({ ...el, text, id });
+          } else {
+            // Small fragment (likely a word), group these together by paragraph
+            smallFragments.push({ ...el, text, id });
+          }
+        });
+        
+        // Group small fragments (words) by their paragraph parent ID
+        // Extract paragraph ID from word/sentence IDs (e.g., "page4_p1_s1_w1" -> "page4_p1")
+        const paragraphGroups = {};
+        smallFragments.forEach(frag => {
+          // Extract paragraph ID from fragment ID
+          // Pattern: page4_p1_s1_w1 -> page4_p1 (paragraph ID)
+          // Pattern: page4_p1_s1 -> page4_p1 (paragraph ID)
+          // Pattern: page4_p1 -> page4_p1 (already paragraph ID)
+          let paragraphId = frag.id;
+          
+          // Remove word-level suffix: _w1, _w2, etc.
+          if (frag.id.match(/_w\d+$/)) {
+            paragraphId = frag.id.replace(/_w\d+$/, '');
+          }
+          
+          // Remove sentence-level suffix: _s1, _s2, etc. (but keep paragraph part)
+          if (paragraphId.match(/_s\d+$/)) {
+            paragraphId = paragraphId.replace(/_s\d+$/, '');
+          }
+          
+          // Ensure we have a valid paragraph ID (should match pattern like "page4_p1")
+          if (!paragraphId || paragraphId === frag.id) {
+            // If extraction failed, try to find parent paragraph ID
+            // For word IDs like "page4_p1_s1_w1", the paragraph is "page4_p1"
+            const match = frag.id.match(/^(page\d+_p\d+)/);
+            if (match) {
+              paragraphId = match[1]; // e.g., "page4_p1"
+            } else {
+              // Fallback: use a generic paragraph ID
+              paragraphId = frag.id.split('_').slice(0, 2).join('_'); // e.g., "page4_p1" from "page4_p1_s1_w1"
+            }
+          }
+          
+          const pageNum = frag.pageNumber || 1;
+          const groupKey = `${pageNum}_${paragraphId}`;
+          
+          if (!paragraphGroups[groupKey]) {
+            paragraphGroups[groupKey] = {
+              id: paragraphId,  // Use paragraph ID (e.g., "page4_p1"), not word ID
+              pageNumber: pageNum,
+              fragments: []
+            };
+          }
+          paragraphGroups[groupKey].fragments.push(frag);
+        });
+        
+        // Combine fragments within each paragraph group
+        Object.values(paragraphGroups).forEach(group => {
+          if (group.fragments.length > 0) {
+            // Combine fragments into one paragraph text
+            const combinedText = group.fragments.map(f => f.text).join(' ').trim();
+            if (combinedText) {
+              paragraphBlocks.push({
+                id: group.id,  // Paragraph ID (e.g., "page4_p1")
+                text: combinedText,
+                pageNumber: group.pageNumber,
+                type: 'paragraph'
+              });
+              console.log(`[handleGenerateAudio] Grouped ${group.fragments.length} word fragments into paragraph "${group.id}": "${combinedText.substring(0, 50)}..."`);
+            }
+          }
+        });
+        
+        // Combine all blocks: paragraphs first, then sentences
+        const allBlocks = [...paragraphBlocks, ...sentenceBlocks];
+        
+        // Remove duplicate texts, keeping paragraph-level blocks when duplicates exist
+        textBlocks = allBlocks
+          .filter(el => {
+            // If we've seen this text before, prefer paragraph-level over sentence-level
+            if (seenTexts.has(el.text)) {
+              // Check if existing block is paragraph-level
+              const existing = textBlocks.find(b => b.text === el.text);
+              if (existing && existing.id === el.id) {
+                return false; // Exact duplicate
+              }
+              // If current is paragraph and existing is sentence, replace
+              if (el.type === 'paragraph') {
+                const existingIndex = textBlocks.findIndex(b => b.text === el.text);
+                if (existingIndex >= 0 && textBlocks[existingIndex].type !== 'paragraph') {
+                  textBlocks[existingIndex] = el; // Replace sentence with paragraph
+                  return false; // Don't add again
+                }
+              }
+              return false; // Skip duplicate
+            }
+            seenTexts.add(el.text);
+            return true;
+          })
+          .map(el => ({
+            id: el.id,  // Use paragraph ID (e.g., "page4_p1"), not word ID
+            pageNumber: el.pageNumber,
+            text: el.text.trim()
+          }));
+        
+        const paragraphCount = paragraphBlocks.length;
+        const sentenceCount = sentenceBlocks.length;
+        const fragmentCount = smallFragments.length;
+        
+        console.log(`[handleGenerateAudio] Paragraph-level mode: Processing ${textBlocks.length} blocks`);
+        console.log(`[handleGenerateAudio] - ${paragraphCount} paragraph-level blocks (complete paragraphs)`);
+        console.log(`[handleGenerateAudio] - ${sentenceCount} sentence-level blocks`);
+        console.log(`[handleGenerateAudio] - ${fragmentCount} word fragments grouped into paragraphs`);
+        
+        // DIAGNOSTIC: Log detailed information about text blocks
+        console.log(`[DIAGNOSTIC] handleGenerateAudio - Text blocks summary:`, {
+          totalBlocks: textBlocks.length,
+          paragraphBlocks: paragraphCount,
+          sentenceBlocks: sentenceCount,
+          wordFragments: fragmentCount,
+          sampleTextBlocks: textBlocks.slice(0, 5).map(block => ({
+            id: block.id,
+            pageNumber: block.pageNumber,
+            textLength: block.text.length,
+            textPreview: block.text.substring(0, 60),
+            isParagraphId: block.id.match(/^page\d+_p\d+$/), // Check if it's a paragraph ID pattern
+            hasWordId: block.id.includes('_w'), // Check if it contains word ID pattern
+            hasSentenceId: block.id.includes('_s') // Check if it contains sentence ID pattern
+          }))
+        });
+        
+        // DIAGNOSTIC: Check if any blocks still have word IDs
+        const blocksWithWordIds = textBlocks.filter(b => b.id.includes('_w'));
+        if (blocksWithWordIds.length > 0) {
+          console.warn(`[DIAGNOSTIC] ⚠️ WARNING: Found ${blocksWithWordIds.length} blocks with word IDs:`, 
+            blocksWithWordIds.slice(0, 3).map(b => ({ id: b.id, text: b.text.substring(0, 30) }))
+          );
+        }
+        
+        // DIAGNOSTIC: Check paragraph ID pattern
+        const blocksWithParagraphIds = textBlocks.filter(b => b.id.match(/^page\d+_p\d+$/));
+        console.log(`[DIAGNOSTIC] Blocks with proper paragraph IDs (pageX_pY): ${blocksWithParagraphIds.length} out of ${textBlocks.length}`);
+        
+        // Log sample paragraph blocks to verify they're using paragraph IDs
+        if (paragraphCount > 0) {
+          console.log(`[DIAGNOSTIC] Sample paragraph blocks:`, 
+            paragraphBlocks.slice(0, 3).map(p => ({ 
+              id: p.id, 
+              text: p.text.substring(0, 50) + '...',
+              isParagraphId: p.id.match(/^page\d+_p\d+$/)
+            }))
+          );
+        }
+      }
 
       if (textBlocks.length === 0) {
         setError('No text blocks found');
         return;
       }
 
+      // Use TTS Management config if available, otherwise use selected voice
+      const voiceToUse = ttsConfig?.voice || selectedVoice;
+      const ttsOptions = ttsConfig ? {
+        provider: ttsConfig.provider,
+        voice: voiceToUse,
+        gender: ttsConfig.gender || 'NEUTRAL',
+        speed: ttsConfig.speed,
+        pitch: ttsConfig.pitch,
+        volume: ttsConfig.volume,
+        language: ttsConfig.language,
+      } : { voice: voiceToUse };
+      
       const segments = await audioSyncService.generateAudio(
         pdfId,
         parseInt(jobId),
-        selectedVoice,
-        textBlocks
+        voiceToUse,
+        textBlocks,
+        ttsOptions
       );
 
       // Get generated audio URL
@@ -1290,9 +1791,487 @@ const SyncStudio = () => {
         setIsReady(false);
       }
 
+      // Track original voice and reset modification state
+      setOriginalVoice(selectedVoice);
+      setIsAudioModified(false);
+
       alert(`Generated audio with ${segments.length} segments`);
     } catch (err) {
       setError('Failed to generate audio: ' + err.message);
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  /**
+   * Generate transcript from audio sync data
+   */
+  const handleGenerateTranscript = async () => {
+    if (!jobId) {
+      setError('Job ID not found');
+      return;
+    }
+
+    try {
+      setGeneratingTranscript(true);
+      setError('');
+      setSuccess('');
+
+      const result = await audioSyncService.generateTranscript(parseInt(jobId));
+      
+      setSuccess(`Transcript generated successfully! ${result.pageCount} pages, ${result.totalFragments} fragments.`);
+      setTranscriptReady(true);
+      console.log('[SyncStudio] Transcript generated:', result);
+    } catch (err) {
+      setError('Failed to generate transcript: ' + err.message);
+      console.error('[SyncStudio] Error generating transcript:', err);
+    } finally {
+      setGeneratingTranscript(false);
+    }
+  };
+
+  /**
+   * Download transcript file
+   */
+  const handleDownloadTranscript = () => {
+    if (!jobId) {
+      setError('Job ID not found');
+      return;
+    }
+
+    try {
+      const downloadUrl = audioSyncService.downloadTranscript(parseInt(jobId));
+      const link = document.createElement('a');
+      link.href = downloadUrl;
+      link.download = `transcript_job_${jobId}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setSuccess('Transcript download started');
+    } catch (err) {
+      setError('Failed to download transcript: ' + err.message);
+      console.error('[SyncStudio] Error downloading transcript:', err);
+    }
+  };
+
+  /**
+   * Delete generated TTS audio
+   */
+  const handleDeleteGeneratedAudio = async () => {
+    if (!audioUrl) {
+      return;
+    }
+
+    if (!window.confirm('Are you sure you want to delete the generated TTS audio? This will remove all audio sync data and you will need to regenerate the audio.')) {
+      return;
+    }
+
+    try {
+      setError('');
+      
+      // Stop audio playback if playing
+      if (wavesurferRef.current) {
+        wavesurferRef.current.stop();
+        setIsPlaying(false);
+      }
+
+      // Delete all audio syncs for this job
+      await audioSyncService.deleteAudioSyncsByJob(parseInt(jobId));
+
+      // Clear audio state
+      setAudioUrl(null);
+      setAudioFile(null);
+      setIsReady(false);
+      setCurrentTime(0);
+      setDuration(0);
+      setSyncData({ sentences: {}, words: {} });
+      setIsAudioModified(false);
+      setPlaybackSpeed(1.0);
+      setOriginalVoice('standard');
+      setTranscriptReady(false); // Reset transcript state
+      
+      // Clear waveform
+      if (wavesurferRef.current) {
+        wavesurferRef.current.empty();
+      }
+
+      setSuccess('Generated audio deleted successfully');
+      console.log('[SyncStudio] Generated audio deleted');
+    } catch (err) {
+      setError('Failed to delete audio: ' + err.message);
+      console.error('[SyncStudio] Error deleting audio:', err);
+    }
+  };
+
+  /**
+   * Handle playback speed change
+   */
+  const handlePlaybackSpeedChange = (newSpeed) => {
+    setPlaybackSpeed(newSpeed);
+    setIsAudioModified(true);
+    
+    // Apply immediately to audio element
+    if (wavesurferRef.current && isReady) {
+      try {
+        const mediaElement = wavesurferRef.current.getMediaElement();
+        if (mediaElement) {
+          mediaElement.playbackRate = newSpeed;
+        }
+      } catch (err) {
+        console.warn('[SyncStudio] Cannot set playback speed:', err.message);
+      }
+    }
+  };
+
+  /**
+   * Handle voice change for TTS-generated audio
+   */
+  const handleVoiceChange = (newVoice) => {
+    setSelectedVoice(newVoice);
+    if (audioUrl) {
+      // Only mark as modified if audio exists and voice is different from original
+      setIsAudioModified(newVoice !== originalVoice || playbackSpeed !== 1.0);
+    }
+  };
+
+  /**
+   * Save audio modifications (regenerate if voice changed, update speed)
+   */
+  const handleSaveAudioChanges = async () => {
+    if (!audioUrl || !pdfId) {
+      setError('No audio found to save changes');
+      return;
+    }
+
+    try {
+      setGenerating(true);
+      setError('');
+      setSuccess('');
+
+      const needsRegeneration = selectedVoice !== originalVoice;
+      
+      if (needsRegeneration) {
+        // Voice changed, need to regenerate audio
+        setSuccess('Regenerating audio with new voice tone...');
+
+         // Get text blocks for regeneration (same logic as handleGenerateAudio)
+         
+         // Enhanced TOC page detection - check multiple sources
+         const tocPageNumbers = new Set();
+         
+         // Method 1: Check section XHTML content for TOC indicators
+         if (sections && sections.length > 0) {
+           sections.forEach((section, idx) => {
+             const pageNum = idx + 1;
+             const xhtml = section.xhtml || section.content || '';
+             const sectionTitle = section.title || section.name || '';
+             const sectionId = section.id || '';
+             
+             // Comprehensive TOC detection patterns
+             const tocPatterns = [
+               /table\s+of\s+contents/i,
+               /table\s+of\s+content/i,
+               /^contents$/i,
+               /^content$/i,
+               /^toc$/i,
+               /chapter\s+index/i,
+               /chapter\s+idx/i,
+               /chapter\s+list/i,
+               /index\s+of\s+chapters/i,
+               /list\s+of\s+chapters/i
+             ];
+             
+             // Check section title, ID, and XHTML content
+             const hasTocInTitle = tocPatterns.some(pattern => pattern.test(sectionTitle) || pattern.test(sectionId));
+             const hasTocInContent = tocPatterns.some(pattern => pattern.test(xhtml));
+             
+             if (hasTocInTitle || hasTocInContent) {
+               tocPageNumbers.add(pageNum);
+               console.log(`[handleSaveAudioChanges] Identified TOC page ${pageNum} from section metadata (title: "${sectionTitle}", id: "${sectionId}")`);
+             }
+           });
+         }
+         
+         // Method 2: Check parsed elements for TOC indicators (more granular)
+         const pageTocIndicators = {}; // Track TOC indicators per page
+         parsedElements.forEach(el => {
+           const id = el.id || '';
+           const text = el.text || '';
+           const pageNum = el.pageNumber || 1;
+           
+           // Enhanced TOC detection patterns
+           const tocIndicators = [
+             /table\s+of\s+contents/i,
+             /table\s+of\s+content/i,
+             /^contents$/i,
+             /^content$/i,
+             /^toc$/i,
+             /chapter\s+index/i,
+             /chapter\s+idx/i,
+             /chapter\s+list/i,
+             /index\s+of\s+chapters/i,
+             /list\s+of\s+chapters/i,
+             /^\s*chapter\s+\d+/i,  // "Chapter 1", "Chapter 2" at start of line (common in TOC)
+             /\.\.\.\s*\d+$/i  // "..." followed by page number (common TOC format)
+           ];
+           
+           const isTocIndicator = tocIndicators.some(pattern => pattern.test(id) || pattern.test(text));
+           if (isTocIndicator) {
+             if (!pageTocIndicators[pageNum]) {
+               pageTocIndicators[pageNum] = 0;
+             }
+             pageTocIndicators[pageNum]++;
+             tocPageNumbers.add(pageNum);
+             console.log(`[handleSaveAudioChanges] TOC indicator found on page ${pageNum}: "${text.substring(0, 50)}" (id: ${id})`);
+           }
+         });
+         
+         // Method 3: If a page has multiple TOC-like elements, it's definitely a TOC page
+         Object.entries(pageTocIndicators).forEach(([pageNum, count]) => {
+           if (count >= 2) {
+             tocPageNumbers.add(parseInt(pageNum));
+             console.log(`[handleSaveAudioChanges] Page ${pageNum} has ${count} TOC indicators - confirmed as TOC page`);
+           }
+         });
+         
+         if (tocPageNumbers.size > 0) {
+           console.log(`[handleSaveAudioChanges] ⚠️ SKIPPING ${tocPageNumbers.size} TOC page(s): ${Array.from(tocPageNumbers).sort((a, b) => a - b).join(', ')}`);
+         } else {
+           console.log(`[handleSaveAudioChanges] No TOC pages detected - processing all pages`);
+         }
+        
+        let filteredElements = parsedElements
+          .filter(el => {
+            // Always use sentence-wise mode: ONLY include sentence and paragraph types (exclude word types)
+            if (el.type !== 'sentence' && el.type !== 'paragraph') {
+              return false; // Exclude word-level elements
+            }
+            
+            // Skip entire TOC pages
+            const pageNum = el.pageNumber || 1;
+            if (tocPageNumbers.has(pageNum)) {
+              console.log(`[handleSaveAudioChanges] Excluding element from TOC page ${pageNum}: ${el.id}`);
+              return false;
+            }
+            
+            // CRITICAL FIX: Additional filtering for unspoken content patterns
+            const id = el.id || '';
+            const text = el.text || '';
+            
+            // Enhanced unspoken content patterns
+            const unspokenPatterns = [
+              /toc/i, 
+              /table\s+of\s+contents/i, 
+              /^contents$/i,
+              /chapter-index/i, 
+              /chapter-idx/i,
+              /^nav/i, 
+              /^header/i, 
+              /^footer/i, 
+              /^sidebar/i, 
+              /^menu/i,
+              /page-number/i, 
+              /page-num/i,
+              /^page\s+\d+$/i,  // "Page 1", "Page 2", etc.
+              /^\d+$/i,  // Standalone numbers (likely page numbers)
+              /^skip/i, 
+              /^metadata/i
+            ];
+            
+            // Check if text is a page number (standalone number 1-3 digits or "Page X" format)
+            // Only filter very short standalone numbers (1-3 digits) which are likely page numbers
+            // Longer numbers or numbers in sentences should be kept
+            const trimmedText = text.trim();
+            const isPageNumber = /^page\s*\d+$/i.test(trimmedText) || /^\d{1,3}$/.test(trimmedText);
+            
+            // Check for unspoken patterns in ID or text
+            const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+            
+            if (isUnspoken || isPageNumber) {
+              console.log(`[handleSaveAudioChanges] Excluding unspoken content: ${id} (text: "${text.substring(0, 30)}...")`);
+              return false;
+            }
+            
+            return true;
+          });
+
+        // Process text blocks - always use sentence-wise mode
+        let textBlocks = [];
+        
+        {
+          // Sentence-wise: Keep sentences/paragraphs as-is, but remove duplicates
+          // CRITICAL: Ensure we only process sentence/paragraph level elements, NEVER word-level
+          const seenIds = new Set();
+          const seenTexts = new Set();
+          
+          // Separate elements into explicit sentences vs small fragments (likely words)
+          const explicitSentences = [];
+          const smallFragments = [];
+          
+          filteredElements.forEach(el => {
+            // Double-check: exclude explicitly marked word-level elements
+            if (el.type === 'word') {
+              console.warn(`[handleSaveAudioChanges] Warning: Word-level element detected in sentence mode: ${el.id}`);
+              return;
+            }
+            
+            const text = el.text?.trim();
+            const id = el.id;
+            
+            // Skip if empty or duplicate ID
+            if (!text || !id || seenIds.has(id)) {
+              return;
+            }
+            
+            seenIds.add(id);
+            
+            // Check if text is likely a sentence: has ending punctuation, is long enough, or is explicitly a sentence
+            const hasEndPunctuation = /[.!?]$/.test(text.trim());
+            const isLongEnough = text.length > 20;
+            const isLikelySentence = hasEndPunctuation || isLongEnough || el.type === 'sentence';
+            
+            if (isLikelySentence) {
+              explicitSentences.push({ ...el, text, id });
+            } else {
+              // Small fragment (likely a word), group these together
+              smallFragments.push({ ...el, text, id });
+            }
+          });
+          
+          // Group small fragments (words) into sentences by page
+          const pageGroups = {};
+          smallFragments.forEach(frag => {
+            const pageNum = frag.pageNumber || 1;
+            if (!pageGroups[pageNum]) {
+              pageGroups[pageNum] = [];
+            }
+            pageGroups[pageNum].push(frag);
+          });
+          
+          // Combine fragments on each page into sentences
+          Object.entries(pageGroups).forEach(([pageNum, fragments]) => {
+            // Group fragments into sentences (add space between words)
+            const combinedText = fragments.map(f => f.text).join(' ').trim();
+            if (combinedText) {
+              // Use the first fragment's ID as the base ID for the combined sentence
+              const baseId = fragments[0].id.replace(/_w\d+$/, '').replace(/_\d+$/, '') || fragments[0].id;
+              explicitSentences.push({
+                id: `${baseId}_combined`,
+                text: combinedText,
+                pageNumber: parseInt(pageNum),
+                type: 'sentence'
+              });
+              console.log(`[handleSaveAudioChanges] Grouped ${fragments.length} word fragments on page ${pageNum} into: "${combinedText.substring(0, 50)}..."`);
+            }
+          });
+          
+          // Remove duplicate texts from explicit sentences
+          textBlocks = explicitSentences
+            .filter(el => {
+              if (seenTexts.has(el.text)) {
+                return false;
+              }
+              seenTexts.add(el.text);
+              return true;
+            })
+            .map(el => ({
+              id: el.id,
+              pageNumber: el.pageNumber,
+              text: el.text.trim()
+            }));
+          
+          console.log(`[handleSaveAudioChanges] Sentence-wise mode: Processing ${textBlocks.length} sentence blocks (grouped ${smallFragments.length} word fragments)`);
+        }
+
+        if (textBlocks.length === 0) {
+          setError('No text blocks found for regeneration');
+          return;
+        }
+
+        // Regenerate audio with new voice - use TTS Management config if available
+        const voiceToUse = ttsConfig?.voice || selectedVoice;
+        const ttsOptions = ttsConfig ? {
+          provider: ttsConfig.provider,
+          voice: voiceToUse,
+          gender: ttsConfig.gender || 'NEUTRAL',
+          speed: ttsConfig.speed,
+          pitch: ttsConfig.pitch,
+          volume: ttsConfig.volume,
+          language: ttsConfig.language,
+        } : { voice: voiceToUse };
+        
+        const segments = await audioSyncService.generateAudio(
+          pdfId,
+          parseInt(jobId),
+          voiceToUse,
+          textBlocks,
+          ttsOptions
+        );
+
+        // Get updated audio URL and reload sync data
+        const audioData = await audioSyncService.getAudioSyncsByJob(parseInt(jobId));
+        if (audioData && audioData.length > 0 && audioData[0].audioFilePath) {
+          const url = audioSyncService.getAudioUrl(audioData[0].id);
+          setAudioUrl(url);
+          setIsReady(false);
+          
+          // Reload sync data with new timings
+          const sentences = {};
+          const words = {};
+          audioData.forEach(sync => {
+            const blockId = sync.block_id || sync.blockId;
+            if (blockId) {
+              const pageNumber = sync.page_number || sync.pageNumber || 1;
+              const status = sync.notes?.includes('SKIPPED') || sync.status === 'SKIPPED' ? 'SKIPPED' : 'SYNCED';
+              
+              if (blockId.includes('_w')) {
+                const parentId = blockId.replace(/_w\d+$/, '');
+                words[blockId] = {
+                  id: blockId,
+                  parentId: parentId,
+                  start: sync.start_time || sync.startTime || 0,
+                  end: sync.end_time || sync.endTime || 0,
+                  text: sync.custom_text || sync.customText || '',
+                  pageNumber: pageNumber,
+                  status: status
+                };
+              } else {
+                sentences[blockId] = {
+                  id: blockId,
+                  start: Number(sync.start_time || sync.startTime || 0),
+                  end: Number(sync.end_time || sync.endTime || 0),
+                  text: sync.custom_text || sync.customText || '',
+                  pageNumber: pageNumber,
+                  status: status
+                };
+              }
+            }
+          });
+          setSyncData({ sentences, words });
+          
+          // Reload waveform (regions will be recreated by useEffect when isReady becomes true)
+          if (wavesurferRef.current) {
+            wavesurferRef.current.load(url);
+          }
+        }
+
+        setOriginalVoice(selectedVoice);
+        setSuccess(`Audio regenerated with new voice tone. ${segments.length} segments updated.`);
+      }
+
+      // Update playback speed in saved settings
+      // The playback speed is already applied to the audio element via useEffect
+      // We just need to update the modification state
+      setIsAudioModified(false);
+      
+      // Show success message
+      if (!needsRegeneration) {
+        setSuccess('Audio playback speed saved successfully');
+      }
+      
+    } catch (err) {
+      setError('Failed to save audio changes: ' + err.message);
+      console.error('[SyncStudio] Error saving audio changes:', err);
     } finally {
       setGenerating(false);
     }
@@ -3000,8 +3979,8 @@ const SyncStudio = () => {
         });
       });
 
-      // Ensure playback speed is a valid number
-      const speedToSave = parseFloat(playbackSpeed) || 1.0;
+      // Playback speed is always 1.0x (normal speed)
+      const speedToSave = 1.0;
       console.log(`[SyncStudio] Saving with playback speed: ${speedToSave}x`);
 
       // Save to backend with playback speed
@@ -3021,7 +4000,7 @@ const SyncStudio = () => {
 
       setSaveSuccess(true);
       setError('');
-      console.log(`[SyncStudio] EPUB regenerated successfully. ${syncBlocks.length} sync points saved. Playback speed: ${playbackSpeed}x`);
+      console.log(`[SyncStudio] EPUB regenerated successfully. ${syncBlocks.length} sync points saved. Playback speed: ${speedToSave}x`);
     } catch (err) {
       setError('Failed to save: ' + err.message);
       setSaveSuccess(false);
@@ -3321,7 +4300,9 @@ const SyncStudio = () => {
               <div className="tts-controls">
                 <select 
                   value={selectedVoice} 
-                  onChange={(e) => setSelectedVoice(e.target.value)}
+                  onChange={(e) => handleVoiceChange(e.target.value)}
+                  disabled={!audioUrl}
+                  title={audioUrl ? "Change voice tone (will regenerate audio when saved)" : "Generate audio first"}
                 >
                   {voices.map((v, i) => (
                     <option key={v.id || i} value={v.value || v.id}>
@@ -3346,6 +4327,76 @@ const SyncStudio = () => {
                     </>
                   )}
                 </button>
+                {audioUrl && (
+                  <button 
+                    onClick={handleDeleteGeneratedAudio} 
+                    disabled={generating}
+                    className="btn-delete-audio"
+                    title="Delete generated TTS audio"
+                  >
+                    <HiOutlineTrash size={16} style={{ marginRight: '4px', verticalAlign: 'middle' }} />
+                    Delete Audio
+                  </button>
+                )}
+              </div>
+              
+              <div className="transcript-controls" style={{ marginTop: '0.75rem', display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                <button 
+                  onClick={handleGenerateTranscript} 
+                  disabled={generatingTranscript || !audioUrl || !syncData || Object.keys(syncData.sentences || {}).length === 0}
+                  className="btn-generate-transcript"
+                  style={{ 
+                    padding: '0.5rem 1rem',
+                    backgroundColor: '#4F46E5',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: generatingTranscript || !audioUrl ? 'not-allowed' : 'pointer',
+                    opacity: generatingTranscript || !audioUrl ? 0.6 : 1,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '0.5rem',
+                    fontSize: '0.9rem',
+                    fontWeight: '500'
+                  }}
+                  title={!audioUrl ? "Generate audio first" : !syncData || Object.keys(syncData.sentences || {}).length === 0 ? "Sync audio first" : "Generate transcript from audio sync data"}
+                >
+                  {generatingTranscript ? (
+                    <>
+                      <HiOutlineClock size={16} />
+                      Generating...
+                    </>
+                  ) : (
+                    <>
+                      <HiOutlineDocumentText size={16} />
+                      Generate Transcript
+                    </>
+                  )}
+                </button>
+                
+                {transcriptReady && (
+                  <button 
+                    onClick={handleDownloadTranscript} 
+                    className="btn-download-transcript"
+                    style={{ 
+                      padding: '0.5rem 1rem',
+                      backgroundColor: '#10B981',
+                      color: 'white',
+                      border: 'none',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '0.5rem',
+                      fontSize: '0.9rem',
+                      fontWeight: '500'
+                    }}
+                    title="Download transcript file"
+                  >
+                    <HiOutlineDownload size={16} />
+                    Download Transcript
+                  </button>
+                )}
               </div>
             </div>
 
@@ -3383,25 +4434,71 @@ const SyncStudio = () => {
               <span className="time-display">
                 {formatTime(currentTime)} / {formatTime(duration)}
               </span>
+              
+              {/* Playback Speed Control */}
+              {audioUrl && (
+                <div className="playback-speed-control" style={{ 
+                  display: 'flex', 
+                  alignItems: 'center', 
+                  marginLeft: '15px',
+                  gap: '8px'
+                }}>
+                  <label style={{ fontSize: '14px', color: '#ccc' }}>Speed:</label>
+                  <select 
+                    value={playbackSpeed}
+                    onChange={(e) => handlePlaybackSpeedChange(parseFloat(e.target.value))}
+                    disabled={!isReady}
+                    style={{
+                      padding: '4px 8px',
+                      background: '#2a2a2a',
+                      color: '#e0e0e0',
+                      border: '1px solid #444',
+                      borderRadius: '4px',
+                      fontSize: '14px',
+                      cursor: isReady ? 'pointer' : 'not-allowed'
+                    }}
+                    title="Adjust playback speed"
+                  >
+                    <option value={0.5}>0.5x</option>
+                    <option value={0.75}>0.75x</option>
+                    <option value={1.0}>1.0x</option>
+                    <option value={1.25}>1.25x</option>
+                    <option value={1.5}>1.5x</option>
+                    <option value={1.75}>1.75x</option>
+                    <option value={2.0}>2.0x</option>
+                  </select>
+                </div>
+              )}
+              
+              {/* Save Changes Button */}
+              {audioUrl && isAudioModified && (
+                <button 
+                  onClick={handleSaveAudioChanges}
+                  disabled={generating}
+                  className="btn-save-changes"
+                  style={{
+                    marginLeft: '15px',
+                    padding: '6px 12px',
+                    background: '#4CAF50',
+                    color: '#fff',
+                    border: 'none',
+                    borderRadius: '4px',
+                    fontSize: '14px',
+                    cursor: generating ? 'not-allowed' : 'pointer',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    fontWeight: '500',
+                    opacity: generating ? 0.6 : 1
+                  }}
+                  title="Save audio speed and voice changes"
+                >
+                  <HiOutlineSave size={16} />
+                  {generating ? 'Saving...' : 'Save Changes'}
+                </button>
+              )}
             </div>
 
-            <div className="speed-control">
-              <span>Speed:</span>
-              <select
-                value={playbackSpeed}
-                onChange={(e) => setPlaybackSpeed(parseFloat(e.target.value))}
-                className="speed-select"
-                title="Audio playback speed (applied to final EPUB)"
-              >
-                <option value="0.5">0.5x</option>
-                <option value="0.75">0.75x</option>
-                <option value="1.0">1.0x (Normal)</option>
-                <option value="1.25">1.25x</option>
-                <option value="1.5">1.5x</option>
-                <option value="1.75">1.75x</option>
-                <option value="2.0">2.0x</option>
-              </select>
-            </div>
 
             <div className="zoom-control">
               <span>Zoom:</span>

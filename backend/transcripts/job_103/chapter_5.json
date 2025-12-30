@@ -1,0 +1,65 @@
+{
+  "jobId": 103,
+  "pageNumber": 5,
+  "audioFilePath": "C:\\Users\\ADMIN\\Desktop\\pdf-to-epub-converter\\backend\\uploads\\tts_audio\\combined_audio_103.mp3",
+  "fragments": [
+    {
+      "id": "page5_p1",
+      "text": "If you were a horse, you would run like the wind.",
+      "startTime": 2.5025025025025025,
+      "endTime": 5.255255255255255,
+      "type": "paragraph"
+    },
+    {
+      "id": "page5_p1",
+      "text": "If you were a horse, you would run like the wind.",
+      "startTime": 2.5025025025025025,
+      "endTime": 5.255255255255255,
+      "type": "paragraph"
+    },
+    {
+      "id": "page5_p2",
+      "text": "You would have a long tail and mane.",
+      "startTime": 5.255255255255255,
+      "endTime": 7.257257257257257,
+      "type": "paragraph"
+    },
+    {
+      "id": "page5_p2",
+      "text": "You would have a long tail and mane.",
+      "startTime": 5.255255255255255,
+      "endTime": 7.257257257257257,
+      "type": "paragraph"
+    },
+    {
+      "id": "page5_p3",
+      "text": "You would be powerful and strong.",
+      "startTime": 7.257257257257257,
+      "endTime": 8.75875875875876,
+      "type": "paragraph"
+    },
+    {
+      "id": "page5_p3",
+      "text": "You would be powerful and strong.",
+      "startTime": 7.257257257257257,
+      "endTime": 8.75875875875876,
+      "type": "paragraph"
+    },
+    {
+      "id": "page5_p4",
+      "text": "Oh, how wonderful to be a horse!",
+      "startTime": 8.75875875875876,
+      "endTime": 10.51051051051051,
+      "type": "paragraph"
+    },
+    {
+      "id": "page5_p4",
+      "text": "Oh, how wonderful to be a horse!",
+      "startTime": 8.75875875875876,
+      "endTime": 10.51051051051051,
+      "type": "paragraph"
+    }
+  ],
+  "totalDuration": 10.51051051051051,
+  "createdAt": "2025-12-30T09:51:42.017Z"
+}
