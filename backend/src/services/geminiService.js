@@ -618,7 +618,7 @@ export class GeminiService {
         
         // Ensure we have closing body tag if we have opening body tag
         if (hasBody && !hasBodyClose) {
-          xhtml += '\n</body>';
+              xhtml += '\n</body>';
         } else if (!hasBody && !hasBodyClose) {
           // No body tag at all - might be truncated before body starts
           // Try to add body tag before closing html
@@ -636,9 +636,9 @@ export class GeminiService {
         
         // Always add closing html tag
         if (!xhtml.includes('</html>')) {
-          xhtml += '\n</html>';
-          console.warn(`[Page ${pageNumber}] Attempting to fix truncated response by adding closing tags`);
-        }
+            xhtml += '\n</html>';
+            console.warn(`[Page ${pageNumber}] Attempting to fix truncated response by adding closing tags`);
+          }
         
         // Process the fixed truncated XHTML the same way as non-truncated
         if (xhtml.includes('</html>')) {
@@ -806,6 +806,9 @@ export class GeminiService {
     );
 
     const operationPromise = RequestQueueService.enqueue('Gemini', async () => {
+      // Track pending API call promise at function scope so timeout handler can access it
+      let pendingApiCallPromise = null;
+      
       // Pre-request rate limit check with retry logic
       let retries = 0;
       const maxRetries = 5;
@@ -1281,8 +1284,8 @@ export class GeminiService {
               const captureKey = GeminiService.getCacheKey(imagePath, pageNumber);
               console.warn(`[Page ${pageNumber}] API call timed out (attempt ${attempt}/${maxApiAttempts}), starting late response capture...`);
               
-              // Start background capture (don't await)
-              pendingApiCall.then(async (lateResult) => {
+              // Start background capture and track the processing promise
+              pendingApiCallPromise = pendingApiCall.then(async (lateResult) => {
                 try {
                   console.log(`[Page ${pageNumber}] Late response received! Processing...`);
                   const lateResponse = await lateResult.response;
@@ -1293,15 +1296,19 @@ export class GeminiService {
                   if (processedResult) {
                     GeminiService.storeLateResponse(captureKey, processedResult);
                     console.log(`[Page ${pageNumber}] Late response cached successfully (${processedResult.xhtml.length} chars)`);
+                    return processedResult; // Return the result so we can await it
                   }
+                  return null;
                 } catch (lateErr) {
                   console.warn(`[Page ${pageNumber}] Late response processing failed:`, lateErr.message);
+                  return null;
                 }
               }).catch(lateErr => {
                 console.warn(`[Page ${pageNumber}] Late response capture failed:`, lateErr.message);
+                return null;
               });
               
-              pendingApiCall = null;
+              // Don't set pendingApiCall to null - we need to track it for the timeout handler
               
               if (attempt < maxApiAttempts) {
                 console.log(`[Page ${pageNumber}] Retrying after timeout...`);
@@ -1328,6 +1335,9 @@ export class GeminiService {
         
         if (processedResult) {
           console.log(`[Page ${pageNumber}] Successfully extracted XHTML (${processedResult.xhtml.length} chars)`);
+          // Store the result in case of timeout race condition
+          const cacheKey = GeminiService.getCacheKey(imagePath, pageNumber);
+          GeminiService.storeLateResponse(cacheKey, processedResult);
           return processedResult;
         }
         
@@ -1393,33 +1403,68 @@ export class GeminiService {
       }
     }, 1); // High priority for XHTML conversion
 
+    // Track if we got a successful result before timeout
+    let successfulResult = null;
+    
+    // Wrap operationPromise to capture successful results
+    const wrappedOperationPromise = operationPromise.then(result => {
+      successfulResult = result;
+      return result;
+    }).catch(err => {
+      throw err;
+    });
+    
     try {
-      return await Promise.race([operationPromise, timeoutPromise]);
+      return await Promise.race([wrappedOperationPromise, timeoutPromise]);
     } catch (error) {
       if (error?.message?.includes('Overall timeout')) {
         console.error(`[Page ${pageNumber}] Overall operation timed out after 120s, checking for late response...`);
         
+        // CRITICAL FIX: Check if operation actually completed successfully before timeout
+        // This handles race condition where response was processed but timeout occurred
+        if (successfulResult) {
+          console.log(`[Page ${pageNumber}] Found successful result before timeout, using it despite timeout`);
+          return successfulResult;
+        }
+        
         // Check for late response before giving up
         const cacheKey = GeminiService.getCacheKey(imagePath, pageNumber);
-        const lateResponse = GeminiService.getLateResponse(cacheKey);
+        let lateResponse = GeminiService.getLateResponse(cacheKey);
         if (lateResponse) {
           console.log(`[Page ${pageNumber}] Found late response in cache after overall timeout, using it`);
           return lateResponse;
         }
         
-          // Wait longer for late response to arrive (within grace period)
-          // Late responses can take 30+ seconds after timeout, so wait up to 30 seconds
-          console.log(`[Page ${pageNumber}] Waiting up to 30s for late response after overall timeout...`);
-          for (let waitAttempt = 0; waitAttempt < 30; waitAttempt++) {
-            await new Promise(res => setTimeout(res, 1000));
-            const lateResponse = GeminiService.getLateResponse(cacheKey);
-            if (lateResponse) {
-              console.log(`[Page ${pageNumber}] Late response arrived after overall timeout (${waitAttempt + 1}s), using it`);
-              return lateResponse;
-            }
+        // CRITICAL FIX: Wait up to 60 seconds for late response to be processed and cached
+        // The late response processing happens asynchronously in the background
+        // It will store the result in the cache when processing completes
+        console.log(`[Page ${pageNumber}] Waiting up to 60s for late response to be processed and cached...`);
+        
+        // Wait up to 60 seconds, checking every second for the late response
+        for (let waitAttempt = 0; waitAttempt < 60; waitAttempt++) {
+          await new Promise(res => setTimeout(res, 1000));
+          
+          // Check the cache - the late response processing should have stored it by now
+          lateResponse = GeminiService.getLateResponse(cacheKey);
+          if (lateResponse) {
+            console.log(`[Page ${pageNumber}] Late response found in cache after ${waitAttempt + 1}s wait, using it`);
+            return lateResponse;
           }
           
-          console.error(`[Page ${pageNumber}] Overall operation timed out after 120s, no late response received after 30s wait, skipping`);
+          // Log progress every 10 seconds
+          if ((waitAttempt + 1) % 10 === 0) {
+            console.log(`[Page ${pageNumber}] Still waiting for late response... (${waitAttempt + 1}s elapsed)`);
+          }
+        }
+        
+        // Final check after 60 seconds
+        const finalLateResponse = GeminiService.getLateResponse(cacheKey);
+        if (finalLateResponse) {
+          console.log(`[Page ${pageNumber}] Found late response in cache after 60s wait, using it`);
+          return finalLateResponse;
+        }
+        
+        console.error(`[Page ${pageNumber}] Overall operation timed out after 120s, no late response received after 60s wait, skipping`);
         CircuitBreakerService.recordFailure('Gemini', false);
       }
       return null;

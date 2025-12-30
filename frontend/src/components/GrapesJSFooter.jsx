@@ -437,6 +437,31 @@ const GrapesJSFooter = ({
         range.insertNode(span);
       }
 
+      // Preserve selection after formatting
+      // This prevents the editor from losing focus and reloading
+      try {
+        // Restore selection after DOM changes
+        const selection = frameDoc.getSelection();
+        if (selection && selection.rangeCount > 0) {
+          const range = selection.getRangeAt(0);
+          // Clear and restore selection to ensure it's still valid
+          selection.removeAllRanges();
+          setTimeout(() => {
+            try {
+              selection.addRange(range);
+            } catch (e) {
+              // Selection might be invalid, ignore
+            }
+          }, 10);
+        }
+      } catch (selErr) {
+        // Ignore selection errors
+      }
+      
+      // DON'T update xhtml state here - it causes the editor to reload
+      // The save function reads directly from the iframe, so we don't need to update state
+      // This prevents the first click from causing a reload
+      
       // Reset flag after a short delay to allow DOM changes to settle
       // Short enough to not block image drops, long enough to prevent loops
       setTimeout(() => {
@@ -447,10 +472,6 @@ const GrapesJSFooter = ({
       if (onContentModified) {
         onContentModified();
       }
-      
-      // Don't call onXhtmlChange here - the DOM is already updated in the iframe
-      // The save function will read directly from the editor/iframe when needed
-      // This prevents infinite loops
     } catch (err) {
       console.error('[GrapesJSFooter] Error applying font size:', err);
     }
@@ -488,6 +509,31 @@ const GrapesJSFooter = ({
       // Use execCommand for color (works better than wrapping)
       frameDoc.execCommand('foreColor', false, color);
       
+      // Preserve selection after formatting
+      // This prevents the editor from losing focus and reloading
+      try {
+        // Restore selection after DOM changes
+        const selection = frameDoc.getSelection();
+        if (selection && selection.rangeCount > 0) {
+          const range = selection.getRangeAt(0);
+          // Clear and restore selection to ensure it's still valid
+          selection.removeAllRanges();
+          setTimeout(() => {
+            try {
+              selection.addRange(range);
+            } catch (e) {
+              // Selection might be invalid, ignore
+            }
+          }, 10);
+        }
+      } catch (selErr) {
+        // Ignore selection errors
+      }
+      
+      // DON'T update xhtml state here - it causes the editor to reload
+      // The save function reads directly from the iframe, so we don't need to update state
+      // This prevents the first click from causing a reload
+      
       // Reset flag after a short delay to allow DOM changes to settle
       // Short enough to not block image drops, long enough to prevent loops
       setTimeout(() => {
@@ -498,10 +544,6 @@ const GrapesJSFooter = ({
       if (onContentModified) {
         onContentModified();
       }
-      
-      // Don't call onXhtmlChange here - the DOM is already updated in the iframe
-      // The save function will read directly from the editor/iframe when needed
-      // This prevents infinite loops
     } catch (err) {
       console.error('[GrapesJSFooter] Error applying font color:', err);
     }
@@ -549,6 +591,31 @@ const GrapesJSFooter = ({
         range.insertNode(span);
       }
 
+      // Preserve selection after formatting
+      // This prevents the editor from losing focus and reloading
+      try {
+        // Restore selection after DOM changes
+        const selection = frameDoc.getSelection();
+        if (selection && selection.rangeCount > 0) {
+          const range = selection.getRangeAt(0);
+          // Clear and restore selection to ensure it's still valid
+          selection.removeAllRanges();
+          setTimeout(() => {
+            try {
+              selection.addRange(range);
+            } catch (e) {
+              // Selection might be invalid, ignore
+            }
+          }, 10);
+        }
+      } catch (selErr) {
+        // Ignore selection errors
+      }
+      
+      // DON'T update xhtml state here - it causes the editor to reload
+      // The save function reads directly from the iframe, so we don't need to update state
+      // This prevents the first click from causing a reload
+      
       // Reset flag after a short delay to allow DOM changes to settle
       // Short enough to not block image drops, long enough to prevent loops
       setTimeout(() => {
@@ -559,10 +626,6 @@ const GrapesJSFooter = ({
       if (onContentModified) {
         onContentModified();
       }
-      
-      // Don't call onXhtmlChange here - the DOM is already updated in the iframe
-      // The save function will read directly from the editor/iframe when needed
-      // This prevents infinite loops
     } catch (err) {
       console.error('[GrapesJSFooter] Error applying font family:', err);
     }
@@ -603,6 +666,31 @@ const GrapesJSFooter = ({
       // Use execCommand for bold (works better than wrapping)
       frameDoc.execCommand('bold', false, null);
       
+      // Preserve selection after formatting
+      // This prevents the editor from losing focus and reloading
+      try {
+        // Restore selection after DOM changes
+        const selection = frameDoc.getSelection();
+        if (selection && selection.rangeCount > 0) {
+          const range = selection.getRangeAt(0);
+          // Clear and restore selection to ensure it's still valid
+          selection.removeAllRanges();
+          setTimeout(() => {
+            try {
+              selection.addRange(range);
+            } catch (e) {
+              // Selection might be invalid, ignore
+            }
+          }, 10);
+        }
+      } catch (selErr) {
+        // Ignore selection errors
+      }
+      
+      // DON'T update xhtml state here - it causes the editor to reload
+      // The save function reads directly from the iframe, so we don't need to update state
+      // This prevents the first click from causing a reload
+      
       // Reset flag after a short delay to allow DOM changes to settle
       // Short enough to not block image drops, long enough to prevent loops
       setTimeout(() => {
@@ -613,10 +701,6 @@ const GrapesJSFooter = ({
       if (onContentModified) {
         onContentModified();
       }
-      
-      // Don't call onXhtmlChange here - the DOM is already updated in the iframe
-      // The save function will read directly from the editor/iframe when needed
-      // This prevents infinite loops
     } catch (err) {
       console.error('[GrapesJSFooter] Error applying bold:', err);
     }

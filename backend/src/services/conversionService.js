@@ -1826,6 +1826,13 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
     
     console.log(`[Job ${jobId}] Loaded ${audioSyncs.length} total syncs, ${activeSyncs.length} active syncs`);
     
+    // Debug: Log manual syncs to verify is_custom_segment field
+    const manualSyncs = activeSyncs.filter(s => s.is_custom_segment === true || s.is_custom_segment === 1);
+    console.log(`[Job ${jobId}] Found ${manualSyncs.length} manually synced blocks (is_custom_segment=true)`);
+    if (manualSyncs.length > 0) {
+      console.log(`[Job ${jobId}] Sample manual sync: blockId=${manualSyncs[0].block_id}, start=${manualSyncs[0].start_time}, end=${manualSyncs[0].end_time}, is_custom_segment=${manualSyncs[0].is_custom_segment}`);
+    }
+    
     // Debug: Log first sync to see its structure
     if (audioSyncs.length > 0) {
       const firstSync = audioSyncs[0];
@@ -2004,6 +2011,49 @@ ${bodyContent}
 </html>`;
         
         console.log(`[Regenerate EPUB] Fixed page ${page.pageNumber} XHTML structure`);
+      }
+      
+      // Fix CSS attribute selectors with double quotes (XHTML requirement)
+      // In XHTML, CSS attribute selectors like [class*="value"] must use single quotes
+      xhtmlContent = xhtmlContent.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (match, cssContent) => {
+        let fixedCss = cssContent;
+        
+        // Replace double quotes in CSS attribute selectors with single quotes
+        // Pattern: [attr*="value"] -> [attr*='value']
+        fixedCss = fixedCss.replace(/\[([^\]]*?)=["]([^"]*?)["]([^\]]*?)\]/g, (fullMatch, before, value, after) => {
+          return `[${before}='${value}'${after}]`;
+        });
+        
+        // More permissive pattern with optional whitespace
+        if (fixedCss.includes('="')) {
+          fixedCss = fixedCss.replace(/\[([^\]]*?)\s*=\s*["]([^"]*?)["]\s*([^\]]*?)\]/g, (fullMatch, before, value, after) => {
+            return `[${before.trim()}='${value}'${after.trim()}]`;
+          });
+        }
+        
+        // Final safety check for any remaining patterns
+        if (fixedCss.includes('="') && fixedCss.includes('[')) {
+          fixedCss = fixedCss.replace(/(\[[^\]]*?)=["]([^"]*?)["]([^\]]*?\])/g, (fullMatch, before, value, after) => {
+            return `${before}='${value}'${after}`;
+          });
+        }
+        
+        return match.replace(cssContent, fixedCss);
+      });
+      
+      // Fix unclosed style tags (if style tag is missing closing tag)
+      if (xhtmlContent.includes('<style') && !xhtmlContent.includes('</style>')) {
+        const headCloseIdx = xhtmlContent.indexOf('</head>');
+        if (headCloseIdx !== -1) {
+          xhtmlContent = xhtmlContent.substring(0, headCloseIdx) + '</style>' + xhtmlContent.substring(headCloseIdx);
+        } else {
+          const htmlCloseIdx = xhtmlContent.indexOf('</html>');
+          if (htmlCloseIdx !== -1) {
+            xhtmlContent = xhtmlContent.substring(0, htmlCloseIdx) + '</style></head>' + xhtmlContent.substring(htmlCloseIdx);
+          } else {
+            xhtmlContent = xhtmlContent + '</style>';
+          }
+        }
       }
       
       // Fix image paths: ../images/ -> images/ (correct EPUB path)
@@ -2651,7 +2701,10 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
               clipEnd: sync.end_time,
               startTime: sync.start_time,
               endTime: sync.end_time,
-              shouldRead: !(sync.notes || '').includes('Read-aloud: disabled')
+              shouldRead: !(sync.notes || '').includes('Read-aloud: disabled'),
+              isCustomSegment: sync.is_custom_segment || sync.isCustomSegment || false, // CRITICAL: Include flag to identify manual syncs
+              customText: sync.custom_text || sync.customText || '',
+              text: sync.custom_text || sync.customText || ''
             }));
           
           if (pageSyncs.length > 0) {
@@ -2972,7 +3025,10 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
               clipEnd: sync.end_time || sync.endTime,
               startTime: sync.start_time || sync.startTime,
               endTime: sync.end_time || sync.endTime,
-              shouldRead: !(sync.notes || '').includes('Read-aloud: disabled')
+              shouldRead: !(sync.notes || '').includes('Read-aloud: disabled'),
+              isCustomSegment: sync.is_custom_segment || sync.isCustomSegment || false, // CRITICAL: Include flag to identify manual syncs
+              customText: sync.custom_text || sync.customText || '',
+              text: sync.custom_text || sync.customText || ''
             }));
           
           console.log(`[Job ${jobId}] Page ${actualPageNum}: Found ${pageSyncs.length} syncs after filtering`);
@@ -3095,7 +3151,7 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
           textData,
           pageIdMappings[actualPageNum],
           fileName, // Pass XHTML filename for textref
-          null, // targetGranularity (not specified here)
+          granularity, // targetGranularity from options ('word', 'sentence', 'paragraph', or null for all)
           pageXhtmlContent // Pass XHTML content for reading order
         );
         zip.file(`OEBPS/${smilFileName}`, smilContent);
@@ -5020,6 +5076,7 @@ body > p {
     
     // Filter syncs by granularity if specified
     let filteredSyncs = syncs;
+    console.log(`[SMIL Page ${pageNumber}] Starting with ${syncs.length} syncs, targetGranularity=${targetGranularity || 'null (all levels)'}`);
     if (targetGranularity) {
       const originalCount = syncs.length;
       filteredSyncs = syncs.filter(sync => {
@@ -5119,6 +5176,96 @@ body > p {
       } else {
         console.log(`[SMIL Page ${pageNumber}] Filtered to ${filteredSyncs.length} ${targetGranularity}-level syncs from ${originalCount} total`);
       }
+      
+      // CRITICAL FIX: Remove parent/child overlaps
+      // When granularity is "word", exclude sentence-level blocks that contain those words
+      // When granularity is "sentence", exclude word-level blocks that are children of those sentences
+      if (targetGranularity === 'word') {
+        // Extract all sentence IDs from word blocks (e.g., page5_p1_s1_w1 -> page5_p1_s1)
+        const sentenceIds = new Set();
+        filteredSyncs.forEach(sync => {
+          const blockId = sync.blockId || sync.block_id || '';
+          // Extract sentence ID from word ID: page5_p1_s1_w1 -> page5_p1_s1
+          const sentMatch = blockId.match(/^((?:page\d+_)?p\d+_s\d+)_w\d+$/);
+          if (sentMatch) {
+            sentenceIds.add(sentMatch[1]);
+          }
+        });
+        
+        console.log(`[SMIL Page ${pageNumber}] Found ${sentenceIds.size} sentence IDs from word blocks:`, Array.from(sentenceIds).slice(0, 5));
+        
+        // Remove sentence-level blocks that are parents of word blocks
+        const beforeCount = filteredSyncs.length;
+        filteredSyncs = filteredSyncs.filter(sync => {
+          const blockId = sync.blockId || sync.block_id || '';
+          // If this is a sentence block and it's a parent of any word block, exclude it
+          if (blockId.includes('_s') && !blockId.includes('_w') && sentenceIds.has(blockId)) {
+            console.log(`[SMIL Page ${pageNumber}] Excluding sentence-level parent block: ${blockId} (has word-level children)`);
+            return false;
+          }
+          return true;
+        });
+        
+        if (filteredSyncs.length < beforeCount) {
+          console.log(`[SMIL Page ${pageNumber}] Removed ${beforeCount - filteredSyncs.length} sentence-level parent blocks to prevent overlap with word-level children`);
+        }
+      } else if (targetGranularity === 'sentence') {
+        // Extract all sentence IDs from sentence blocks
+        const sentenceIds = new Set();
+        filteredSyncs.forEach(sync => {
+          const blockId = sync.blockId || sync.block_id || '';
+          if (blockId.includes('_s') && !blockId.includes('_w')) {
+            sentenceIds.add(blockId);
+          }
+        });
+        
+        // Remove word-level blocks that are children of sentence blocks
+        const beforeCount = filteredSyncs.length;
+        filteredSyncs = filteredSyncs.filter(sync => {
+          const blockId = sync.blockId || sync.block_id || '';
+          // If this is a word block, check if its parent sentence is in the sentence list
+          if (blockId.includes('_w')) {
+            const sentMatch = blockId.match(/^((?:page\d+_)?p\d+_s\d+)_w\d+$/);
+            if (sentMatch && sentenceIds.has(sentMatch[1])) {
+              return false; // Exclude word if its parent sentence is included
+            }
+          }
+          return true;
+        });
+        
+        if (filteredSyncs.length < beforeCount) {
+          console.log(`[SMIL Page ${pageNumber}] Removed ${beforeCount - filteredSyncs.length} word-level child blocks to prevent overlap with sentence-level parents`);
+        }
+      } else if (!targetGranularity) {
+        // When granularity is null (all levels), prefer finer granularity (words) and exclude parent sentences
+        // Extract all sentence IDs from word blocks
+        const sentenceIds = new Set();
+        filteredSyncs.forEach(sync => {
+          const blockId = sync.blockId || sync.block_id || '';
+          const sentMatch = blockId.match(/^((?:page\d+_)?p\d+_s\d+)_w\d+$/);
+          if (sentMatch) {
+            sentenceIds.add(sentMatch[1]);
+          }
+        });
+        
+        console.log(`[SMIL Page ${pageNumber}] Granularity: null (all levels). Found ${sentenceIds.size} sentence IDs from word blocks:`, Array.from(sentenceIds).slice(0, 5));
+        
+        // Remove sentence-level blocks that are parents of word blocks (prefer words over sentences)
+        const beforeCount = filteredSyncs.length;
+        filteredSyncs = filteredSyncs.filter(sync => {
+          const blockId = sync.blockId || sync.block_id || '';
+          // If this is a sentence block and it's a parent of any word block, exclude it
+          if (blockId.includes('_s') && !blockId.includes('_w') && sentenceIds.has(blockId)) {
+            console.log(`[SMIL Page ${pageNumber}] Excluding sentence-level parent block: ${blockId} (has word-level children, granularity: all levels)`);
+            return false;
+          }
+          return true;
+        });
+        
+        if (filteredSyncs.length < beforeCount) {
+          console.log(`[SMIL Page ${pageNumber}] Removed ${beforeCount - filteredSyncs.length} sentence-level parent blocks to prevent overlap with word-level children (granularity: all levels)`);
+        }
+      }
     }
     
     // ISSUE #4 FIX: Data Type Consistency - Ensure numeric types
@@ -5202,10 +5349,83 @@ body > p {
         blockId = this.mapSyncIdToXhtmlId(sync, pageNumber, textBlocks, idMapping);
       }
       
+      // CRITICAL: Check if this is a manually synced block (isCustomSegment = true)
+      // For manually synced blocks, use EXACT timestamps without automatic adjustments
+      // Check both camelCase and snake_case formats (database uses snake_case)
+      // MySQL returns booleans as 0/1, so check for both true and 1
+      const isManualSync = sync.isCustomSegment === true || 
+                          sync.is_custom_segment === true || 
+                          sync.isCustomSegment === 1 || 
+                          sync.is_custom_segment === 1 ||
+                          (sync.notes && sync.notes.includes('Audio sync')); // Also check notes for manual sync indicator
+      
+      // Debug logging for manual sync detection (log first 5 and any that look like manual syncs)
+      if (i < 5 || isManualSync || blockId === 'page5_p1_s1') {
+        console.log(`[SMIL Page ${pageNumber}] Sync ${i} (${blockId}): isCustomSegment=${sync.isCustomSegment}, is_custom_segment=${sync.is_custom_segment}, isManualSync=${isManualSync}, start=${startTime.toFixed(3)}s, end=${endTime.toFixed(3)}s`);
+      }
+      
       // Determine if this is word-level granularity (for adjusting gaps and pauses)
       const isWordLevel = blockId && blockId.includes('_w');
       
-      // CRITICAL FIX: Ensure minimum duration for natural reading pace
+      const originalStartTime = startTime;
+      const originalEndTime = endTime;
+      const currentDuration = endTime - startTime;
+      
+      // For manually synced blocks, skip automatic duration and pause adjustments
+      // Use the exact timestamps that were manually set
+      if (isManualSync) {
+        // For manual syncs, preserve exact timestamps - only prevent negative durations
+        // Word blocks can legitimately overlap or be sequential, so don't adjust them
+        // Only adjust if it would create a negative duration (end < start after adjustment)
+        if (startTime < lastAdjustedEndTime) {
+          // Check if adjusting would create a negative duration
+          const originalDuration = originalEndTime - originalStartTime;
+          const adjustedStart = lastAdjustedEndTime;
+          const adjustedEnd = adjustedStart + originalDuration;
+          
+          // Only adjust if the original end time is before the previous block's end
+          // This prevents negative durations while preserving intentional overlaps
+          if (originalEndTime <= lastAdjustedEndTime) {
+            const overlap = lastAdjustedEndTime - startTime;
+            console.warn(`[SMIL Page ${pageNumber}] ⚠️ Manual sync ${blockId} overlaps with previous block. Adjusting startTime by ${overlap.toFixed(3)}s to prevent negative duration.`);
+            startTime = lastAdjustedEndTime;
+            endTime = startTime + originalDuration;
+          } else {
+            // Preserve the original timestamps - they intentionally overlap
+            // This is common for word-level blocks that are manually synced
+            console.log(`[SMIL Page ${pageNumber}] Manual sync ${blockId} overlaps with previous block but preserving timestamps (intentional overlap): ${startTime.toFixed(3)}s - ${endTime.toFixed(3)}s`);
+          }
+        }
+        
+        // Update lastAdjustedEndTime to the maximum of current end or previous end
+        // This ensures sequential blocks don't get incorrectly adjusted
+        lastAdjustedEndTime = Math.max(lastAdjustedEndTime, endTime);
+        
+        // Validate timestamps
+        if (isNaN(startTime) || isNaN(endTime) || endTime <= startTime) {
+          console.error(`[SMIL Page ${pageNumber}] Invalid timestamps for manual sync ${i}: start=${startTime}, end=${endTime}`);
+          skippedCount++;
+          continue;
+        }
+        
+        // Use exact timestamps for manual sync
+        const escapedBlockId = this.escapeHtml(blockId);
+        const escapedAudioPath = this.escapeHtml(audioPath);
+        
+        if (i < 3) {
+          console.log(`[SMIL Page ${pageNumber}] Manual sync ${i}: blockId=${blockId}, clipBegin=${startTime.toFixed(3)}s, clipEnd=${endTime.toFixed(3)}s, duration=${(endTime - startTime).toFixed(3)}s`);
+        }
+        
+        bodyContent += `    <par id="par-${escapedBlockId}">
+      <text src="${this.escapeHtml(xhtmlFile)}#${escapedBlockId}"/>
+      <audio src="${escapedAudioPath}" clipBegin="${startTime.toFixed(3)}s" clipEnd="${endTime.toFixed(3)}s"/>
+    </par>\n`;
+        
+        totalDuration = Math.max(totalDuration, endTime);
+        continue; // Skip all automatic adjustments for manual syncs
+      }
+      
+      // CRITICAL FIX: Ensure minimum duration for natural reading pace (only for auto-synced blocks)
       // Very short durations cause "reading too fast" issue in EPUB players
       // Calculate minimum duration based on text length (natural reading pace: ~150 words/min = ~2.5 words/sec)
       const text = sync.customText || sync.custom_text || sync.text || '';
@@ -5216,10 +5436,6 @@ body > p {
       const minDurationByWords = 0.3 + (wordCount * 0.1);
       const minDurationByChars = 0.3 + (charCount * 0.05);
       const MIN_DURATION = Math.max(0.3, Math.max(minDurationByWords, minDurationByChars));
-      
-      const originalStartTime = startTime;
-      const originalEndTime = endTime;
-      const currentDuration = endTime - startTime;
       
       // Get next sync's original start time (before any adjustments)
       const nextSync = sortedSyncs[i + 1];
@@ -5459,5 +5675,326 @@ ${bodyContent}
       updatedAt: job.updated_at,
       completedAt: job.completed_at
     };
+  }
+
+  /**
+   * Regenerate XHTML for a specific page using Gemini AI
+   * @param {number} jobId - Conversion job ID
+   * @param {number} pageNumber - Page number to regenerate
+   * @returns {Promise<{xhtml: string, success: boolean}>} Regenerated XHTML content
+   */
+  static async regeneratePageXhtml(jobId, pageNumber) {
+    try {
+      const { GeminiService } = await import('./geminiService.js');
+      const { PdfExtractionService } = await import('./pdfExtractionService.js');
+      const { getHtmlIntermediateDir } = await import('../config/fileStorage.js');
+      const htmlIntermediateDir = getHtmlIntermediateDir();
+      
+      // Get job directories
+      const jobPngDir = path.join(htmlIntermediateDir, `job_${jobId}_png`);
+      const jobImagesDir = path.join(htmlIntermediateDir, `job_${jobId}_images`);
+      const jobHtmlDir = path.join(htmlIntermediateDir, `job_${jobId}_html`);
+      
+      // Ensure HTML directory exists
+      await fs.mkdir(jobHtmlDir, { recursive: true });
+      
+      // Get PNG image path for this page
+      const pngImagePath = path.join(jobPngDir, `page_${pageNumber}.png`);
+      
+      // Check if PNG exists
+      try {
+        await fs.access(pngImagePath);
+      } catch (accessError) {
+        throw new Error(`PNG image for page ${pageNumber} not found at ${pngImagePath}`);
+      }
+      
+      // Get extracted images for this page
+      let pageExtractedImages = [];
+      try {
+        // Read all extracted images and filter by page number
+        const extractedImagesFiles = await fs.readdir(jobImagesDir, { withFileTypes: true });
+        const pageImageFiles = extractedImagesFiles.filter(entry => {
+          if (!entry.isFile()) return false;
+          
+          // Pattern 1: page_<pageNumber>_image_<index>.<ext>
+          const pattern1 = entry.name.match(/^page_(\d+)_image_\d+\./i);
+          if (pattern1) {
+            const imagePageNum = parseInt(pattern1[1]);
+            return imagePageNum === pageNumber;
+          }
+          
+          // Pattern 2: img_<timestamp>_<pageNum>_<index>.<ext> (with negative page numbers like -018)
+          const pattern2 = entry.name.match(/img_\d+_(-?\d+)_(\d+)/);
+          if (pattern2) {
+            const imagePageNum = parseInt(pattern2[1]);
+            return imagePageNum === pageNumber;
+          }
+          
+          return false;
+        });
+        
+        // Build extracted images array with metadata
+        for (const entry of pageImageFiles) {
+          const imagePath = path.join(jobImagesDir, entry.name);
+          const ext = path.extname(entry.name).toLowerCase();
+          const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 
+                          ext === '.png' ? 'image/png' : 
+                          ext === '.gif' ? 'image/gif' : 'image/png';
+          
+          // Try to get image dimensions (optional, won't fail if unavailable)
+          let width, height;
+          try {
+            const { Image } = await import('canvas');
+            const img = await Image.load(await fs.readFile(imagePath));
+            width = img.width;
+            height = img.height;
+          } catch (dimError) {
+            // Dimensions not critical, continue without them
+            console.warn(`[Regenerate Page ${pageNumber}] Could not get dimensions for ${entry.name}:`, dimError.message);
+          }
+          
+          pageExtractedImages.push({
+            path: imagePath,
+            fileName: entry.name,
+            mimeType: mimeType,
+            format: ext.substring(1),
+            width: width,
+            height: height
+          });
+        }
+        
+        if (pageExtractedImages.length > 0) {
+          console.log(`[Regenerate Page ${pageNumber}] Found ${pageExtractedImages.length} extracted image(s) for page ${pageNumber}`);
+        }
+      } catch (extractError) {
+        console.warn(`[Regenerate Page ${pageNumber}] Could not load extracted images:`, extractError.message);
+        // Continue without extracted images
+      }
+      
+      // Get page dimensions - EXACT SAME LOGIC AS INITIAL CONVERSION
+      // Read PNG image dimensions to match how pageImage object is structured
+      let currentPageWidth = 612; // Default 8.5" x 11" in points
+      let currentPageHeight = 792;
+      let currentRenderedWidth = 1654; // Default rendered width at 200 DPI scale
+      let currentRenderedHeight = 2138;
+      let useFixedLayout = (process.env.USE_FIXED_LAYOUT_EPUB || 'false').toLowerCase() === 'true';
+      
+      // CRITICAL: Read actual PNG image dimensions (same as pageImage.width/pageImage.height)
+      // Then calculate point dimensions (same as pageImage.pageWidth/pageImage.pageHeight)
+      try {
+        const { Image } = await import('canvas');
+        const pngBuffer = await fs.readFile(pngImagePath);
+        const pngImage = await Image.load(pngBuffer);
+        currentRenderedWidth = pngImage.width;
+        currentRenderedHeight = pngImage.height;
+        
+        // Convert rendered pixels to points (EXACT SAME CALCULATION AS renderPagesAsImages)
+        // Scale: 200 DPI / 72 DPI = 200/72 = 2.777...
+        // So: points = pixels / scale
+        const scale = 200 / 72; // Same scale used in renderPagesAsImages
+        currentPageWidth = Math.round(currentRenderedWidth / scale);
+        currentPageHeight = Math.round(currentRenderedHeight / scale);
+        
+        console.log(`[Regenerate Page ${pageNumber}] PNG dimensions: ${currentRenderedWidth}x${currentRenderedHeight}px, converted to ${currentPageWidth}x${currentPageHeight}pt (scale: ${scale.toFixed(3)})`);
+      } catch (pngError) {
+        console.warn(`[Regenerate Page ${pageNumber}] Could not read PNG dimensions, trying existing XHTML:`, pngError.message);
+        
+        // Fallback: Try to read existing XHTML to get dimensions
+        const existingXhtmlPath = path.join(jobHtmlDir, `page_${pageNumber}.xhtml`);
+        try {
+          const existingXhtml = await fs.readFile(existingXhtmlPath, 'utf8');
+          // Try to extract viewport meta tag for dimensions
+          const viewportMatch = existingXhtml.match(/<meta\s+name="viewport"\s+content="width=(\d+),height=(\d+)"/i);
+          if (viewportMatch) {
+            currentPageWidth = parseInt(viewportMatch[1]);
+            currentPageHeight = parseInt(viewportMatch[2]);
+            // Estimate rendered dimensions from points (using same scale as renderPagesAsImages)
+            const scale = 200 / 72;
+            currentRenderedWidth = Math.ceil(currentPageWidth * scale);
+            currentRenderedHeight = Math.ceil(currentPageHeight * scale);
+            console.log(`[Regenerate Page ${pageNumber}] Using dimensions from existing XHTML: ${currentPageWidth}x${currentPageHeight}pt`);
+          }
+        } catch (existingError) {
+          // No existing XHTML, use defaults
+          console.log(`[Regenerate Page ${pageNumber}] No existing XHTML found, using default dimensions`);
+        }
+      }
+      
+      // Call Gemini to regenerate XHTML
+      console.log(`[Regenerate Page ${pageNumber}] Calling Gemini API to regenerate XHTML...`);
+      const xhtmlResult = await GeminiService.convertPngToXhtml(
+        pngImagePath,
+        pageNumber,
+        pageExtractedImages
+      );
+      
+      if (!xhtmlResult || !xhtmlResult.xhtml) {
+        throw new Error(`Gemini API failed to generate XHTML for page ${pageNumber}`);
+      }
+      
+      // Process and sanitize XHTML (same logic as convertPdfToXhtmlViaPng)
+      let xhtmlContent = xhtmlResult.xhtml;
+      
+      // Unescape characters
+      xhtmlContent = xhtmlContent.replace(/\\\\/g, '\\');
+      xhtmlContent = xhtmlContent.replace(/\\"/g, '"');
+      xhtmlContent = xhtmlContent.replace(/\\'/g, "'");
+      xhtmlContent = xhtmlContent.replace(/\\n/g, '\n');
+      xhtmlContent = xhtmlContent.replace(/\\r/g, '\r');
+      xhtmlContent = xhtmlContent.replace(/\\t/g, '\t');
+      
+      // Normalize DOCTYPE
+      const correctDoctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+      xhtmlContent = xhtmlContent.replace(/<!DOCTYPE\s+html[^>]*>/i, correctDoctype);
+      xhtmlContent = xhtmlContent.replace(
+        /http:\/\/www\.w3\.org\/TR\/xhtml\/DTD\/xhtml1-strict\.dtd/gi,
+        'http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd'
+      );
+      
+      // Escape bare ampersands
+      xhtmlContent = xhtmlContent.replace(/&(?!#?[a-zA-Z0-9]+;)/g, '&amp;');
+      
+      // Fix self-closing tags
+      xhtmlContent = xhtmlContent.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+        if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
+        return `<meta${attrs}/>`;
+      });
+      xhtmlContent = xhtmlContent.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+        if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
+        return `<img${attrs}/>`;
+      });
+      xhtmlContent = xhtmlContent.replace(/<br\s*([^>]*?)>/gi, (match, attrs) => {
+        if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
+        if (!attrs || attrs.trim() === '') return '<br />';
+        return `<br ${attrs.trim()}/>`;
+      });
+      xhtmlContent = xhtmlContent.replace(/<hr\s*([^>]*?)>/gi, (match, attrs) => {
+        if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
+        if (!attrs || attrs.trim() === '') return '<hr />';
+        return `<hr ${attrs.trim()}/>`;
+      });
+      
+      // Add viewport meta tag (EXACT SAME AS INITIAL CONVERSION)
+      const viewportMeta = useFixedLayout
+        ? `<meta name="viewport" content="width=${currentPageWidth},height=${currentPageHeight}"/>`
+        : `<meta name="viewport" content="width=device-width, initial-scale=1.0"/>`;
+      
+      // Check if XHTML has style tag
+      const hasStyleTag = xhtmlContent.includes('<style');
+      const hasLinkTag = xhtmlContent.includes('<link');
+      
+      // Inject CSS if needed
+      if (!hasStyleTag && !hasLinkTag && xhtmlResult.css && xhtmlResult.css.trim()) {
+        if (xhtmlContent.includes('</head>')) {
+          xhtmlContent = xhtmlContent.replace('</head>', `<style type="text/css">\n${xhtmlResult.css}\n</style>\n</head>`);
+        } else if (xhtmlContent.includes('<body>')) {
+          xhtmlContent = xhtmlContent.replace('<body>', `<head><style type="text/css">\n${xhtmlResult.css}\n</style></head>\n<body>`);
+        } else {
+          xhtmlContent = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+<meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+${viewportMeta}
+<title>Page ${pageNumber}</title>
+<style type="text/css">
+${xhtmlResult.css}
+</style>
+</head>
+<body>
+${xhtmlContent}
+</body>
+</html>`;
+        }
+      } else if (!hasStyleTag && !hasLinkTag) {
+        const minimalCss = `/* Minimal styles for EPUB rendering */
+body { margin: 0; padding: 0; }
+.-epub-media-overlay-active { background-color: #ffff00; }`;
+        
+        if (xhtmlContent.includes('</head>')) {
+          xhtmlContent = xhtmlContent.replace('</head>', `<style type="text/css">\n${minimalCss}\n</style>\n</head>`);
+        } else if (xhtmlContent.includes('<body>')) {
+          xhtmlContent = xhtmlContent.replace('<body>', `<head><style type="text/css">\n${minimalCss}\n</style></head>\n<body>`);
+        }
+      }
+      
+      // Add viewport meta if not present
+      if (!xhtmlContent.includes('name="viewport"')) {
+        if (xhtmlContent.includes('<head>')) {
+          xhtmlContent = xhtmlContent.replace('<head>', `<head>\n${viewportMeta}`);
+        } else if (xhtmlContent.includes('</head>')) {
+          xhtmlContent = xhtmlContent.replace('</head>', `${viewportMeta}\n</head>`);
+        }
+      } else if (useFixedLayout) {
+        xhtmlContent = xhtmlContent.replace(
+          /<meta\s+name="viewport"[^>]*\/?>/i,
+          viewportMeta
+        );
+      }
+      
+      // Add full-page layout normalization CSS (EXACT SAME AS INITIAL CONVERSION)
+      const fullPageCss = useFixedLayout
+        ? [
+            `html, body { margin: 0; padding: 0; width: ${currentPageWidth}px; height: ${currentPageHeight}px; overflow: hidden; }`,
+            'body { background-color: #ffffff; position: relative; }',
+            '.container, .page { width: 100%; height: 100%; margin: 0; padding: 0; box-sizing: border-box; position: relative; }'
+          ].join('\n')
+        : [
+            'html, body { margin: 0; padding: 0; height: 100%; }',
+            'body { background-color: #ffffff; }',
+            '.container, .page { width: 100%; max-width: none; margin: 0 auto; box-sizing: border-box; }'
+          ].join('\n');
+      
+      const mediaOverlayCss = `
+/* EPUB 3 Media Overlay Active Class - for read-aloud highlighting */
+.-epub-media-overlay-active,
+.epub-media-overlay-active,
+[class*="epub-media-overlay-active"] {
+  background-color: rgba(255, 255, 0, 0.5) !important;
+  transition: background-color 0.2s ease;
+}`;
+      
+      // Add CSS to style tag (EXACT SAME LOGIC AS INITIAL CONVERSION)
+      if (xhtmlContent.includes('</head>')) {
+        // Check if style tag exists, if so append to it, otherwise create new one
+        if (xhtmlContent.includes('<style')) {
+          // Append to existing style tag
+          xhtmlContent = xhtmlContent.replace(
+            '</style>',
+            `${mediaOverlayCss}\n</style>`
+          );
+          // Also add fullPageCss if not already present
+          if (!xhtmlContent.includes('html, body {')) {
+            xhtmlContent = xhtmlContent.replace(
+              '</style>',
+              `\n${fullPageCss}\n</style>`
+            );
+          }
+        } else {
+          // Create new style tag
+          xhtmlContent = xhtmlContent.replace(
+            '</head>',
+            `<style type="text/css">\n${fullPageCss}\n${mediaOverlayCss}\n</style>\n</head>`
+          );
+        }
+      }
+      
+      // Ensure all text elements have unique IDs
+      xhtmlContent = this.ensureAllTextElementsHaveIds(xhtmlContent, pageNumber);
+      
+      // Save the regenerated XHTML, replacing the old one
+      const xhtmlFilePath = path.join(jobHtmlDir, `page_${pageNumber}.xhtml`);
+      await fs.writeFile(xhtmlFilePath, xhtmlContent, 'utf8');
+      
+      console.log(`[Regenerate Page ${pageNumber}] Successfully regenerated and saved XHTML`);
+      
+      return {
+        success: true,
+        xhtml: xhtmlContent,
+        pageNumber: pageNumber
+      };
+    } catch (error) {
+      console.error(`[Regenerate Page ${pageNumber}] Error:`, error);
+      throw error;
+    }
   }
 }

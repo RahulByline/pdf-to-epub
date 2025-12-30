@@ -577,6 +577,38 @@ router.delete('/:jobId', async (req, res) => {
   }
 });
 
+// POST /api/conversions/:jobId/regenerate-page/:pageNumber - Regenerate XHTML for a specific page
+router.post('/:jobId/regenerate-page/:pageNumber', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const pageNumber = parseInt(req.params.pageNumber);
+    
+    const job = await ConversionService.getConversionJob(jobId);
+    
+    if (!job) {
+      return notFoundResponse(res, 'Conversion job not found');
+    }
+    
+    if (job.status !== 'COMPLETED' && job.status !== 'IN_PROGRESS') {
+      return badRequestResponse(res, `Can only regenerate pages for completed or in-progress conversions. Current status: ${job.status}`);
+    }
+    
+    console.log(`[API] Regenerating XHTML for job ${jobId}, page ${pageNumber}...`);
+    
+    const result = await ConversionService.regeneratePageXhtml(jobId, pageNumber);
+    
+    res.setHeader('Content-Type', 'application/json');
+    return successResponse(res, {
+      message: `Page ${pageNumber} XHTML regenerated successfully`,
+      pageNumber: result.pageNumber,
+      xhtml: result.xhtml
+    });
+  } catch (error) {
+    console.error(`[API] Error regenerating page XHTML:`, error);
+    return errorResponse(res, error.message, 500);
+  }
+});
+
 // GET /api/conversions/:jobId/xhtml/:pageNumber - Get XHTML file for a specific page
 router.get('/:jobId/xhtml/:pageNumber', async (req, res) => {
   try {
@@ -766,10 +798,32 @@ router.put('/:jobId/xhtml/:pageNumber', async (req, res) => {
       bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?(?=<[^/]|$)/gi, '');
       
       // Trim CSS content
-      cssContent = cssContent.trim();
-      
-      // Build proper XHTML structure
-      xhtml = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+        cssContent = cssContent.trim();
+        
+        // Fix CSS attribute selectors with double quotes (XHTML requirement)
+        // In XHTML, CSS attribute selectors like [class*="value"] must use single quotes
+        if (cssContent) {
+          cssContent = cssContent.replace(/\[([^\]]*?)=["]([^"]*?)["]([^\]]*?)\]/g, (fullMatch, before, value, after) => {
+            return `[${before}='${value}'${after}]`;
+          });
+          
+          // More permissive pattern with optional whitespace
+          if (cssContent.includes('="')) {
+            cssContent = cssContent.replace(/\[([^\]]*?)\s*=\s*["]([^"]*?)["]\s*([^\]]*?)\]/g, (fullMatch, before, value, after) => {
+              return `[${before.trim()}='${value}'${after.trim()}]`;
+            });
+          }
+          
+          // Final safety check for any remaining patterns
+          if (cssContent.includes('="') && cssContent.includes('[')) {
+            cssContent = cssContent.replace(/(\[[^\]]*?)=["]([^"]*?)["]([^\]]*?\])/g, (fullMatch, before, value, after) => {
+              return `${before}='${value}'${after}`;
+            });
+          }
+        }
+        
+        // Build proper XHTML structure
+        xhtml = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
 <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
@@ -783,6 +837,47 @@ ${bodyContent}
 </html>`;
       
       console.log(`[Save XHTML] Wrapped page ${pageNumber} content in proper XHTML structure`);
+    } else {
+      // Even if structure is present, fix CSS attribute selectors
+      xhtml = xhtml.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (match, cssContent) => {
+        let fixedCss = cssContent;
+        
+        // Replace double quotes in CSS attribute selectors with single quotes
+        fixedCss = fixedCss.replace(/\[([^\]]*?)=["]([^"]*?)["]([^\]]*?)\]/g, (fullMatch, before, value, after) => {
+          return `[${before}='${value}'${after}]`;
+        });
+        
+        // More permissive pattern with optional whitespace
+        if (fixedCss.includes('="')) {
+          fixedCss = fixedCss.replace(/\[([^\]]*?)\s*=\s*["]([^"]*?)["]\s*([^\]]*?)\]/g, (fullMatch, before, value, after) => {
+            return `[${before.trim()}='${value}'${after.trim()}]`;
+          });
+        }
+        
+        // Final safety check
+        if (fixedCss.includes('="') && fixedCss.includes('[')) {
+          fixedCss = fixedCss.replace(/(\[[^\]]*?)=["]([^"]*?)["]([^\]]*?\])/g, (fullMatch, before, value, after) => {
+            return `${before}='${value}'${after}`;
+          });
+        }
+        
+        return match.replace(cssContent, fixedCss);
+      });
+      
+      // Fix unclosed style tags
+      if (xhtml.includes('<style') && !xhtml.includes('</style>')) {
+        const headCloseIdx = xhtml.indexOf('</head>');
+        if (headCloseIdx !== -1) {
+          xhtml = xhtml.substring(0, headCloseIdx) + '</style>' + xhtml.substring(headCloseIdx);
+        } else {
+          const htmlCloseIdx = xhtml.indexOf('</html>');
+          if (htmlCloseIdx !== -1) {
+            xhtml = xhtml.substring(0, htmlCloseIdx) + '</style></head>' + xhtml.substring(htmlCloseIdx);
+          } else {
+            xhtml = xhtml + '</style>';
+          }
+        }
+      }
     }
     
     const htmlIntermediateDir = getHtmlIntermediateDir();
