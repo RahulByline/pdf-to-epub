@@ -71,7 +71,9 @@ const SyncStudio = () => {
   const [duration, setDuration] = useState(0);
   const [isReady, setIsReady] = useState(false);
   const [zoom, setZoom] = useState(50);
-  const [playbackSpeed] = useState(1.0); // Audio playback speed (fixed at 1.0x)
+  const [playbackSpeed, setPlaybackSpeed] = useState(1.0); // Audio playback speed
+  const [isAudioModified, setIsAudioModified] = useState(false); // Track if audio settings have been modified
+  const [originalVoice, setOriginalVoice] = useState('standard'); // Track the original voice used for audio generation
 
   // State for sync data
   const [syncData, setSyncData] = useState({
@@ -259,86 +261,110 @@ const SyncStudio = () => {
         });
       }
 
-        // Skip elements whose id contains "div"
-        if (id.includes('div')) {
-          return; // Skip this element
-        }
+      // PRIORITY 2: Fallback to other data-read-aloud elements if no paragraphs were found
+      // Skip elements inside processed paragraphs and skip word-level elements
+      if (elements.length === 0) {
+        console.log(`[DIAGNOSTIC] parseXhtmlElements - No paragraph-level elements found, falling back to sentence/other data-read-aloud elements.`);
+        const readAloudElements = doc.querySelectorAll('[data-read-aloud="true"]');
+        readAloudElements.forEach((el, idx) => {
+          // Skip if already processed as part of a paragraph
+          if (Array.from(processedParagraphs).some(p => p.contains(el))) {
+            return;
+          }
 
-        // CRITICAL FIX: Filter out unspoken content (TOC, nav, headers, etc.)
-        // These patterns match common unspoken structural elements
-        const unspokenPatterns = [
-          /toc/i,                    // Table of Contents
-          /table-of-contents/i,      // Table of Contents (hyphenated)
-          /contents/i,               // Contents page
-          /chapter-index/i,          // Chapter index
-          /chapter-idx/i,            // Chapter index (abbreviated)
-          /^nav/i,                   // Navigation elements
-          /^header/i,                // Headers
-          /^footer/i,                // Footers
-          /^sidebar/i,               // Sidebars
-          /^menu/i,                  // Menus
-          /page-number/i,            // Page numbers
-          /page-num/i,               // Page numbers (abbreviated)
-          /^skip/i,                  // Skip links
-          /^metadata/i               // Metadata
-        ];
-        
-        // Check if this element should be excluded
-        const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
-        
-        // Also check for explicit exclusion attributes
-        const shouldSync = el.getAttribute('data-should-sync') !== 'false';
-        const readAloudAttr = el.getAttribute('data-read-aloud');
-        const isExplicitlyExcluded = readAloudAttr === 'false';
-        
-        // Skip unspoken content entirely (don't create elements for them)
-        if (isUnspoken || isExplicitlyExcluded || !shouldSync) {
-          console.log(`[SyncStudio] Excluding unspoken content: ${id} (${text.substring(0, 30)}...)`);
-          return; // Skip this element
-        }
+          const id = el.getAttribute('id') || `sync-${sectionId}-${idx}`;
+          const text = el.textContent?.trim() || '';
+          const tagName = el.tagName.toLowerCase();
+          const classList = el.className || '';
 
-        // Determine element type
-        let type = 'paragraph';
-        if (classList.includes('sync-word') || tagName === 'span' && id.includes('_w')) {
-          type = 'word';
-        } else if (classList.includes('sync-sentence') || id.includes('_s')) {
-          type = 'sentence';
-        }
+          // Skip elements whose id contains "div"
+          if (id.includes('div')) {
+            return; // Skip this element
+          }
 
-        // Add the parent element (sentence/paragraph)
-        elements.push({
-          id,
-          text,
-          type,
-          tagName,
-          sectionId,
-          sectionIndex: sectionId, // Store section index for page filtering
-          pageNumber: sectionId + 1
-        });
+          // Skip word-level elements
+          const isWordLevel = classList.includes('sync-word') || (tagName === 'span' && id.includes('_w'));
+          if (isWordLevel) {
+            console.log(`[DIAGNOSTIC] parseXhtmlElements - Skipping word-level element: ID=${id}, Text="${text.substring(0, 30)}..."`);
+            return; // Skip individual words
+          }
 
-        // Also extract word elements nested inside this element (for word-level granularity)
-        // Words don't have data-read-aloud="true" but are children of elements that do
-        if (type !== 'word') {
-          const wordElements = el.querySelectorAll('.sync-word[id], span[id*="_w"]');
-          wordElements.forEach((wordEl) => {
-            const wordId = wordEl.getAttribute('id');
-            if (!wordId || wordId.includes('div')) return; // Skip if no ID or contains "div"
-            
-            const wordText = wordEl.textContent?.trim() || '';
-            if (!wordText) return; // Skip empty words
+          // CRITICAL FIX: Filter out unspoken content (TOC, nav, headers, etc.)
+          // These patterns match common unspoken structural elements
+          const unspokenPatterns = [
+            /toc/i,                    // Table of Contents
+            /table-of-contents/i,      // Table of Contents (hyphenated)
+            /contents/i,               // Contents page
+            /chapter-index/i,          // Chapter index
+            /chapter-idx/i,            // Chapter index (abbreviated)
+            /^nav/i,                   // Navigation elements
+            /^header/i,                // Headers
+            /^footer/i,                // Footers
+            /^sidebar/i,               // Sidebars
+            /^menu/i,                  // Menus
+            /page-number/i,            // Page numbers
+            /page-num/i,               // Page numbers (abbreviated)
+            /^skip/i,                  // Skip links
+            /^metadata/i               // Metadata
+          ];
+          
+          // Check if this element should be excluded
+          const isUnspoken = unspokenPatterns.some(pattern => pattern.test(id) || pattern.test(text));
+          
+          // Also check for explicit exclusion attributes
+          const shouldSync = el.getAttribute('data-should-sync') !== 'false';
+          const readAloudAttr = el.getAttribute('data-read-aloud');
+          const isExplicitlyExcluded = readAloudAttr === 'false';
+          
+          // Skip unspoken content entirely (don't create elements for them)
+          if (isUnspoken || isExplicitlyExcluded || !shouldSync) {
+            console.log(`[DIAGNOSTIC] parseXhtmlElements - Excluding unspoken content: ${id} (${text.substring(0, 30)}...)`);
+            return; // Skip this element
+          }
 
-            elements.push({
-              id: wordId,
-              text: wordText,
-              type: 'word',
-              tagName: wordEl.tagName.toLowerCase(),
-              sectionId,
-              sectionIndex: sectionId,
-              pageNumber: sectionId + 1
-            });
+          // Determine element type
+          let type = 'sentence'; // Treat as sentence if not paragraph
+          if (classList.includes('sync-sentence') || id.includes('_s')) {
+            type = 'sentence';
+          }
+
+          // Add the parent element (sentence/paragraph)
+          elements.push({
+            id,
+            text,
+            type,
+            tagName,
+            sectionId,
+            sectionIndex: sectionId, // Store section index for page filtering
+            pageNumber: sectionId + 1
           });
-        }
-      });
+
+          console.log(`[DIAGNOSTIC] parseXhtmlElements - Added sentence block: ID=${id}, Text="${text.substring(0, 50)}..."`);
+
+          // Also extract word elements nested inside this element (for word-level granularity)
+          // Words don't have data-read-aloud="true" but are children of elements that do
+          if (type !== 'word') {
+            const wordElements = el.querySelectorAll('.sync-word[id], span[id*="_w"]');
+            wordElements.forEach((wordEl) => {
+              const wordId = wordEl.getAttribute('id');
+              if (!wordId || wordId.includes('div')) return; // Skip if no ID or contains "div"
+              
+              const wordText = wordEl.textContent?.trim() || '';
+              if (!wordText) return; // Skip empty words
+
+              elements.push({
+                id: wordId,
+                text: wordText,
+                type: 'word',
+                tagName: wordEl.tagName.toLowerCase(),
+                sectionId,
+                sectionIndex: sectionId,
+                pageNumber: sectionId + 1
+              });
+            });
+          }
+        });
+      }
 
       const paragraphCount = elements.filter(el => el.type === 'paragraph').length;
       const sentenceCount = elements.filter(el => el.type === 'sentence').length;
