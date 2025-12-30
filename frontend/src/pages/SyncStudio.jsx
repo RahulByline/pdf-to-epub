@@ -2824,14 +2824,35 @@ const SyncStudio = () => {
             const pageMatch = skippedId.match(/page(\d+)/);
             const pageNum = pageMatch ? parseInt(pageMatch[1]) : currentSectionIndex + 1;
             
-            newSentences[skippedId] = {
-              id: skippedId,
-              start: undefined,
-              end: undefined,
-              text: element.text || '',
-              pageNumber: pageNum,
-              status: 'SKIPPED'
-            };
+            // Determine if it's a word-level element
+            const isWord = element.type === 'word' || skippedId.includes('_w');
+            
+            if (isWord) {
+              // Extract parentId for word-level elements
+              const parentMatch = skippedId.match(/^((?:page\d+_)?p\d+_s\d+)_w\d+$/);
+              const parentId = parentMatch ? parentMatch[1] : element.parentId || skippedId.replace(/_w\d+$/, '');
+              
+              // Add to words
+              newWords[skippedId] = {
+                id: skippedId,
+                start: undefined,
+                end: undefined,
+                text: element.text || '',
+                pageNumber: pageNum,
+                status: 'SKIPPED',
+                parentId: parentId
+              };
+            } else {
+              // Add to sentences (sentence/paragraph level)
+              newSentences[skippedId] = {
+                id: skippedId,
+                start: undefined,
+                end: undefined,
+                text: element.text || '',
+                pageNumber: pageNum,
+                status: 'SKIPPED'
+              };
+            }
           }
         });
       }
@@ -2840,22 +2861,53 @@ const SyncStudio = () => {
       // This ensures all text blocks appear in the UI, even if they weren't synced or skipped
       // This ensures all blocks are visible in the UI (including words)
       parsedElements.forEach(element => {
-        // Skip if already in newSentences (synced or skipped)
+        // Skip if already in newSentences
         if (newSentences[element.id]) return;
+        
+        // For words: if it exists in newWords but has empty/missing text, update it with text from parsedElements
+        // This prevents duplicates while ensuring synced words have their text
+        if (newWords[element.id]) {
+          // If the existing word has no text or empty text, update it with text from parsedElements
+          if (!newWords[element.id].text || newWords[element.id].text.trim() === '' || newWords[element.id].text === 'No text') {
+            newWords[element.id].text = element.text || newWords[element.id].text || '';
+            console.log(`[MagicSync] Updated text for existing synced word ${element.id}: "${newWords[element.id].text}"`);
+          }
+          return; // Don't create a duplicate - the word is already synced
+        }
         
         // Extract page number from ID
         const pageMatch = element.id.match(/page(\d+)/);
         const pageNum = pageMatch ? parseInt(pageMatch[1]) : currentSectionIndex + 1;
         
-        // Add as unsynced block (no timestamps, but visible in UI)
-        newSentences[element.id] = {
-          id: element.id,
-          start: undefined,
-          end: undefined,
-          text: element.text || '',
-          pageNumber: pageNum,
-          status: 'UNSYNCED' // New status for blocks that weren't processed
-        };
+        // Determine if it's a word-level element
+        const isWord = element.type === 'word' || element.id.includes('_w');
+        
+        if (isWord) {
+          // Extract parentId for word-level elements
+          const parentMatch = element.id.match(/^((?:page\d+_)?p\d+_s\d+)_w\d+$/);
+          const parentId = parentMatch ? parentMatch[1] : element.parentId || element.id.replace(/_w\d+$/, '');
+          
+          // Add to words
+          newWords[element.id] = {
+            id: element.id,
+            start: undefined,
+            end: undefined,
+            text: element.text || '',
+            pageNumber: pageNum,
+            status: 'UNSYNCED',
+            parentId: parentId
+          };
+        } else {
+          // Add to sentences (sentence/paragraph level)
+          newSentences[element.id] = {
+            id: element.id,
+            start: undefined,
+            end: undefined,
+            text: element.text || '',
+            pageNumber: pageNum,
+            status: 'UNSYNCED' // New status for blocks that weren't processed
+          };
+        }
       });
 
       setSyncData({ sentences: newSentences, words: newWords });
@@ -5082,7 +5134,12 @@ const SyncStudio = () => {
           {/* Page Stats */}
           <div className="page-stats">
             <span className="stat">
-              <HiOutlineDocumentText size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> {Object.entries(syncData.sentences).filter(([id, data]) => {
+              <HiOutlineDocumentText size={14} style={{ marginRight: '4px', verticalAlign: 'middle' }} /> {[
+                // Include sentences (for sentence/paragraph granularity)
+                ...Object.entries(syncData.sentences).map(([id, data]) => ({ id, data })),
+                // Include words (for word granularity)
+                ...Object.entries(syncData.words).map(([id, data]) => ({ id, data }))
+              ].filter(({ id, data }) => {
                 if (data.pageNumber !== currentSectionIndex + 1) return false;
                 // Filter by granularity
                 let elementType = 'paragraph';
@@ -5110,8 +5167,13 @@ const SyncStudio = () => {
           </div>
           
           <div className="sync-list">
-            {Object.entries(syncData.sentences)
-              .filter(([id, data]) => {
+            {[
+              // Include sentences (for sentence/paragraph granularity)
+              ...Object.entries(syncData.sentences).map(([id, data]) => ({ id, data, source: 'sentences' })),
+              // Include words (for word granularity)
+              ...Object.entries(syncData.words).map(([id, data]) => ({ id, data, source: 'words' }))
+            ]
+              .filter(({ id, data }) => {
                 // Filter by page number
                 if (data.pageNumber !== currentSectionIndex + 1) return false;
                 
@@ -5141,13 +5203,13 @@ const SyncStudio = () => {
               })
               .sort((a, b) => {
                 // Sort SKIPPED and UNSYNCED blocks to the end, then by start time
-                if (a[1].status === 'SKIPPED' && b[1].status !== 'SKIPPED') return 1;
-                if (a[1].status !== 'SKIPPED' && b[1].status === 'SKIPPED') return -1;
-                if (a[1].status === 'UNSYNCED' && b[1].status !== 'UNSYNCED' && b[1].status !== 'SKIPPED') return 1;
-                if (a[1].status !== 'UNSYNCED' && b[1].status === 'UNSYNCED' && a[1].status !== 'SKIPPED') return -1;
-                return (a[1].start || 0) - (b[1].start || 0);
+                if (a.data.status === 'SKIPPED' && b.data.status !== 'SKIPPED') return 1;
+                if (a.data.status !== 'SKIPPED' && b.data.status === 'SKIPPED') return -1;
+                if (a.data.status === 'UNSYNCED' && b.data.status !== 'UNSYNCED' && b.data.status !== 'SKIPPED') return 1;
+                if (a.data.status !== 'UNSYNCED' && b.data.status === 'UNSYNCED' && a.data.status !== 'SKIPPED') return -1;
+                return (a.data.start || 0) - (b.data.start || 0);
               })
-              .map(([id, data]) => {
+              .map(({ id, data }) => {
                 const isSkipped = data.status === 'SKIPPED';
                 const isUnsynced = data.status === 'UNSYNCED';
                 return (
@@ -5386,7 +5448,12 @@ const SyncStudio = () => {
             );
             })}
 
-            {Object.entries(syncData.sentences).filter(([id, data]) => {
+            {[
+              // Include sentences (for sentence/paragraph granularity)
+              ...Object.entries(syncData.sentences).map(([id, data]) => ({ id, data })),
+              // Include words (for word granularity)
+              ...Object.entries(syncData.words).map(([id, data]) => ({ id, data }))
+            ].filter(({ id, data }) => {
               if (data.pageNumber !== currentSectionIndex + 1) return false;
               // Filter by granularity
               let elementType = 'paragraph';
