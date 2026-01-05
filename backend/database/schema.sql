@@ -88,6 +88,27 @@ CREATE TABLE IF NOT EXISTS ai_configurations (
     INDEX idx_is_active (is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- TTS Configurations table
+CREATE TABLE IF NOT EXISTS tts_configurations (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    credentials_path VARCHAR(1000),
+    language_code VARCHAR(10) NOT NULL DEFAULT 'en-US',
+    voice_name VARCHAR(100),
+    ssml_gender ENUM('MALE', 'FEMALE', 'NEUTRAL') NOT NULL DEFAULT 'NEUTRAL',
+    audio_encoding VARCHAR(20) NOT NULL DEFAULT 'MP3',
+    speaking_rate DOUBLE DEFAULT 1.0,
+    pitch DOUBLE DEFAULT 0.0,
+    volume_gain_db DOUBLE DEFAULT 0.0,
+    use_free_tts BOOLEAN NOT NULL DEFAULT FALSE,
+    page_restrictions TEXT,
+    exclusion_prompt TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    description VARCHAR(500),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_is_active (is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- Audio Syncs table
 CREATE TABLE IF NOT EXISTS audio_syncs (
     id BIGINT AUTO_INCREMENT PRIMARY KEY,

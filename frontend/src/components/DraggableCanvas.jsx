@@ -228,6 +228,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
     }
   }, [xhtml, onXhtmlChange]);
 
+
   // Initialize draggable text blocks after XHTML is rendered
   useEffect(() => {
     if (!containerRef.current) return;

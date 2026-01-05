@@ -549,45 +549,134 @@ router.post('/:jobId/page/:pageNumber/tts', async (req, res) => {
       });
     }
 
+    // Check page restrictions
+    try {
+      const { TtsConfigService } = await import('../services/ttsConfigService.js');
+      const ttsConfig = await TtsConfigService.getActiveConfiguration();
+      if (ttsConfig && ttsConfig.pageRestrictions) {
+        const shouldProcess = TtsConfigService.shouldProcessPage(pageNumber, ttsConfig.pageRestrictions);
+        if (!shouldProcess) {
+          return res.status(403).json({ 
+            error: 'Page restricted',
+            message: `Page ${pageNumber} is excluded from TTS generation based on current TTS configuration.`,
+            pageNumber: pageNumber
+          });
+        }
+      }
+    } catch (restrictionError) {
+      console.warn('[TTS] Error checking page restrictions:', restrictionError.message);
+      // Continue if restriction check fails (don't block TTS generation)
+    }
+
     // Load page data
     const jobOutputBase = getJobOutputBase();
     const jobDir = path.join(jobOutputBase, `job_${jobId}`);
-    const textDataPath = path.join(jobDir, `text_data_${jobId}.json`);
+    const htmlIntermediateDir = getHtmlIntermediateDir();
     
-    let textData = null;
-    try {
-      const textDataContent = await fs.readFile(textDataPath, 'utf8');
-      textData = JSON.parse(textDataContent);
-    } catch (error) {
-      // Try alternative location
-      const htmlIntermediateDir = getHtmlIntermediateDir();
-      const altTextDataPath = path.join(htmlIntermediateDir, `job_${jobId}`, `text_data_${jobId}.json`);
-      const textDataContent = await fs.readFile(altTextDataPath, 'utf8');
-      textData = JSON.parse(textDataContent);
+    // Try to load XHTML directly to extract sentences
+    // Try multiple possible paths for XHTML files
+    let xhtmlPath = null;
+    let xhtmlContent = null;
+    let sentences = [];
+    let orderedBlocks = [];
+    
+    // Try different possible XHTML paths
+    const possiblePaths = [
+      path.join(htmlIntermediateDir, `job_${jobId}_html`, `page_${pageNumber}.xhtml`),
+      path.join(htmlIntermediateDir, `job_${jobId}`, `page_${pageNumber}.xhtml`),
+      path.join(jobDir, 'OEBPS', `page_${pageNumber}.xhtml`),
+      path.join(jobDir, 'html_intermediate', `job_${jobId}_html`, `page_${pageNumber}.xhtml`)
+    ];
+    
+    for (const testPath of possiblePaths) {
+      try {
+        await fs.access(testPath);
+        xhtmlPath = testPath;
+        break;
+      } catch (e) {
+        // Path doesn't exist, try next
+        continue;
+      }
+    }
+    
+    if (xhtmlPath) {
+      try {
+        // Try to parse XHTML to extract sentences
+        xhtmlContent = await fs.readFile(xhtmlPath, 'utf8');
+      const { JSDOM } = await import('jsdom');
+      const dom = new JSDOM(xhtmlContent, { contentType: 'text/xml' });
+      const doc = dom.window.document;
+      
+      // Extract all sentence elements (sync-sentence class or elements with _s in ID but not _w)
+      const sentenceElements = doc.querySelectorAll('.sync-sentence, [id*="_s"]:not([id*="_w"])');
+      
+      if (sentenceElements.length > 0) {
+        console.log(`[TTS] Found ${sentenceElements.length} sentence elements in XHTML`);
+        
+        // Extract text from each sentence (combining all words within)
+        sentences = Array.from(sentenceElements).map((sentenceEl, index) => {
+          const sentenceId = sentenceEl.id || `sentence_${index}`;
+          // Get all text content from the sentence (including nested sync-word elements)
+          const sentenceText = sentenceEl.textContent || sentenceEl.innerText || '';
+          return {
+            id: sentenceId,
+            text: sentenceText.trim(),
+            readingOrder: index
+          };
+        });
+        
+        orderedBlocks = sentences;
+      }
+      } catch (xhtmlError) {
+        console.log(`[TTS] Could not parse XHTML, falling back to text data: ${xhtmlError.message}`);
+      }
+    }
+    
+    // Fallback to text data if XHTML parsing failed or no sentences found
+    if (sentences.length === 0) {
+      const textDataPath = path.join(jobDir, `text_data_${jobId}.json`);
+      
+      let textData = null;
+      try {
+        const textDataContent = await fs.readFile(textDataPath, 'utf8');
+        textData = JSON.parse(textDataContent);
+      } catch (error) {
+        // Try alternative location
+        const altTextDataPath = path.join(htmlIntermediateDir, `job_${jobId}`, `text_data_${jobId}.json`);
+        const textDataContent = await fs.readFile(altTextDataPath, 'utf8');
+        textData = JSON.parse(textDataContent);
+      }
+
+      const page = textData.pages?.find(p => p.pageNumber === pageNumber);
+      if (!page || !page.textBlocks || page.textBlocks.length === 0) {
+        return res.status(404).json({ error: `No text blocks found for page ${pageNumber}` });
+      }
+
+      // Sort blocks by readingOrder
+      orderedBlocks = [...page.textBlocks].sort((a, b) => 
+        (a.readingOrder || 0) - (b.readingOrder || 0)
+      );
     }
 
-    const page = textData.pages?.find(p => p.pageNumber === pageNumber);
-    if (!page || !page.textBlocks || page.textBlocks.length === 0) {
-      return res.status(404).json({ error: `No text blocks found for page ${pageNumber}` });
+    if (orderedBlocks.length === 0) {
+      return res.status(400).json({ error: 'No text content to synthesize' });
     }
 
-    // Sort blocks by readingOrder
-    const orderedBlocks = [...page.textBlocks].sort((a, b) => 
-      (a.readingOrder || 0) - (b.readingOrder || 0)
-    );
-
-    // Combine text
+    // Combine text from sentences/blocks (entire sentences, not individual words)
+    // Join with spaces to maintain natural flow
     const pageText = orderedBlocks.map(b => b.text || '').join(' ').trim();
     if (!pageText) {
       return res.status(400).json({ error: 'No text content to synthesize' });
     }
 
-    // Generate TTS audio
+    // Generate TTS audio for the entire page text as one continuous speech
+    // This ensures natural sentence flow instead of word-by-word generation
     const audioDir = path.join(jobDir, 'assets', 'audio');
     await fs.mkdir(audioDir, { recursive: true });
     const audioFileName = `page_${pageNumber}_tts.mp3`;
     const audioOutPath = path.join(audioDir, audioFileName);
 
+    console.log(`[TTS] Generating audio for page ${pageNumber} with ${orderedBlocks.length} sentences/blocks`);
     const ttsResult = await TtsService.synthesizePageAudio({ 
       text: pageText, 
       audioOutPath 
@@ -597,8 +686,49 @@ router.post('/:jobId/page/:pageNumber/tts', async (req, res) => {
       return res.status(500).json({ error: 'TTS generation failed or returned no timings' });
     }
 
-    // Map timings to blocks
-    const syncs = mapTimingsToBlocks(orderedBlocks, ttsResult.timings, audioFileName);
+    // Map timings to sentence-level blocks instead of word-level
+    // Calculate sentence-level timings by grouping words within each sentence
+    const syncs = [];
+    let wordIndex = 0;
+    let cumulativeTime = 0;
+    
+    for (let i = 0; i < orderedBlocks.length; i++) {
+      const block = orderedBlocks[i];
+      const blockText = (block.text || '').trim();
+      if (!blockText) continue;
+      
+      // Count words in this sentence/block
+      const blockWords = blockText.match(/\S+/g) || [];
+      const wordCount = blockWords.length;
+      
+      if (wordCount === 0) continue;
+      
+      // Find the timing range for words in this sentence
+      const startWordIdx = wordIndex;
+      const endWordIdx = Math.min(wordIndex + wordCount - 1, ttsResult.timings.length - 1);
+      
+      if (startWordIdx >= ttsResult.timings.length) break;
+      
+      const firstWordTiming = ttsResult.timings[startWordIdx];
+      const lastWordTiming = ttsResult.timings[endWordIdx];
+      
+      // Calculate sentence duration
+      const sentenceStart = firstWordTiming.startTimeSec || 0;
+      const sentenceEnd = (lastWordTiming.endTimeSec || lastWordTiming.startTimeSec || 0) + 0.1; // Add small tail
+      
+      // Create sync entry for the entire sentence (using sentence ID, not word IDs)
+      syncs.push({
+        blockId: block.id || block.blockId || `sentence_${i}`,
+        clipBegin: Number(sentenceStart.toFixed(3)),
+        clipEnd: Number(sentenceEnd.toFixed(3)),
+        audioFileName: audioFileName
+      });
+      
+      wordIndex = endWordIdx + 1;
+      cumulativeTime = sentenceEnd;
+      
+      if (wordIndex >= ttsResult.timings.length) break;
+    }
 
     // Save syncs to editorial_syncs directory
     const editorialSyncDir = path.join(jobDir, 'editorial_syncs');

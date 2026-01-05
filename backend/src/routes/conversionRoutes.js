@@ -644,10 +644,16 @@ router.get('/:jobId/images', async (req, res) => {
       const files = await fs.readdir(jobImagesDir);
       const imageFiles = files
         .filter(f => /\.(jpg|jpeg|png|gif|webp)$/i.test(f))
-        .map(f => ({
-          fileName: f,
-          url: `/api/conversions/${jobId}/images/${f}`
-        }));
+        .map(f => {
+          // Determine source: uploaded images have pattern img_timestamp_random_...
+          // Extracted images typically have different naming patterns
+          const isUploaded = /^img_\d+_[a-z0-9]+_/i.test(f);
+          return {
+            fileName: f,
+            url: `/api/conversions/${jobId}/images/${f}`,
+            source: isUploaded ? 'uploaded' : 'extracted'
+          };
+        });
       
       return successResponse(res, imageFiles);
     } catch (dirError) {
@@ -702,6 +708,78 @@ router.get('/:jobId/images/:fileName', async (req, res) => {
       return notFoundResponse(res, `Image file ${fileName} not found`);
     }
   } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// POST /api/conversions/:jobId/images/upload - Upload images to job
+router.post('/:jobId/images/upload', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const multer = (await import('multer')).default;
+    
+    const htmlIntermediateDir = getHtmlIntermediateDir();
+    const jobImagesDir = path.join(htmlIntermediateDir, `job_${jobId}_images`);
+    await fs.mkdir(jobImagesDir, { recursive: true });
+    
+    const upload = multer({ 
+      storage: multer.diskStorage({
+        destination: (req, file, cb) => {
+          cb(null, jobImagesDir);
+        },
+        filename: (req, file, cb) => {
+          // Generate unique filename with timestamp
+          const timestamp = Date.now();
+          const randomStr = Math.random().toString(36).substring(2, 8);
+          const ext = path.extname(file.originalname);
+          const baseName = path.basename(file.originalname, ext).replace(/[^a-zA-Z0-9]/g, '_');
+          const fileName = `img_${timestamp}_${randomStr}_${baseName}${ext}`;
+          cb(null, fileName);
+        }
+      }),
+      limits: {
+        fileSize: 10 * 1024 * 1024 // 10MB limit
+      },
+      fileFilter: (req, file, cb) => {
+        const allowedTypes = /jpeg|jpg|png|gif|webp/;
+        const extname = allowedTypes.test(path.extname(file.originalname).toLowerCase());
+        const mimetype = allowedTypes.test(file.mimetype);
+        
+        if (mimetype && extname) {
+          return cb(null, true);
+        } else {
+          cb(new Error('Only image files (jpeg, jpg, png, gif, webp) are allowed'));
+        }
+      }
+    });
+
+    const uploadSingle = upload.single('image');
+    
+    uploadSingle(req, res, async (err) => {
+      if (err) {
+        if (err.code === 'LIMIT_FILE_SIZE') {
+          return badRequestResponse(res, 'File too large. Maximum size is 10MB');
+        }
+        return badRequestResponse(res, err.message || 'Upload error');
+      }
+
+      if (!req.file) {
+        return badRequestResponse(res, 'No image file provided');
+      }
+
+      const fileName = req.file.filename;
+      const fileUrl = `/api/conversions/${jobId}/images/${fileName}`;
+
+      return successResponse(res, {
+        fileName: fileName,
+        url: fileUrl,
+        size: req.file.size,
+        source: 'uploaded',
+        message: 'Image uploaded successfully'
+      });
+    });
+  } catch (error) {
+    console.error('[Conversion Routes] Image upload error:', error);
     return errorResponse(res, error.message, 500);
   }
 });

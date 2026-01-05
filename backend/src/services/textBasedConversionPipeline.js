@@ -54,16 +54,82 @@ export class TextBasedConversionPipeline {
         pdfFilePath: pdfFilePath
       }));
       
+      // Step 3.5: Detect pages to exclude using AI (if exclusion prompt is configured)
+      let detectedExcludedPages = [];
+      try {
+        const { TtsConfigService } = await import('./ttsConfigService.js');
+        const ttsConfig = await TtsConfigService.getActiveConfiguration();
+        if (ttsConfig && ttsConfig.exclusionPrompt && ttsConfig.exclusionPrompt.trim()) {
+          console.log(`[Pipeline ${jobId}] Detecting pages to exclude based on AI prompt...`);
+          const detectionResult = await TtsConfigService.detectExcludedPages(
+            structure.pages,
+            ttsConfig.exclusionPrompt,
+            await import('./aiConfigService.js').then(m => m.AiConfigService.getActiveConfiguration())
+          );
+          detectedExcludedPages = detectionResult.excludedPages || [];
+          
+          if (detectedExcludedPages.length > 0) {
+            console.log(`[Pipeline ${jobId}] AI detected ${detectedExcludedPages.length} page(s) to exclude: ${detectedExcludedPages.join(', ')}`);
+            
+            // Update page restrictions to include detected pages
+            const currentExclude = ttsConfig.pageRestrictions?.exclude || '';
+            const detectedExcludeList = detectedExcludedPages.join(', ');
+            const updatedExclude = currentExclude 
+              ? `${currentExclude}, ${detectedExcludeList}`
+              : detectedExcludeList;
+            
+            // Update TTS config with detected pages (merge with existing exclusions)
+            if (ttsConfig.id) {
+              const updatedRestrictions = {
+                ...(ttsConfig.pageRestrictions || {}),
+                exclude: updatedExclude
+              };
+              
+              // Note: We don't save this automatically - user should review
+              // But we'll use it for this conversion
+              ttsConfig.pageRestrictions = updatedRestrictions;
+              console.log(`[Pipeline ${jobId}] Updated exclusion list: ${updatedExclude}`);
+            }
+          } else {
+            console.log(`[Pipeline ${jobId}] No pages detected for exclusion`);
+          }
+        }
+      } catch (detectionError) {
+        console.warn(`[Pipeline ${jobId}] Page detection failed, continuing without exclusions:`, detectionError.message);
+        // Continue without exclusions if detection fails
+      }
+      
       // Step 4: Generate TTS Audio (if requested)
       let audioFilePath = null;
       let audioMappings = [];
       
       if (options.generateAudio !== false) {
         console.log(`[Pipeline ${jobId}] Step 4: Generating TTS audio...`);
-        const audioResult = await this.generateAudioForText(structure.pages, outputDir, jobId);
+        
+        // Filter out excluded pages before generating audio
+        // Get TTS config once before filtering
+        const { TtsConfigService: TtsConfigServiceCheck } = await import('./ttsConfigService.js');
+        const ttsConfigCheck = await TtsConfigServiceCheck.getActiveConfiguration();
+        
+        const pagesForTTS = structure.pages.filter(page => {
+          const pageNumber = page.pageNumber || 0;
+          if (detectedExcludedPages.includes(pageNumber)) {
+            console.log(`[Pipeline ${jobId}] Skipping TTS for page ${pageNumber} (detected as excluded)`);
+            return false;
+          }
+          
+          // Also check manual page restrictions
+          if (ttsConfigCheck && ttsConfigCheck.pageRestrictions) {
+            return TtsConfigServiceCheck.shouldProcessPage(pageNumber, ttsConfigCheck.pageRestrictions);
+          }
+          
+          return true;
+        });
+        
+        const audioResult = await this.generateAudioForText(pagesForTTS, outputDir, jobId);
         audioFilePath = audioResult.audioPath;
         audioMappings = audioResult.mappings;
-        console.log(`[Pipeline ${jobId}] Generated audio: ${audioMappings.length} text blocks mapped`);
+        console.log(`[Pipeline ${jobId}] Generated audio: ${audioMappings.length} text blocks mapped (${structure.pages.length - pagesForTTS.length} pages excluded)`);
       }
       
       // Step 5: Generate EPUB3

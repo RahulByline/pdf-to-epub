@@ -12,7 +12,7 @@ import aiConfigRoutes from './src/routes/aiConfigRoutes.js';
 import audioSyncRoutes from './src/routes/audioSyncRoutes.js';
 import jobPagesRoutes from './src/routes/jobPagesRoutes.js';
 import transcriptRoutes from './src/routes/transcriptRoutes.js';
-import ttsManagementRoutes from './src/routes/ttsManagementRoutes.js';
+import ttsConfigRoutes from './src/routes/ttsConfigRoutes.js';
 
 // Import middleware
 import { errorHandler } from './src/middlewares/errorHandler.js';
@@ -37,8 +37,29 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/epub_output', express.static(path.join(__dirname, 'epub_output')));
 
 // Health check
-app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString() });
+app.get('/health', async (req, res) => {
+  try {
+    // Test database connection
+    const pool = (await import('./src/config/database.js')).default;
+    const connection = await pool.getConnection();
+    await connection.ping();
+    connection.release();
+    
+    res.json({ 
+      status: 'OK', 
+      timestamp: new Date().toISOString(),
+      database: 'connected',
+      uptime: process.uptime()
+    });
+  } catch (error) {
+    console.error('[Health Check] Database connection failed:', error.message);
+    res.status(503).json({ 
+      status: 'SERVICE_UNAVAILABLE', 
+      timestamp: new Date().toISOString(),
+      database: 'disconnected',
+      error: error.message
+    });
+  }
 });
 
 // API Routes
@@ -49,7 +70,7 @@ app.use('/api/ai', aiConfigRoutes);
 app.use('/api/audio-sync', audioSyncRoutes);
 app.use('/api/jobs', jobPagesRoutes);
 app.use('/api/transcripts', transcriptRoutes);
-app.use('/api/tts-management', ttsManagementRoutes);
+app.use('/api/tts', ttsConfigRoutes);
 
 // Error handling middleware (must be last)
 app.use(errorHandler);
@@ -80,6 +101,45 @@ server.on('error', (error) => {
     console.error('Server error:', error);
     process.exit(1);
   }
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  // Don't exit in production, let the server continue
+  if (process.env.NODE_ENV === 'production') {
+    console.error('Server will continue running despite unhandled rejection');
+  } else {
+    process.exit(1);
+  }
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  // In production, log and continue if possible
+  if (process.env.NODE_ENV === 'production') {
+    console.error('Server will attempt to continue running');
+  } else {
+    process.exit(1);
+  }
+});
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  console.log('SIGTERM signal received: closing HTTP server');
+  server.close(() => {
+    console.log('HTTP server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', () => {
+  console.log('SIGINT signal received: closing HTTP server');
+  server.close(() => {
+    console.log('HTTP server closed');
+    process.exit(0);
+  });
 });
 
 export default app;
