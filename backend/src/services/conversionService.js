@@ -315,13 +315,70 @@ body { margin: 0; padding: 0; }
   transition: background-color 0.2s ease;
 }`;
         
+        const removeBrownBordersCss = `
+/* COMPREHENSIVE BORDER REMOVAL - Placeholders should have NO borders at all */
+/* CRITICAL: Placeholders MUST have NO borders - remove all border styling */
+.cover-page-placeholder,
+.header-image-placeholder,
+.image-placeholder,
+.image-drop-zone,
+div[class*="placeholder"],
+div[data-placeholder-type],
+div[class*="image-placeholder"],
+div[class*="image-drop-zone"],
+div[class*="header-image-placeholder"],
+div[class*="cover-page-placeholder"] {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+}
+/* Remove brown borders from any element with brown in inline style - UNIVERSAL SELECTOR */
+*[style*="border"][style*="brown"],
+*[style*="border-color"][style*="brown"],
+*[style*="border"][style*="#8B4513"],
+*[style*="border"][style*="#A52A2A"],
+*[style*="border"][style*="#654321"],
+*[style*="border"][style*="#D2691E"],
+*[style*="border"][style*="#CD853F"],
+*[style*="border"][style*="#BC8F8F"],
+*[style*="border"][style*="#A0522D"],
+*[style*="border"][style*="#8B7355"],
+*[style*="border"][style*="#6F4E37"],
+*[style*="border"][style*="#5C4033"],
+*[style*="border"][style*="#3D2817"],
+*[style*="border"][style*="rgb(139, 69, 19)"],
+*[style*="border"][style*="rgb(165, 42, 42)"],
+*[style*="border"][style*="rgb(101, 67, 33)"] {
+  border-color: #2196F3 !important;
+}
+/* Remove brown borders from images and image containers specifically */
+img,
+img[style*="border"],
+div[style*="border"]:has(img),
+section[style*="border"],
+article[style*="border"],
+header,
+header[style*="border"],
+footer[style*="border"],
+figure[style*="border"],
+figure img {
+  border-color: #2196F3 !important;
+}
+/* Remove brown borders from all divs, sections, and containers */
+div[style*="border"],
+section[style*="border"],
+article[style*="border"] {
+  border-color: #2196F3 !important;
+}`;
+        
         if (xhtmlContent.includes('</head>')) {
           // Check if style tag exists, if so append to it, otherwise create new one
           if (xhtmlContent.includes('<style')) {
             // Append to existing style tag
             xhtmlContent = xhtmlContent.replace(
               '</style>',
-              `${mediaOverlayCss}\n</style>`
+              `${mediaOverlayCss}\n${removeBrownBordersCss}\n</style>`
             );
             // Also add fullPageCss if not already present
             if (!xhtmlContent.includes('html, body {')) {
@@ -334,7 +391,7 @@ body { margin: 0; padding: 0; }
             // Create new style tag
             xhtmlContent = xhtmlContent.replace(
               '</head>',
-              `<style type="text/css">\n${fullPageCss}\n${mediaOverlayCss}\n</style>\n</head>`
+              `<style type="text/css">\n${fullPageCss}\n${mediaOverlayCss}\n${removeBrownBordersCss}\n</style>\n</head>`
             );
           }
         }
@@ -345,6 +402,165 @@ body { margin: 0; padding: 0; }
         
         // CRITICAL: Ensure every text element has a unique ID
         xhtmlContent = this.ensureAllTextElementsHaveIds(xhtmlContent, pageImage.pageNumber);
+        
+        // Replace header images with placeholders
+        xhtmlContent = this.replaceHeaderImagesWithPlaceholders(xhtmlContent, pageImage.pageNumber);
+        
+        // Post-process: Remove brown border colors from inline styles (AGGRESSIVE REMOVAL)
+        // This handles cases where Gemini generates inline styles with brown borders
+        // Process ALL elements including images, divs, sections, headers, placeholders, etc.
+        
+        // List of all brown color variations to replace
+        const brownColors = [
+          'brown', '#8B4513', '#A52A2A', '#654321', '#D2691E', '#CD853F', '#BC8F8F',
+          '#A0522D', '#8B7355', '#6F4E37', '#5C4033', '#3D2817',
+          'rgb(139, 69, 19)', 'rgb(165, 42, 42)', 'rgb(101, 67, 33)',
+          'rgb(139,69,19)', 'rgb(165,42,42)', 'rgb(101,67,33)'
+        ];
+        
+        // FIRST: Specifically target placeholder elements and remove ALL borders
+        // This ensures placeholders have NO borders at all (not brown, not blue, not any color)
+        xhtmlContent = xhtmlContent.replace(
+          /(<div[^>]*(?:class=["'][^"']*(?:placeholder|image-drop-zone)[^"']*["']|data-placeholder-type)[^>]*style=["'])([^"']*)(["'][^>]*>)/gi,
+          (match, beforeStyle, styleContent, afterStyle) => {
+            let newStyle = styleContent;
+            let wasModified = false;
+            
+            // Remove ALL border properties from placeholders (any color, any style, any width)
+            const borderProperties = [
+              /border[-\w]*:\s*[^;]*/gi,
+              /border-width[-\w]*:\s*[^;]*/gi,
+              /border-style[-\w]*:\s*[^;]*/gi,
+              /border-color[-\w]*:\s*[^;]*/gi,
+              /border-top[-\w]*:\s*[^;]*/gi,
+              /border-right[-\w]*:\s*[^;]*/gi,
+              /border-bottom[-\w]*:\s*[^;]*/gi,
+              /border-left[-\w]*:\s*[^;]*/gi
+            ];
+            
+            borderProperties.forEach(pattern => {
+              if (pattern.test(newStyle)) {
+                newStyle = newStyle.replace(pattern, '');
+                wasModified = true;
+              }
+            });
+            
+            // Clean up any double semicolons or trailing semicolons
+            newStyle = newStyle.replace(/;;+/g, ';').replace(/;\s*;/g, ';').trim();
+            if (newStyle.endsWith(';')) {
+              newStyle = newStyle.slice(0, -1).trim();
+            }
+            
+            if (wasModified) {
+              return beforeStyle + newStyle + afterStyle;
+            }
+            return match;
+          }
+        );
+        
+        // SECOND: Replace brown border colors in ALL inline styles (all elements)
+        xhtmlContent = xhtmlContent.replace(/style=["']([^"']*)["']/gi, (match, styleContent) => {
+          let newStyle = styleContent;
+          let wasModified = false;
+          
+          // Replace any border property that contains brown colors
+          brownColors.forEach(brownColor => {
+            const escapedColor = brownColor.replace(/[#()\[\]{}.*+?^$|\\]/g, '\\$&');
+            
+            // Pattern 1: border: Xpx solid brown or border: brown
+            const borderPattern = new RegExp(`border[\\s]*:[\\s]*([^;]*${escapedColor}[^;]*)`, 'gi');
+            if (borderPattern.test(newStyle)) {
+              newStyle = newStyle.replace(borderPattern, (borderMatch) => {
+                wasModified = true;
+                return borderMatch.replace(new RegExp(escapedColor, 'gi'), '#2196F3');
+              });
+            }
+            
+            // Pattern 2: border-color: brown
+            const borderColorPattern = new RegExp(`border-color[\\s]*:[\\s]*${escapedColor}`, 'gi');
+            if (borderColorPattern.test(newStyle)) {
+              newStyle = newStyle.replace(borderColorPattern, 'border-color: #2196F3');
+              wasModified = true;
+            }
+            
+            // Pattern 3: border-top/bottom/left/right-color: brown
+            ['top', 'bottom', 'left', 'right'].forEach(side => {
+              const sideBorderPattern = new RegExp(`border-${side}-color[\\s]*:[\\s]*${escapedColor}`, 'gi');
+              if (sideBorderPattern.test(newStyle)) {
+                newStyle = newStyle.replace(sideBorderPattern, `border-${side}-color: #2196F3`);
+                wasModified = true;
+              }
+            });
+          });
+          
+          // If the style was modified, return the updated style attribute
+          if (wasModified) {
+            return `style="${newStyle}"`;
+          }
+          return match;
+        });
+        
+        // THIRD: Also remove brown borders from style tags in the document
+        xhtmlContent = xhtmlContent.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (match, cssContent) => {
+          let newCss = cssContent;
+          let wasModified = false;
+          
+          brownColors.forEach(brownColor => {
+            const escapedColor = brownColor.replace(/[#()\[\]{}.*+?^$|\\]/g, '\\$&');
+            
+            const cssBorderPattern = new RegExp(`border[\\s]*:[\\s]*([^;}]*${escapedColor}[^;}]*)[;}]`, 'gi');
+            if (cssBorderPattern.test(newCss)) {
+              newCss = newCss.replace(cssBorderPattern, (borderMatch) => {
+                wasModified = true;
+                return borderMatch.replace(new RegExp(escapedColor, 'gi'), '#2196F3');
+              });
+            }
+            
+            const cssBorderColorPattern = new RegExp(`border-color[\\s]*:[\\s]*${escapedColor}`, 'gi');
+            if (cssBorderColorPattern.test(newCss)) {
+              newCss = newCss.replace(cssBorderColorPattern, 'border-color: #2196F3');
+              wasModified = true;
+            }
+          });
+          
+          if (wasModified) {
+            return match.replace(cssContent, newCss);
+          }
+          return match;
+        });
+        
+        // FOURTH: Ensure placeholders without style attributes have no borders
+        // This catches placeholders created by Gemini without inline styles
+        xhtmlContent = xhtmlContent.replace(
+          /(<div[^>]*(?:class=["'][^"']*(?:placeholder|image-drop-zone)[^"']*["']|data-placeholder-type)[^>]*)(?!style=)([^>]*>)/gi,
+          (match, beforeClose, afterClose) => {
+            // Only add style if it doesn't already have one - ensure no borders
+            if (!beforeClose.includes('style=')) {
+              return beforeClose + ' style="border: none !important; border-width: 0 !important; border-style: none !important; border-color: transparent !important;"' + afterClose;
+            }
+            return match;
+          }
+        );
+        
+        // FIFTH: Final pass - Remove any remaining border properties from placeholders
+        // This is a catch-all to ensure NO borders remain on placeholders
+        xhtmlContent = xhtmlContent.replace(
+          /(<div[^>]*(?:class=["'][^"']*(?:placeholder|image-drop-zone)[^"']*["']|data-placeholder-type)[^>]*>)/gi,
+          (match) => {
+            // Remove any border-related attributes that might have been added
+            let cleaned = match.replace(/\s+border[-\w]*=["'][^"']*["']/gi, '');
+            if (cleaned !== match) {
+              return cleaned;
+            }
+            return match;
+          }
+        );
+        
+        // SIXTH: Final check - Replace any remaining tan/brown elements at the top with placeholders
+        // This catches any cases that were missed in the initial detection
+        if (!xhtmlContent.includes('header-image-placeholder')) {
+          xhtmlContent = this.replaceHeaderImagesWithPlaceholders(xhtmlContent, pageImage.pageNumber);
+        }
         
         await fs.writeFile(xhtmlFilePath, xhtmlContent, 'utf8');
         
@@ -845,6 +1061,795 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
    * @param {number} pageNumber - Page number for ID prefix
    * @returns {string} - XHTML content with all text elements having unique IDs
    */
+  /**
+   * Replace header images at the top of pages with placeholders
+   * @param {string} xhtmlContent - XHTML content
+   * @param {number} pageNumber - Page number
+   * @returns {string} - XHTML with header images replaced by placeholders
+   */
+  static replaceHeaderImagesWithPlaceholders(xhtmlContent, pageNumber) {
+    try {
+      // Parse XHTML using JSDOM (already imported at top of file)
+      const dom = new JSDOM(xhtmlContent, { 
+        contentType: 'text/xml',
+        strict: false
+      });
+      const doc = dom.window.document;
+      
+      // Check for parsing errors
+      let parserError = doc.querySelector('parsererror');
+      if (parserError) {
+        console.warn(`[Replace Header Images] Failed to parse XHTML for page ${pageNumber}, using regex fallback`);
+        return this.replaceHeaderImagesWithPlaceholdersRegex(xhtmlContent, pageNumber);
+      }
+      
+      const body = doc.body || doc.documentElement;
+      if (!body) {
+        return xhtmlContent;
+      }
+      
+      // Find all images
+      const images = body.querySelectorAll('img');
+      let replaced = false;
+      
+      // List of brown/tan color variations to detect
+      const brownColors = [
+        'brown', '#8B4513', '#A52A2A', '#654321', '#D2691E', '#CD853F', '#BC8F8F',
+        '#A0522D', '#8B7355', '#6F4E37', '#5C4033', '#3D2817',
+        'rgb(139, 69, 19)', 'rgb(165, 42, 42)', 'rgb(101, 67, 33)',
+        'rgb(139,69,19)', 'rgb(165,42,42)', 'rgb(101,67,33)',
+        'rgb(210, 180, 140)', 'rgb(222, 184, 135)', 'rgb(245, 245, 220)', // tan/beige colors
+        '#D2B48C', '#DEB887', '#F5F5DC'
+      ];
+      
+      // Helper function to check if style contains brown/tan colors
+      const hasBrownColor = (style) => {
+        if (!style) return false;
+        return brownColors.some(color => {
+          const escapedColor = color.replace(/[#()\[\]{}.*+?^$|\\]/g, '\\$&');
+          return new RegExp(escapedColor, 'i').test(style);
+        });
+      };
+      
+      // Helper function to create placeholder
+      const createPlaceholder = (element, height = '100') => {
+        const placeholderId = `page${pageNumber}_header_placeholder`;
+        const placeholder = doc.createElement('div');
+        placeholder.setAttribute('id', placeholderId);
+        placeholder.setAttribute('class', 'header-image-placeholder image-placeholder image-drop-zone');
+        placeholder.setAttribute('data-page-number', pageNumber.toString());
+        placeholder.setAttribute('data-placeholder-type', 'header');
+        placeholder.setAttribute('title', `Drop header image here (Page ${pageNumber})`);
+        
+        // CRITICAL: No borders allowed on placeholders - use !important to override any CSS
+        let placeholderStyle = `width: 100%; min-height: ${height}px; border: none !important; border-width: 0 !important; border-style: none !important; border-color: transparent !important; border-top: none !important; border-right: none !important; border-bottom: none !important; border-left: none !important; background-color: #f5f5f5; display: block; position: relative; cursor: pointer; transition: all 0.3s ease; box-sizing: border-box; margin: 0; padding: 0; outline: none !important;`;
+        placeholder.setAttribute('style', placeholderStyle);
+        return placeholder;
+      };
+      
+      const bodyChildren = Array.from(body.children);
+      
+      // FIRST: Check for ANY element at the top with tan/brown colors (background or border) - most aggressive
+      if (!replaced) {
+        for (let i = 0; i < Math.min(5, bodyChildren.length); i++) {
+          const child = bodyChildren[i];
+          const childStyle = child.getAttribute('style') || '';
+          const isFullWidth = childStyle.includes('width: 100%') || 
+                            childStyle.includes('width:100%') || 
+                            child.getAttribute('width') === '100%' ||
+                            (!childStyle.includes('width:') && child.tagName.toLowerCase() !== 'img');
+          
+          // Check for tan/brown colors in background or border
+          const hasBrownBackground = childStyle.includes('background') && hasBrownColor(childStyle);
+          const hasBrownBorder = childStyle.includes('border') && hasBrownColor(childStyle);
+          
+          // Check if it looks like a header border (horizontal bar with tan/brown color)
+          const isHorizontalBar = isFullWidth && (
+            hasBrownBackground || 
+            hasBrownBorder ||
+            (childStyle.match(/height:\s*(\d+)/) && parseInt(childStyle.match(/height:\s*(\d+)/)[1]) < 200) // thin horizontal bar
+          );
+          
+          if (isHorizontalBar) {
+            const heightMatch = childStyle.match(/height:\s*(\d+)/);
+            const height = heightMatch ? heightMatch[1] : '100';
+            const placeholder = createPlaceholder(child, height);
+            
+            if (child.parentNode) {
+              child.parentNode.replaceChild(placeholder, child);
+              replaced = true;
+              console.log(`[Replace Header Images] Replaced tan/brown element at top with placeholder on page ${pageNumber}`);
+              break;
+            }
+          }
+        }
+      }
+      
+      // SECOND: Check for header elements (header tags or divs) with borders - replace with placeholders
+      // AGGRESSIVE: Replace ANY header element at the top with borders, regardless of color
+      if (!replaced) {
+        const headerElements = body.querySelectorAll('header, div[class*="header"], div[id*="header"]');
+        
+        for (const header of headerElements) {
+          const headerStyle = header.getAttribute('style') || '';
+          const hasBorder = headerStyle.includes('border') || 
+                          headerStyle.includes('border-color') ||
+                          headerStyle.includes('border-top') ||
+                          headerStyle.includes('border-bottom') ||
+                          headerStyle.includes('border-left') ||
+                          headerStyle.includes('border-right');
+          
+          const hasBrownBorder = hasBorder && hasBrownColor(headerStyle);
+          const isAtTop = bodyChildren.indexOf(header) < 5;
+          
+          // Check if it's full width (likely a header bar)
+          const isFullWidth = headerStyle.includes('width: 100%') || 
+                            headerStyle.includes('width:100%') || 
+                            header.getAttribute('width') === '100%' ||
+                            (!headerStyle.includes('width:') && header.tagName.toLowerCase() === 'header');
+          
+          // AGGRESSIVE: Replace ANY header with borders at the top, or any full-width header with borders
+          if (hasBorder && (hasBrownBorder || isAtTop || isFullWidth)) {
+            const heightMatch = headerStyle.match(/height:\s*(\d+)/);
+            const height = heightMatch ? heightMatch[1] : '100';
+            const placeholder = createPlaceholder(header, height);
+            
+            if (header.parentNode) {
+              header.parentNode.replaceChild(placeholder, header);
+              replaced = true;
+              console.log(`[Replace Header Images] Replaced header element with border (color: ${hasBrownBorder ? 'brown/tan' : 'any'}) with placeholder on page ${pageNumber}`);
+              break;
+            }
+          }
+        }
+      }
+      
+      // THIRD: Check for ANY divs with borders at the top - replace ALL borders with placeholders (most aggressive)
+      if (!replaced) {
+        for (let i = 0; i < Math.min(5, bodyChildren.length); i++) {
+          const child = bodyChildren[i];
+          if (child.tagName.toLowerCase() === 'div') {
+            const divStyle = child.getAttribute('style') || '';
+            const hasBorder = divStyle.includes('border') || 
+                            divStyle.includes('border-color') ||
+                            divStyle.includes('border-top') ||
+                            divStyle.includes('border-bottom') ||
+                            divStyle.includes('border-left') ||
+                            divStyle.includes('border-right');
+            
+            const hasBrownBorder = hasBorder && hasBrownColor(divStyle);
+            const isFullWidth = divStyle.includes('width: 100%') || 
+                              divStyle.includes('width:100%') || 
+                              child.getAttribute('width') === '100%' ||
+                              (!divStyle.includes('width:') && child.tagName.toLowerCase() === 'div');
+            
+            // Check if it's a horizontal bar (thin element spanning full width)
+            const heightMatch = divStyle.match(/height:\s*(\d+)/);
+            const height = heightMatch ? parseInt(heightMatch[1]) : null;
+            const isHorizontalBar = isFullWidth && height !== null && height < 200;
+            
+            // AGGRESSIVE: Replace ANY div at the top with borders (regardless of color) if it's full width or a horizontal bar
+            // This catches headers that might not have brown/tan colors
+            if (hasBorder && (hasBrownBorder || isFullWidth || isHorizontalBar)) {
+              const placeholderHeight = height ? height.toString() : '100';
+              const placeholder = createPlaceholder(child, placeholderHeight);
+              
+              if (child.parentNode) {
+                child.parentNode.replaceChild(placeholder, child);
+                replaced = true;
+                console.log(`[Replace Header Images] Replaced header div with border (color: ${hasBrownBorder ? 'brown/tan' : 'any'}) with placeholder on page ${pageNumber}`);
+                break;
+              }
+            }
+          }
+        }
+      }
+      
+      // THIRD: Also check for divs with background images or large colored backgrounds at the top
+      if (!replaced) {
+        for (let i = 0; i < Math.min(3, bodyChildren.length); i++) {
+          const child = bodyChildren[i];
+          if (child.tagName.toLowerCase() === 'div') {
+            const divStyle = child.getAttribute('style') || '';
+            const hasBackgroundImage = divStyle.includes('background-image') || divStyle.includes('background: url');
+            const hasBackgroundColor = divStyle.includes('background-color') || divStyle.includes('background:');
+            const isFullWidth = divStyle.includes('width: 100%') || divStyle.includes('width:100%') || 
+                              child.getAttribute('width') === '100%';
+            const hasLargeHeight = divStyle.match(/height:\s*(\d+)/) && parseInt(divStyle.match(/height:\s*(\d+)/)[1]) > 50;
+            
+            // If it's a div at the top with background styling and full width, it might be a header
+            if ((hasBackgroundImage || (hasBackgroundColor && hasLargeHeight)) && isFullWidth) {
+              const placeholderId = `page${pageNumber}_header_placeholder`;
+              const placeholder = doc.createElement('div');
+              placeholder.setAttribute('id', placeholderId);
+              placeholder.setAttribute('class', 'header-image-placeholder image-placeholder image-drop-zone');
+              placeholder.setAttribute('data-page-number', pageNumber.toString());
+              placeholder.setAttribute('data-placeholder-type', 'header');
+              placeholder.setAttribute('title', `Drop header image here (Page ${pageNumber})`);
+              
+            // Preserve height if available
+            const heightMatch = divStyle.match(/height:\s*(\d+)/);
+            const height = heightMatch ? heightMatch[1] : '100';
+            // CRITICAL: No borders allowed on placeholders - use !important to override any CSS
+            let placeholderStyle = `width: 100%; min-height: ${height}px; border: none !important; border-width: 0 !important; border-style: none !important; border-color: transparent !important; border-top: none !important; border-right: none !important; border-bottom: none !important; border-left: none !important; background-color: #f5f5f5; display: block; position: relative; cursor: pointer; transition: all 0.3s ease; box-sizing: border-box; margin: 0; padding: 0; outline: none !important;`;
+            
+            placeholder.setAttribute('style', placeholderStyle);
+              
+              // Replace the div with placeholder
+              if (child.parentNode) {
+                child.parentNode.replaceChild(placeholder, child);
+                replaced = true;
+                console.log(`[Replace Header Images] Replaced header div with background with placeholder on page ${pageNumber}`);
+                break; // Only replace the first one
+              }
+            }
+          }
+        }
+      }
+      
+      for (const img of images) {
+        // Check if image is at the top of the page (first element or in header)
+        const parent = img.parentElement;
+        const isInHeader = parent && (
+          parent.tagName.toLowerCase() === 'header' ||
+          parent.classList.contains('header') ||
+          parent.id && parent.id.includes('header')
+        );
+        
+        // Check if image is one of the first elements in body
+        const bodyChildren = Array.from(body.children);
+        const imgIndex = bodyChildren.findIndex(child => 
+          child === img || child.contains(img)
+        );
+        const isAtTop = imgIndex < 5; // First 5 elements are considered "top" (more aggressive)
+        
+        // Check if image has header-like styling (full width, at top)
+        const imgStyle = img.getAttribute('style') || '';
+        const isFullWidth = imgStyle.includes('width: 100%') || 
+                           imgStyle.includes('width:100%') ||
+                           img.getAttribute('width') === '100%' ||
+                           img.getAttribute('width') === '' && !imgStyle.includes('width:');
+        
+        // Check if image is positioned at top (top: 0 or similar)
+        const isAtTopPosition = imgStyle.includes('top: 0') ||
+                                imgStyle.includes('top:0') ||
+                                (imgStyle.includes('position: absolute') && imgStyle.includes('top')) ||
+                                (imgStyle.includes('position:fixed') && imgStyle.includes('top'));
+        
+        // More aggressive: Check if it's the first image in the document
+        const allImages = body.querySelectorAll('img');
+        const isFirstImage = allImages.length > 0 && allImages[0] === img;
+        
+        // Check if parent has header-like styling (background color, full width)
+        const parentStyle = parent ? (parent.getAttribute('style') || '') : '';
+        const parentHasHeaderStyle = parentStyle.includes('background') || 
+                                     parentStyle.includes('width: 100%') ||
+                                     parentStyle.includes('width:100%');
+        
+        // Replace if: in header tag, OR (at top AND full width), OR (at top AND positioned at top), OR (first image AND at top)
+        if (isInHeader || 
+            (isAtTop && isFullWidth) || 
+            (isAtTop && isAtTopPosition) || 
+            (isFirstImage && isAtTop) ||
+            (isAtTop && parentHasHeaderStyle)) {
+          // Replace with placeholder
+          const placeholderId = `page${pageNumber}_header_placeholder`;
+          const placeholder = doc.createElement('div');
+          placeholder.setAttribute('id', placeholderId);
+          placeholder.setAttribute('class', 'header-image-placeholder image-placeholder image-drop-zone');
+          placeholder.setAttribute('data-page-number', pageNumber.toString());
+          placeholder.setAttribute('data-placeholder-type', 'header');
+          placeholder.setAttribute('title', `Drop header image here (Page ${pageNumber})`);
+          
+          // Preserve original image dimensions if available
+          const width = img.getAttribute('width') || '';
+          const height = img.getAttribute('height') || '';
+          let placeholderStyle = 'width: 100%; min-height: 100px; border: none; background-color: #f5f5f5; display: block; position: relative; cursor: pointer; transition: all 0.3s ease; box-sizing: border-box; margin: 0; padding: 0;';
+          
+          if (width && !width.includes('%')) {
+            placeholderStyle += ` max-width: ${width}px;`;
+          }
+          if (height && !height.includes('%')) {
+            placeholderStyle += ` min-height: ${height}px;`;
+          }
+          
+          placeholder.setAttribute('style', placeholderStyle);
+          
+          // Replace image with placeholder
+          if (img.parentNode) {
+            img.parentNode.replaceChild(placeholder, img);
+            replaced = true;
+            console.log(`[Replace Header Images] Replaced header image with placeholder on page ${pageNumber}`);
+          }
+        }
+      }
+      
+      if (replaced) {
+        // Add CSS for header placeholder
+        const headerPlaceholderCss = `
+    /* Header image placeholder styles - NO BORDERS ALLOWED */
+    .header-image-placeholder {
+      width: 100%;
+      min-height: 100px;
+      border: none !important;
+      border-width: 0 !important;
+      border-style: none !important;
+      border-color: transparent !important;
+      border-top: none !important;
+      border-right: none !important;
+      border-bottom: none !important;
+      border-left: none !important;
+      outline: none !important;
+      background-color: #f5f5f5 !important;
+      display: block;
+      position: relative;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    .header-image-placeholder:hover {
+      border: none !important;
+      border-width: 0 !important;
+      border-style: none !important;
+      border-color: transparent !important;
+      border-top: none !important;
+      border-right: none !important;
+      border-bottom: none !important;
+      border-left: none !important;
+      outline: none !important;
+      background-color: #e3f2fd !important;
+    }
+    .header-image-placeholder.drag-over {
+      border: none !important;
+      border-width: 0 !important;
+      border-style: none !important;
+      border-color: transparent !important;
+      border-top: none !important;
+      border-right: none !important;
+      border-bottom: none !important;
+      border-left: none !important;
+      outline: none !important;
+      background-color: #e8f5e9 !important;
+    }
+    .header-image-placeholder.has-image {
+      border: none !important;
+      border-width: 0 !important;
+      border-style: none !important;
+      border-color: transparent !important;
+      border-top: none !important;
+      border-right: none !important;
+      border-bottom: none !important;
+      border-left: none !important;
+      outline: none !important;
+      background-color: transparent !important;
+      padding: 0;
+    }
+    .header-image-placeholder img {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 0;
+    }
+    /* CRITICAL: Remove ALL borders from ALL placeholders - no borders allowed anywhere */
+    .header-image-placeholder,
+    .cover-page-placeholder,
+    .image-placeholder,
+    .image-drop-zone,
+    div[class*="placeholder"],
+    div[data-placeholder-type],
+    div[class*="image-placeholder"],
+    div[class*="image-drop-zone"],
+    div[class*="header-image-placeholder"],
+    div[class*="cover-page-placeholder"] {
+      border: none !important;
+      border-width: 0 !important;
+      border-style: none !important;
+      border-color: transparent !important;
+      border-top: none !important;
+      border-right: none !important;
+      border-bottom: none !important;
+      border-left: none !important;
+      outline: none !important;
+    }`;
+        
+        // Add CSS to style tag
+        if (doc.head) {
+          let styleTag = doc.head.querySelector('style');
+          if (!styleTag) {
+            styleTag = doc.createElement('style');
+            styleTag.setAttribute('type', 'text/css');
+            doc.head.appendChild(styleTag);
+          }
+          
+          const existingCss = styleTag.textContent || '';
+          if (!existingCss.includes('header-image-placeholder')) {
+            styleTag.textContent = existingCss + headerPlaceholderCss;
+          }
+        }
+        
+        // Serialize back to XHTML
+        const serializer = new XMLSerializer();
+        let result = serializer.serializeToString(doc.documentElement);
+        
+        // Handle HTML5 parser output
+        if (doc.documentElement.tagName === 'HTML' && doc.body) {
+          const doctypeMatch = xhtmlContent.match(/<!DOCTYPE[^>]*>/i);
+          const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
+          const xmlnsMatch = xhtmlContent.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
+          const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
+          
+          const headContent = doc.head ? doc.head.innerHTML : '';
+          const bodyContent = doc.body ? doc.body.innerHTML : '';
+          
+          result = `${doctype}\n<html xmlns="${xmlns}">\n`;
+          if (headContent) {
+            result += `<head>\n${headContent}\n</head>\n`;
+          }
+          result += `<body>\n${bodyContent}\n</body>\n</html>`;
+        }
+        
+        // Fix self-closing tags
+        result = result.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+          return attrs.includes('/') ? match : `<img${attrs}/>`;
+        });
+        
+        // CRITICAL: Remove any borders from placeholder inline styles (post-processing)
+        // This ensures no borders can exist on placeholders even if they were added later
+        result = result.replace(
+          /(<div[^>]*(?:class=["'][^"']*(?:placeholder|image-drop-zone)[^"']*["']|data-placeholder-type)[^>]*style=["'])([^"']*)(["'][^>]*>)/gi,
+          (match, beforeStyle, styleContent, afterStyle) => {
+            let newStyle = styleContent;
+            // Remove ALL border properties
+            newStyle = newStyle.replace(/border[-\w]*:\s*[^;]*/gi, '');
+            newStyle = newStyle.replace(/border-width[-\w]*:\s*[^;]*/gi, '');
+            newStyle = newStyle.replace(/border-style[-\w]*:\s*[^;]*/gi, '');
+            newStyle = newStyle.replace(/border-color[-\w]*:\s*[^;]*/gi, '');
+            newStyle = newStyle.replace(/outline[-\w]*:\s*[^;]*/gi, '');
+            // Add explicit no-border rules
+            if (!newStyle.includes('border: none')) {
+              newStyle = 'border: none !important; border-width: 0 !important; border-style: none !important; border-color: transparent !important; outline: none !important; ' + newStyle;
+            }
+            // Clean up double semicolons
+            newStyle = newStyle.replace(/;;+/g, ';').replace(/;\s*;/g, ';').trim();
+            if (newStyle.endsWith(';')) {
+              newStyle = newStyle.slice(0, -1).trim();
+            }
+            return beforeStyle + newStyle + afterStyle;
+          }
+        );
+        
+        return result;
+      }
+      
+      return xhtmlContent;
+    } catch (error) {
+      console.error(`[Replace Header Images] Error:`, error);
+      return this.replaceHeaderImagesWithPlaceholdersRegex(xhtmlContent, pageNumber);
+    }
+  }
+  
+  /**
+   * Regex-based fallback for replacing header images
+   */
+  static replaceHeaderImagesWithPlaceholdersRegex(xhtmlContent, pageNumber) {
+    try {
+      const placeholderId = `page${pageNumber}_header_placeholder`;
+      const placeholder = `<div id="${placeholderId}" class="header-image-placeholder image-placeholder image-drop-zone" data-page-number="${pageNumber}" data-placeholder-type="header" title="Drop header image here (Page ${pageNumber})" style="width: 100%; min-height: 100px; border: none !important; border-width: 0 !important; border-style: none !important; border-color: transparent !important; border-top: none !important; border-right: none !important; border-bottom: none !important; border-left: none !important; outline: none !important; background-color: #f5f5f5; display: block; position: relative; cursor: pointer; transition: all 0.3s ease; box-sizing: border-box; margin: 0; padding: 0;"></div>`;
+      
+      let replaced = false;
+      
+      // List of brown/tan color variations to detect
+      const brownColorPatterns = [
+        'brown', '#8B4513', '#A52A2A', '#654321', '#D2691E', '#CD853F', '#BC8F8F',
+        '#A0522D', '#8B7355', '#6F4E37', '#5C4033', '#3D2817',
+        'rgb\\(139,\\s*69,\\s*19\\)', 'rgb\\(165,\\s*42,\\s*42\\)', 'rgb\\(101,\\s*67,\\s*33\\)',
+        'rgb\\(210,\\s*180,\\s*140\\)', 'rgb\\(222,\\s*184,\\s*135\\)', 'rgb\\(245,\\s*245,\\s*220\\)', // tan/beige colors
+        '#D2B48C', '#DEB887', '#F5F5DC'
+      ];
+      const brownColorRegex = new RegExp(brownColorPatterns.join('|'), 'i');
+      
+      // Pattern 0: Find ANY element at body start with tan/brown background or border colors (most aggressive)
+      // This catches horizontal bars with tan/brown colors even without explicit borders
+      if (!replaced) {
+        const bodyStartTanPattern = /(<body[^>]*>\s*)(<(?:div|header|section)[^>]*style=["'][^"']*(?:background|border)[^"']*["'][^>]*>)/i;
+        xhtmlContent = xhtmlContent.replace(bodyStartTanPattern, (match, bodyStart, elementTag) => {
+          // Check if it has brown/tan colors in background or border
+          const hasBrownColor = brownColorRegex.test(elementTag);
+          const isFullWidth = elementTag.includes('width: 100%') || 
+                            elementTag.includes('width:100%') || 
+                            elementTag.includes('width="100%"') ||
+                            !elementTag.includes('width:');
+          
+          // Check if it's a horizontal bar (full width, relatively thin)
+          const heightMatch = elementTag.match(/height:\s*(\d+)/);
+          const isThinBar = !heightMatch || parseInt(heightMatch[1]) < 300;
+          
+          if (hasBrownColor && isFullWidth && isThinBar) {
+            replaced = true;
+            return bodyStart + placeholder;
+          }
+          return match;
+        });
+      }
+      
+      // Pattern 0.1: Find header tags with borders (especially tan/brown borders) - replace entire header
+      if (!replaced) {
+        const headerWithBorderPattern = /<header[^>]*style=["'][^"']*border[^"']*["'][^>]*>.*?<\/header>/is;
+        xhtmlContent = xhtmlContent.replace(headerWithBorderPattern, (match) => {
+          // Check if it has brown/tan border colors
+          if (brownColorRegex.test(match) || match.includes('border')) {
+            replaced = true;
+            return placeholder;
+          }
+          return match;
+        });
+      }
+      
+      // Pattern 0.2: Find header tags at body start with borders
+      // AGGRESSIVE: Replace ANY header tag at body start with borders, regardless of color
+      if (!replaced) {
+        const bodyStartHeaderPattern = /(<body[^>]*>\s*)(<header[^>]*style=["'][^"']*border[^"']*["'][^>]*>.*?<\/header>)/is;
+        xhtmlContent = xhtmlContent.replace(bodyStartHeaderPattern, (match, bodyStart, headerTag) => {
+          // Also check for header tags without explicit border but with full width (likely header bars)
+          const isFullWidth = headerTag.includes('width: 100%') || 
+                            headerTag.includes('width:100%') || 
+                            headerTag.includes('width="100%"') ||
+                            !headerTag.includes('width:');
+          if (headerTag.includes('border') || isFullWidth) {
+            replaced = true;
+            return bodyStart + placeholder;
+          }
+          return match;
+        });
+      }
+      
+      // Pattern 0.2.1: Find header tags at body start even without explicit border style (check for full width)
+      if (!replaced) {
+        const bodyStartHeaderNoBorderPattern = /(<body[^>]*>\s*)(<header[^>]*>)/i;
+        xhtmlContent = xhtmlContent.replace(bodyStartHeaderNoBorderPattern, (match, bodyStart, headerTag) => {
+          // Check if header is full width (likely a header bar)
+          const isFullWidth = headerTag.includes('width: 100%') || 
+                            headerTag.includes('width:100%') || 
+                            headerTag.includes('width="100%"') ||
+                            !headerTag.includes('width:');
+          if (isFullWidth) {
+            replaced = true;
+            return bodyStart + placeholder;
+          }
+          return match;
+        });
+      }
+      
+      // Pattern 0.3: Find divs with borders (especially tan/brown) at body start
+      // AGGRESSIVE: Replace ANY div with borders at body start, regardless of color
+      if (!replaced) {
+        const bodyStartDivBorderPattern = /(<body[^>]*>\s*)(<div[^>]*style=["'][^"']*border[^"']*["'][^>]*>)/i;
+        xhtmlContent = xhtmlContent.replace(bodyStartDivBorderPattern, (match, bodyStart, divTag) => {
+          // Check if it has brown/tan border colors or is full width
+          const hasBrownBorder = brownColorRegex.test(divTag);
+          const isFullWidth = divTag.includes('width: 100%') || 
+                            divTag.includes('width:100%') || 
+                            divTag.includes('width="100%"') ||
+                            !divTag.includes('width:');
+          
+          // Check if it's a horizontal bar (thin element)
+          const heightMatch = divTag.match(/height:\s*(\d+)/);
+          const isThinBar = !heightMatch || parseInt(heightMatch[1]) < 200;
+          
+          // AGGRESSIVE: Replace ANY div with borders at body start if it's full width or a thin bar
+          // This catches headers that might not have brown/tan colors
+          if (hasBrownBorder || isFullWidth || isThinBar) {
+            replaced = true;
+            return bodyStart + placeholder;
+          }
+          return match;
+        });
+      }
+      
+      // Pattern 0.4: Find divs with tan/brown background colors at body start (even without borders)
+      if (!replaced) {
+        const bodyStartDivBackgroundPattern = /(<body[^>]*>\s*)(<div[^>]*style=["'][^"']*background[^"']*["'][^>]*>)/i;
+        xhtmlContent = xhtmlContent.replace(bodyStartDivBackgroundPattern, (match, bodyStart, divTag) => {
+          // Check if it has brown/tan background colors and is full width
+          const hasBrownBackground = brownColorRegex.test(divTag);
+          const isFullWidth = divTag.includes('width: 100%') || 
+                            divTag.includes('width:100%') || 
+                            divTag.includes('width="100%"') ||
+                            !divTag.includes('width:');
+          if (hasBrownBackground && isFullWidth) {
+            replaced = true;
+            return bodyStart + placeholder;
+          }
+          return match;
+        });
+      }
+      
+      // Pattern 1: Find images in header tags
+      if (!replaced) {
+        const headerImagePattern = /<header[^>]*>.*?<img([^>]*?)>.*?<\/header>/is;
+        xhtmlContent = xhtmlContent.replace(headerImagePattern, (match) => {
+          replaced = true;
+          return match.replace(/<img[^>]*>/i, placeholder);
+        });
+      }
+      
+      // Pattern 2: Find first image at the start of body (more aggressive)
+      if (!replaced) {
+        const bodyStartImagePattern = /(<body[^>]*>)(\s*)(<img[^>]*>)/i;
+        xhtmlContent = xhtmlContent.replace(bodyStartImagePattern, (match, bodyTag, whitespace, imgTag) => {
+          replaced = true;
+          return bodyTag + whitespace + placeholder;
+        });
+      }
+      
+      // Pattern 3: Find first image in first div at body start
+      if (!replaced) {
+        const firstDivImagePattern = /(<body[^>]*>\s*<div[^>]*>)(\s*)(<img[^>]*>)/i;
+        xhtmlContent = xhtmlContent.replace(firstDivImagePattern, (match, divStart, whitespace, imgTag) => {
+          replaced = true;
+          return divStart + whitespace + placeholder;
+        });
+      }
+      
+      // Pattern 4: Find divs with background images/colors at the start
+      if (!replaced) {
+        const backgroundDivPattern = /(<body[^>]*>\s*)(<div[^>]*style=["'][^"']*background[^"']*["'][^>]*>)/i;
+        xhtmlContent = xhtmlContent.replace(backgroundDivPattern, (match, bodyStart, divTag) => {
+          // Check if it's full width
+          if (divTag.includes('width: 100%') || divTag.includes('width:100%') || divTag.includes('width="100%"')) {
+            replaced = true;
+            return bodyStart + placeholder;
+          }
+          return match;
+        });
+      }
+      
+      // Pattern 5: Most aggressive - find ANY first img tag in body (within first 500 chars)
+      if (!replaced) {
+        const bodyMatch = xhtmlContent.match(/<body[^>]*>([\s\S]{0,500})/i);
+        if (bodyMatch) {
+          const bodyStartContent = bodyMatch[1];
+          const firstImgMatch = bodyStartContent.match(/<img[^>]*>/i);
+          if (firstImgMatch) {
+            xhtmlContent = xhtmlContent.replace(firstImgMatch[0], placeholder);
+            replaced = true;
+            console.log(`[Replace Header Images Regex] Replaced first image in body on page ${pageNumber}`);
+          }
+        }
+      }
+      
+      // Add CSS if we replaced anything
+      if (replaced || xhtmlContent.includes('header-image-placeholder')) {
+        const headerPlaceholderCss = `
+    /* Header image placeholder styles - NO BORDERS ALLOWED */
+    .header-image-placeholder {
+      width: 100%;
+      min-height: 100px;
+      border: none !important;
+      border-width: 0 !important;
+      border-style: none !important;
+      border-color: transparent !important;
+      border-top: none !important;
+      border-right: none !important;
+      border-bottom: none !important;
+      border-left: none !important;
+      outline: none !important;
+      background-color: #f5f5f5 !important;
+      display: block;
+      position: relative;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    .header-image-placeholder:hover {
+      border: none !important;
+      border-width: 0 !important;
+      border-style: none !important;
+      border-color: transparent !important;
+      border-top: none !important;
+      border-right: none !important;
+      border-bottom: none !important;
+      border-left: none !important;
+      outline: none !important;
+      background-color: #e3f2fd !important;
+    }
+    .header-image-placeholder.drag-over {
+      border: none !important;
+      border-width: 0 !important;
+      border-style: none !important;
+      border-color: transparent !important;
+      border-top: none !important;
+      border-right: none !important;
+      border-bottom: none !important;
+      border-left: none !important;
+      outline: none !important;
+      background-color: #e8f5e9 !important;
+    }
+    .header-image-placeholder.has-image {
+      border: none !important;
+      border-width: 0 !important;
+      border-style: none !important;
+      border-color: transparent !important;
+      border-top: none !important;
+      border-right: none !important;
+      border-bottom: none !important;
+      border-left: none !important;
+      outline: none !important;
+      background-color: transparent !important;
+      padding: 0;
+    }
+    .header-image-placeholder img {
+      max-width: 100%;
+      height: auto;
+      display: block;
+      margin: 0;
+    }
+    /* CRITICAL: Remove ALL borders from ALL placeholders - no borders allowed anywhere */
+    .header-image-placeholder,
+    .cover-page-placeholder,
+    .image-placeholder,
+    .image-drop-zone,
+    div[class*="placeholder"],
+    div[data-placeholder-type],
+    div[class*="image-placeholder"],
+    div[class*="image-drop-zone"],
+    div[class*="header-image-placeholder"],
+    div[class*="cover-page-placeholder"] {
+      border: none !important;
+      border-width: 0 !important;
+      border-style: none !important;
+      border-color: transparent !important;
+      border-top: none !important;
+      border-right: none !important;
+      border-bottom: none !important;
+      border-left: none !important;
+      outline: none !important;
+    }`;
+        
+        // Add CSS to style tag
+        if (xhtmlContent.includes('</style>')) {
+          xhtmlContent = xhtmlContent.replace('</style>', `${headerPlaceholderCss}\n</style>`);
+        } else if (xhtmlContent.includes('</head>')) {
+          xhtmlContent = xhtmlContent.replace('</head>', `<style type="text/css">${headerPlaceholderCss}</style>\n</head>`);
+        }
+      }
+      
+      // CRITICAL: Remove any borders from placeholder inline styles (post-processing)
+      // This ensures no borders can exist on placeholders even if they were added later
+      xhtmlContent = xhtmlContent.replace(
+        /(<div[^>]*(?:class=["'][^"']*(?:placeholder|image-drop-zone)[^"']*["']|data-placeholder-type)[^>]*style=["'])([^"']*)(["'][^>]*>)/gi,
+        (match, beforeStyle, styleContent, afterStyle) => {
+          let newStyle = styleContent;
+          // Remove ALL border properties
+          newStyle = newStyle.replace(/border[-\w]*:\s*[^;]*/gi, '');
+          newStyle = newStyle.replace(/border-width[-\w]*:\s*[^;]*/gi, '');
+          newStyle = newStyle.replace(/border-style[-\w]*:\s*[^;]*/gi, '');
+          newStyle = newStyle.replace(/border-color[-\w]*:\s*[^;]*/gi, '');
+          newStyle = newStyle.replace(/outline[-\w]*:\s*[^;]*/gi, '');
+          // Add explicit no-border rules
+          if (!newStyle.includes('border: none')) {
+            newStyle = 'border: none !important; border-width: 0 !important; border-style: none !important; border-color: transparent !important; outline: none !important; ' + newStyle;
+          }
+          // Clean up double semicolons
+          newStyle = newStyle.replace(/;;+/g, ';').replace(/;\s*;/g, ';').trim();
+          if (newStyle.endsWith(';')) {
+            newStyle = newStyle.slice(0, -1).trim();
+          }
+          return beforeStyle + newStyle + afterStyle;
+        }
+      );
+      
+      return xhtmlContent;
+    } catch (error) {
+      console.error(`[Replace Header Images Regex] Error:`, error);
+      return xhtmlContent;
+    }
+  }
+
   static ensureAllTextElementsHaveIds(xhtmlContent, pageNumber) {
     try {
       // Validate XHTML content before parsing
@@ -1988,13 +2993,47 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
         
         // Remove any wrapper divs
         bodyContent = bodyContent.replace(/<div[^>]*class=["']xhtml-content-wrapper["'][^>]*>/gi, '');
-        bodyContent = bodyContent.replace(/<\/div>\s*$/, '').trim();
+        // Remove ALL trailing closing divs that don't match opening tags
+        // Count opening and closing divs to ensure proper balance
+        const openDivs = (bodyContent.match(/<div[^>]*>/gi) || []).length;
+        const closeDivs = (bodyContent.match(/<\/div>/gi) || []).length;
+        // If there are more closing divs than opening divs, remove the excess
+        if (closeDivs > openDivs) {
+          const excessDivs = closeDivs - openDivs;
+          // Remove excess closing divs from the end
+          for (let i = 0; i < excessDivs; i++) {
+            bodyContent = bodyContent.replace(/<\/div>\s*$/, '').trim();
+          }
+        }
         
         // Clean up any remaining style tags
         bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '');
         bodyContent = bodyContent.replace(/<style[^>]*>[\s\S]*?(?=<[^/]|$)/gi, '');
         
         cssContent = cssContent.trim();
+        
+        // Validate and fix body content structure - ensure balanced tags
+        // Remove any trailing closing tags that don't have matching opening tags
+        const tagStack = [];
+        const tagRegex = /<\/?([a-z][a-z0-9]*)[^>]*>/gi;
+        let match;
+        const tempBody = bodyContent;
+        
+        // Count opening and closing divs
+        const openDivMatches = tempBody.match(/<div[^>]*>/gi) || [];
+        const closeDivMatches = tempBody.match(/<\/div>/gi) || [];
+        const divBalance = openDivMatches.length - closeDivMatches.length;
+        
+        // If there are more closing divs than opening divs, remove excess from the end
+        if (divBalance < 0) {
+          const excessCount = Math.abs(divBalance);
+          let cleanedBody = tempBody;
+          for (let i = 0; i < excessCount; i++) {
+            cleanedBody = cleanedBody.replace(/<\/div>\s*$/, '').trim();
+          }
+          bodyContent = cleanedBody;
+          console.log(`[Regenerate EPUB] Removed ${excessCount} excess closing div(s) from page ${page.pageNumber}`);
+        }
         
         // Build proper XHTML structure
         xhtmlContent = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
@@ -2009,6 +3048,38 @@ ${cssContent ? `<style type="text/css">\n${cssContent}\n</style>` : ''}
 ${bodyContent}
 </body>
 </html>`;
+        
+        // Validate XHTML structure - check for mismatched tags
+        try {
+          const { JSDOM } = await import('jsdom');
+          const dom = new JSDOM(xhtmlContent, { contentType: 'text/xml' });
+          const parserErrors = dom.window.document.querySelector('parsererror');
+          if (parserErrors) {
+            console.warn(`[Regenerate EPUB] XHTML validation warning for page ${page.pageNumber}:`, parserErrors.textContent);
+            // Try to fix common issues: remove trailing closing tags before </body>
+            const bodyMatch = xhtmlContent.match(/<body>([\s\S]*?)<\/body>/i);
+            if (bodyMatch) {
+              let fixedBody = bodyMatch[1];
+              // Remove any closing tags that appear after the last opening tag
+              // This is a simple heuristic - remove trailing </div> tags if they're excessive
+              const bodyOpenDivs = (fixedBody.match(/<div[^>]*>/gi) || []).length;
+              const bodyCloseDivs = (fixedBody.match(/<\/div>/gi) || []).length;
+              if (bodyCloseDivs > bodyOpenDivs) {
+                const excess = bodyCloseDivs - bodyOpenDivs;
+                for (let i = 0; i < excess; i++) {
+                  fixedBody = fixedBody.replace(/<\/div>\s*$/, '').trim();
+                }
+                xhtmlContent = xhtmlContent.replace(
+                  /<body>[\s\S]*?<\/body>/i,
+                  `<body>\n${fixedBody}\n</body>`
+                );
+                console.log(`[Regenerate EPUB] Fixed ${excess} excess closing div(s) in page ${page.pageNumber}`);
+              }
+            }
+          }
+        } catch (validationError) {
+          console.warn(`[Regenerate EPUB] Could not validate XHTML for page ${page.pageNumber}:`, validationError.message);
+        }
         
         console.log(`[Regenerate EPUB] Fixed page ${page.pageNumber} XHTML structure`);
       }
@@ -3515,11 +4586,88 @@ ${xhtmlFiles.map(p => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNumber}
     }
 /*]]>*/`;
     
+    // Add CSS for full-page cover placeholder
+    const coverPlaceholderCss = `
+    /* Full-page cover placeholder styles - completely blank */
+    .cover-page-placeholder {
+      width: 100%;
+      height: 100vh;
+      min-height: ${pageHeightPoints}px;
+      border: none !important;
+      background-color: #f5f5f5 !important;
+      display: block;
+      position: relative;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    .cover-page-placeholder:hover {
+      border: none !important;
+      background-color: #e3f2fd !important;
+    }
+    .cover-page-placeholder.drag-over {
+      border: none !important;
+      background-color: #e8f5e9 !important;
+    }
+    .cover-page-placeholder.has-image {
+      border: none !important;
+      background-color: transparent !important;
+      padding: 0;
+    }
+    .cover-page-placeholder img {
+      max-width: 100%;
+      max-height: 100vh;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      display: block;
+      margin: 0;
+    }
+    /* Remove any brown borders from placeholders */
+    .cover-page-placeholder,
+    .header-image-placeholder,
+    .image-placeholder,
+    .image-drop-zone {
+      border-color: #2196F3 !important;
+    }
+    /* Remove brown borders from any divs that might be styled by Gemini */
+    div[class*="placeholder"],
+    div[data-placeholder-type] {
+      border-color: #2196F3 !important;
+    }
+    `;
+    
     html += `
-  <style type="text/css">${simpleCss}</style>
+  <style type="text/css">${simpleCss}${coverPlaceholderCss}</style>
 </head>
 <body class="fixed-layout-page" id="page${pageNumber}">
   <div class="page-container">`;
+    
+    // Check if this is a cover page (page 1 or 2)
+    const isCoverPage = pageNumber === 1 || pageNumber === 2;
+    
+    // If it's a cover page, create a completely blank full-page placeholder
+    if (isCoverPage) {
+      const coverId = `cover-page-${pageNumber}`;
+      html += `
+    <div id="${coverId}" 
+         class="cover-page-placeholder image-placeholder image-drop-zone" 
+         data-page-number="${pageNumber}"
+         data-placeholder-type="cover"
+         title="Drop cover image here (Page ${pageNumber})"
+         style="width: 100%; height: 100vh; min-height: ${pageHeightPoints}px;">
+    </div>`;
+      
+      // Close the page container and return early for cover pages
+      html += `
+  </div>
+</body>
+</html>`;
+      
+      return { xhtml: html, idMapping, pageWidthPoints, pageHeightPoints };
+    }
     
     // Pre-collect text for flow layer (we'll populate this as we process blocks)
     const allTextForTTS = [];
@@ -5820,71 +6968,161 @@ ${bodyContent}
         }
       }
       
-      // Call Gemini to regenerate XHTML
-      console.log(`[Regenerate Page ${pageNumber}] Calling Gemini API to regenerate XHTML...`);
-      const xhtmlResult = await GeminiService.convertPngToXhtml(
-        pngImagePath,
-        pageNumber,
-        pageExtractedImages
-      );
+      // Check if this is a cover page (page 1 or 2) - create blank placeholder instead of calling Gemini
+      const isCoverPage = pageNumber === 1 || pageNumber === 2;
       
-      if (!xhtmlResult || !xhtmlResult.xhtml) {
-        throw new Error(`Gemini API failed to generate XHTML for page ${pageNumber}`);
-      }
+      let xhtmlContent;
       
-      // Process and sanitize XHTML (same logic as convertPdfToXhtmlViaPng)
-      let xhtmlContent = xhtmlResult.xhtml;
-      
-      // Unescape characters
-      xhtmlContent = xhtmlContent.replace(/\\\\/g, '\\');
-      xhtmlContent = xhtmlContent.replace(/\\"/g, '"');
-      xhtmlContent = xhtmlContent.replace(/\\'/g, "'");
-      xhtmlContent = xhtmlContent.replace(/\\n/g, '\n');
-      xhtmlContent = xhtmlContent.replace(/\\r/g, '\r');
-      xhtmlContent = xhtmlContent.replace(/\\t/g, '\t');
-      
-      // Normalize DOCTYPE
-      const correctDoctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
-      xhtmlContent = xhtmlContent.replace(/<!DOCTYPE\s+html[^>]*>/i, correctDoctype);
-      xhtmlContent = xhtmlContent.replace(
-        /http:\/\/www\.w3\.org\/TR\/xhtml\/DTD\/xhtml1-strict\.dtd/gi,
-        'http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd'
-      );
-      
-      // Escape bare ampersands
-      xhtmlContent = xhtmlContent.replace(/&(?!#?[a-zA-Z0-9]+;)/g, '&amp;');
-      
-      // Fix self-closing tags
-      xhtmlContent = xhtmlContent.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
-        if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
-        return `<meta${attrs}/>`;
-      });
-      xhtmlContent = xhtmlContent.replace(/<img([^>]*?)>/gi, (match, attrs) => {
-        if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
-        return `<img${attrs}/>`;
-      });
-      xhtmlContent = xhtmlContent.replace(/<br\s*([^>]*?)>/gi, (match, attrs) => {
-        if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
-        if (!attrs || attrs.trim() === '') return '<br />';
-        return `<br ${attrs.trim()}/>`;
-      });
-      xhtmlContent = xhtmlContent.replace(/<hr\s*([^>]*?)>/gi, (match, attrs) => {
-        if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
-        if (!attrs || attrs.trim() === '') return '<hr />';
-        return `<hr ${attrs.trim()}/>`;
-      });
-      
-      // Add viewport meta tag (EXACT SAME AS INITIAL CONVERSION)
-      const viewportMeta = useFixedLayout
-        ? `<meta name="viewport" content="width=${currentPageWidth},height=${currentPageHeight}"/>`
-        : `<meta name="viewport" content="width=device-width, initial-scale=1.0"/>`;
-      
-      // Check if XHTML has style tag
-      const hasStyleTag = xhtmlContent.includes('<style');
-      const hasLinkTag = xhtmlContent.includes('<link');
-      
-      // Inject CSS if needed
-      if (!hasStyleTag && !hasLinkTag && xhtmlResult.css && xhtmlResult.css.trim()) {
+      if (isCoverPage) {
+        console.log(`[Regenerate Page ${pageNumber}] Cover page detected - generating blank placeholder`);
+        
+        // Generate blank cover page placeholder (same as generateFixedLayoutPageXHTML)
+        const coverId = `cover-page-${pageNumber}`;
+        const coverPlaceholderCss = `
+    /* Full-page cover placeholder styles - completely blank */
+    .cover-page-placeholder {
+      width: 100%;
+      height: 100vh;
+      min-height: ${currentPageHeight}px;
+      border: none !important;
+      background-color: #f5f5f5 !important;
+      display: block;
+      position: relative;
+      cursor: pointer;
+      transition: all 0.3s ease;
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    .cover-page-placeholder:hover {
+      border: none !important;
+      background-color: #e3f2fd !important;
+    }
+    .cover-page-placeholder.drag-over {
+      border: none !important;
+      background-color: #e8f5e9 !important;
+    }
+    .cover-page-placeholder.has-image {
+      border: none !important;
+      background-color: transparent !important;
+      padding: 0;
+    }
+    .cover-page-placeholder img {
+      max-width: 100%;
+      max-height: 100vh;
+      width: auto;
+      height: auto;
+      object-fit: contain;
+      display: block;
+      margin: 0;
+    }
+    /* Remove any brown borders from placeholders */
+    .cover-page-placeholder,
+    .header-image-placeholder,
+    .image-placeholder,
+    .image-drop-zone {
+      border-color: #2196F3 !important;
+    }
+    /* Remove brown borders from any divs that might be styled by Gemini */
+    div[class*="placeholder"],
+    div[data-placeholder-type] {
+      border-color: #2196F3 !important;
+    }`;
+        
+        const viewportMeta = useFixedLayout
+          ? `<meta name="viewport" content="width=${currentPageWidth},height=${currentPageHeight}"/>`
+          : `<meta name="viewport" content="width=device-width, initial-scale=1.0"/>`;
+        
+        xhtmlContent = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en" xml:lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  ${viewportMeta}
+  <title>Page ${pageNumber}</title>
+  <style type="text/css">/*<![CDATA[*/
+    body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+    ${coverPlaceholderCss}
+/*]]>*/</style>
+</head>
+<body class="fixed-layout-page" id="page${pageNumber}">
+  <div class="page-container">
+    <div id="${coverId}" 
+         class="cover-page-placeholder image-placeholder image-drop-zone" 
+         data-page-number="${pageNumber}"
+         data-placeholder-type="cover"
+         title="Drop cover image here (Page ${pageNumber})"
+         style="width: 100%; height: 100vh; min-height: ${currentPageHeight}px;">
+    </div>
+  </div>
+</body>
+</html>`;
+      } else {
+        // Call Gemini to regenerate XHTML for non-cover pages
+        console.log(`[Regenerate Page ${pageNumber}] Calling Gemini API to regenerate XHTML...`);
+        const xhtmlResult = await GeminiService.convertPngToXhtml(
+          pngImagePath,
+          pageNumber,
+          pageExtractedImages
+        );
+        
+        if (!xhtmlResult || !xhtmlResult.xhtml) {
+          throw new Error(`Gemini API failed to generate XHTML for page ${pageNumber}`);
+        }
+        
+        // Process and sanitize XHTML (same logic as convertPdfToXhtmlViaPng)
+        xhtmlContent = xhtmlResult.xhtml;
+        
+        // Unescape characters
+        xhtmlContent = xhtmlContent.replace(/\\\\/g, '\\');
+        xhtmlContent = xhtmlContent.replace(/\\"/g, '"');
+        xhtmlContent = xhtmlContent.replace(/\\'/g, "'");
+        xhtmlContent = xhtmlContent.replace(/\\n/g, '\n');
+        xhtmlContent = xhtmlContent.replace(/\\r/g, '\r');
+        xhtmlContent = xhtmlContent.replace(/\\t/g, '\t');
+        
+        // Normalize DOCTYPE
+        const correctDoctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+        xhtmlContent = xhtmlContent.replace(/<!DOCTYPE\s+html[^>]*>/i, correctDoctype);
+        xhtmlContent = xhtmlContent.replace(
+          /http:\/\/www\.w3\.org\/TR\/xhtml\/DTD\/xhtml1-strict\.dtd/gi,
+          'http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd'
+        );
+        
+        // Escape bare ampersands
+        xhtmlContent = xhtmlContent.replace(/&(?!#?[a-zA-Z0-9]+;)/g, '&amp;');
+        
+        // Fix self-closing tags
+        xhtmlContent = xhtmlContent.replace(/<meta([^>]*?)>/gi, (match, attrs) => {
+          if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
+          return `<meta${attrs}/>`;
+        });
+        xhtmlContent = xhtmlContent.replace(/<img([^>]*?)>/gi, (match, attrs) => {
+          if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
+          return `<img${attrs}/>`;
+        });
+        xhtmlContent = xhtmlContent.replace(/<br\s*([^>]*?)>/gi, (match, attrs) => {
+          if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
+          if (!attrs || attrs.trim() === '') return '<br />';
+          return `<br ${attrs.trim()}/>`;
+        });
+        xhtmlContent = xhtmlContent.replace(/<hr\s*([^>]*?)>/gi, (match, attrs) => {
+          if (match.includes('/>') || attrs.trim().endsWith('/')) return match;
+          if (!attrs || attrs.trim() === '') return '<hr />';
+          return `<hr ${attrs.trim()}/>`;
+        });
+        
+        // Add viewport meta tag (EXACT SAME AS INITIAL CONVERSION)
+        const viewportMeta = useFixedLayout
+          ? `<meta name="viewport" content="width=${currentPageWidth},height=${currentPageHeight}"/>`
+          : `<meta name="viewport" content="width=device-width, initial-scale=1.0"/>`;
+        
+        // Check if XHTML has style tag
+        const hasStyleTag = xhtmlContent.includes('<style');
+        const hasLinkTag = xhtmlContent.includes('<link');
+        
+        // Inject CSS if needed
+        if (!hasStyleTag && !hasLinkTag && xhtmlResult.css && xhtmlResult.css.trim()) {
         if (xhtmlContent.includes('</head>')) {
           xhtmlContent = xhtmlContent.replace('</head>', `<style type="text/css">\n${xhtmlResult.css}\n</style>\n</head>`);
         } else if (xhtmlContent.includes('<body>')) {
@@ -5953,6 +7191,63 @@ body { margin: 0; padding: 0; }
   transition: background-color 0.2s ease;
 }`;
       
+      const removeBrownBordersCss = `
+/* COMPREHENSIVE BORDER REMOVAL - Placeholders should have NO borders at all */
+/* CRITICAL: Placeholders MUST have NO borders - remove all border styling */
+.cover-page-placeholder,
+.header-image-placeholder,
+.image-placeholder,
+.image-drop-zone,
+div[class*="placeholder"],
+div[data-placeholder-type],
+div[class*="image-placeholder"],
+div[class*="image-drop-zone"],
+div[class*="header-image-placeholder"],
+div[class*="cover-page-placeholder"] {
+  border: none !important;
+  border-width: 0 !important;
+  border-style: none !important;
+  border-color: transparent !important;
+}
+/* Remove brown borders from any element with brown in inline style - UNIVERSAL SELECTOR */
+*[style*="border"][style*="brown"],
+*[style*="border-color"][style*="brown"],
+*[style*="border"][style*="#8B4513"],
+*[style*="border"][style*="#A52A2A"],
+*[style*="border"][style*="#654321"],
+*[style*="border"][style*="#D2691E"],
+*[style*="border"][style*="#CD853F"],
+*[style*="border"][style*="#BC8F8F"],
+*[style*="border"][style*="#A0522D"],
+*[style*="border"][style*="#8B7355"],
+*[style*="border"][style*="#6F4E37"],
+*[style*="border"][style*="#5C4033"],
+*[style*="border"][style*="#3D2817"],
+*[style*="border"][style*="rgb(139, 69, 19)"],
+*[style*="border"][style*="rgb(165, 42, 42)"],
+*[style*="border"][style*="rgb(101, 67, 33)"] {
+  border-color: #2196F3 !important;
+}
+/* Remove brown borders from images and image containers specifically */
+img,
+img[style*="border"],
+div[style*="border"]:has(img),
+section[style*="border"],
+article[style*="border"],
+header,
+header[style*="border"],
+footer[style*="border"],
+figure[style*="border"],
+figure img {
+  border-color: #2196F3 !important;
+}
+/* Remove brown borders from all divs, sections, and containers */
+div[style*="border"],
+section[style*="border"],
+article[style*="border"] {
+  border-color: #2196F3 !important;
+}`;
+      
       // Add CSS to style tag (EXACT SAME LOGIC AS INITIAL CONVERSION)
       if (xhtmlContent.includes('</head>')) {
         // Check if style tag exists, if so append to it, otherwise create new one
@@ -5960,7 +7255,7 @@ body { margin: 0; padding: 0; }
           // Append to existing style tag
           xhtmlContent = xhtmlContent.replace(
             '</style>',
-            `${mediaOverlayCss}\n</style>`
+            `${mediaOverlayCss}\n${removeBrownBordersCss}\n</style>`
           );
           // Also add fullPageCss if not already present
           if (!xhtmlContent.includes('html, body {')) {
@@ -5973,13 +7268,173 @@ body { margin: 0; padding: 0; }
           // Create new style tag
           xhtmlContent = xhtmlContent.replace(
             '</head>',
-            `<style type="text/css">\n${fullPageCss}\n${mediaOverlayCss}\n</style>\n</head>`
+            `<style type="text/css">\n${fullPageCss}\n${mediaOverlayCss}\n${removeBrownBordersCss}\n</style>\n</head>`
           );
         }
       }
-      
-      // Ensure all text elements have unique IDs
-      xhtmlContent = this.ensureAllTextElementsHaveIds(xhtmlContent, pageNumber);
+        
+        // Ensure all text elements have unique IDs
+        xhtmlContent = this.ensureAllTextElementsHaveIds(xhtmlContent, pageNumber);
+        
+        // Replace header images with placeholders
+        xhtmlContent = this.replaceHeaderImagesWithPlaceholders(xhtmlContent, pageNumber);
+        
+        // Post-process: Remove brown border colors from inline styles (AGGRESSIVE REMOVAL)
+        // This handles cases where Gemini generates inline styles with brown borders
+        // Process ALL elements including images, divs, sections, headers, placeholders, etc.
+        
+        // List of all brown color variations to replace
+        const brownColors = [
+          'brown', '#8B4513', '#A52A2A', '#654321', '#D2691E', '#CD853F', '#BC8F8F',
+          '#A0522D', '#8B7355', '#6F4E37', '#5C4033', '#3D2817',
+          'rgb(139, 69, 19)', 'rgb(165, 42, 42)', 'rgb(101, 67, 33)',
+          'rgb(139,69,19)', 'rgb(165,42,42)', 'rgb(101,67,33)'
+        ];
+        
+        // FIRST: Specifically target placeholder elements and remove ALL borders
+        // This ensures placeholders have NO borders at all (not brown, not blue, not any color)
+        xhtmlContent = xhtmlContent.replace(
+          /(<div[^>]*(?:class=["'][^"']*(?:placeholder|image-drop-zone)[^"']*["']|data-placeholder-type)[^>]*style=["'])([^"']*)(["'][^>]*>)/gi,
+          (match, beforeStyle, styleContent, afterStyle) => {
+            let newStyle = styleContent;
+            let wasModified = false;
+            
+            // Remove ALL border properties from placeholders (any color, any style, any width)
+            const borderProperties = [
+              /border[-\w]*:\s*[^;]*/gi,
+              /border-width[-\w]*:\s*[^;]*/gi,
+              /border-style[-\w]*:\s*[^;]*/gi,
+              /border-color[-\w]*:\s*[^;]*/gi,
+              /border-top[-\w]*:\s*[^;]*/gi,
+              /border-right[-\w]*:\s*[^;]*/gi,
+              /border-bottom[-\w]*:\s*[^;]*/gi,
+              /border-left[-\w]*:\s*[^;]*/gi
+            ];
+            
+            borderProperties.forEach(pattern => {
+              if (pattern.test(newStyle)) {
+                newStyle = newStyle.replace(pattern, '');
+                wasModified = true;
+              }
+            });
+            
+            // Clean up any double semicolons or trailing semicolons
+            newStyle = newStyle.replace(/;;+/g, ';').replace(/;\s*;/g, ';').trim();
+            if (newStyle.endsWith(';')) {
+              newStyle = newStyle.slice(0, -1).trim();
+            }
+            
+            if (wasModified) {
+              return beforeStyle + newStyle + afterStyle;
+            }
+            return match;
+          }
+        );
+        
+        // SECOND: Replace brown border colors in ALL inline styles (all elements)
+        xhtmlContent = xhtmlContent.replace(/style=["']([^"']*)["']/gi, (match, styleContent) => {
+          let newStyle = styleContent;
+          let wasModified = false;
+          
+          // Replace any border property that contains brown colors
+          brownColors.forEach(brownColor => {
+            const escapedColor = brownColor.replace(/[#()\[\]{}.*+?^$|\\]/g, '\\$&');
+            
+            // Pattern 1: border: Xpx solid brown or border: brown
+            const borderPattern = new RegExp(`border[\\s]*:[\\s]*([^;]*${escapedColor}[^;]*)`, 'gi');
+            if (borderPattern.test(newStyle)) {
+              newStyle = newStyle.replace(borderPattern, (borderMatch) => {
+                wasModified = true;
+                return borderMatch.replace(new RegExp(escapedColor, 'gi'), '#2196F3');
+              });
+            }
+            
+            // Pattern 2: border-color: brown
+            const borderColorPattern = new RegExp(`border-color[\\s]*:[\\s]*${escapedColor}`, 'gi');
+            if (borderColorPattern.test(newStyle)) {
+              newStyle = newStyle.replace(borderColorPattern, 'border-color: #2196F3');
+              wasModified = true;
+            }
+            
+            // Pattern 3: border-top/bottom/left/right-color: brown
+            ['top', 'bottom', 'left', 'right'].forEach(side => {
+              const sideBorderPattern = new RegExp(`border-${side}-color[\\s]*:[\\s]*${escapedColor}`, 'gi');
+              if (sideBorderPattern.test(newStyle)) {
+                newStyle = newStyle.replace(sideBorderPattern, `border-${side}-color: #2196F3`);
+                wasModified = true;
+              }
+            });
+          });
+          
+          // If the style was modified, return the updated style attribute
+          if (wasModified) {
+            return `style="${newStyle}"`;
+          }
+          return match;
+        });
+        
+        // THIRD: Also remove brown borders from style tags in the document
+        xhtmlContent = xhtmlContent.replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, (match, cssContent) => {
+          let newCss = cssContent;
+          let wasModified = false;
+          
+          brownColors.forEach(brownColor => {
+            const escapedColor = brownColor.replace(/[#()\[\]{}.*+?^$|\\]/g, '\\$&');
+            
+            const cssBorderPattern = new RegExp(`border[\\s]*:[\\s]*([^;}]*${escapedColor}[^;}]*)[;}]`, 'gi');
+            if (cssBorderPattern.test(newCss)) {
+              newCss = newCss.replace(cssBorderPattern, (borderMatch) => {
+                wasModified = true;
+                return borderMatch.replace(new RegExp(escapedColor, 'gi'), '#2196F3');
+              });
+            }
+            
+            const cssBorderColorPattern = new RegExp(`border-color[\\s]*:[\\s]*${escapedColor}`, 'gi');
+            if (cssBorderColorPattern.test(newCss)) {
+              newCss = newCss.replace(cssBorderColorPattern, 'border-color: #2196F3');
+              wasModified = true;
+            }
+          });
+          
+          if (wasModified) {
+            return match.replace(cssContent, newCss);
+          }
+          return match;
+        });
+        
+        // FOURTH: Ensure placeholders without style attributes have no borders
+        // This catches placeholders created by Gemini without inline styles
+        xhtmlContent = xhtmlContent.replace(
+          /(<div[^>]*(?:class=["'][^"']*(?:placeholder|image-drop-zone)[^"']*["']|data-placeholder-type)[^>]*)(?!style=)([^>]*>)/gi,
+          (match, beforeClose, afterClose) => {
+            // Only add style if it doesn't already have one - ensure no borders
+            if (!beforeClose.includes('style=')) {
+              return beforeClose + ' style="border: none !important; border-width: 0 !important; border-style: none !important; border-color: transparent !important;"' + afterClose;
+            }
+            return match;
+          }
+        );
+        
+        // FIFTH: Final pass - Remove any remaining border properties from placeholders
+        // This is a catch-all to ensure NO borders remain on placeholders
+        xhtmlContent = xhtmlContent.replace(
+          /(<div[^>]*(?:class=["'][^"']*(?:placeholder|image-drop-zone)[^"']*["']|data-placeholder-type)[^>]*>)/gi,
+          (match) => {
+            // Remove any border-related attributes that might have been added
+            let cleaned = match.replace(/\s+border[-\w]*=["'][^"']*["']/gi, '');
+            if (cleaned !== match) {
+              return cleaned;
+            }
+            return match;
+          }
+        );
+        
+        // SIXTH: Final check - Replace any remaining tan/brown elements at the top with placeholders
+        // This catches any cases that were missed in the initial detection
+        if (!xhtmlContent.includes('header-image-placeholder')) {
+          xhtmlContent = this.replaceHeaderImagesWithPlaceholders(xhtmlContent, pageNumber);
+        }
+      }
       
       // Save the regenerated XHTML, replacing the old one
       const xhtmlFilePath = path.join(jobHtmlDir, `page_${pageNumber}.xhtml`);

@@ -396,7 +396,8 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
         // Get ALL placeholders - search the entire container recursively
       // Include both divs with the class AND divs with title attributes that look like placeholders
       // Use querySelectorAll with a more comprehensive selector to find nested placeholders
-      let allPlaceholders = searchContainer.querySelectorAll('.image-placeholder, .image-drop-zone');
+      // Include header and cover placeholders
+      let allPlaceholders = searchContainer.querySelectorAll('.image-placeholder, .image-drop-zone, .header-image-placeholder, .cover-page-placeholder, [data-placeholder-type="header"], [data-placeholder-type="cover"]');
       
       console.log(`[XhtmlCanvas] Initial query found ${allPlaceholders.length} placeholders`);
       
@@ -405,7 +406,12 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
       console.log(`[XhtmlCanvas] Found ${divsWithTitle.length} divs with title attributes`);
       
       divsWithTitle.forEach((div) => {
-        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
+        const hasClass = div.classList.contains('image-placeholder') || 
+                        div.classList.contains('image-drop-zone') ||
+                        div.classList.contains('header-image-placeholder') ||
+                        div.classList.contains('cover-page-placeholder') ||
+                        div.getAttribute('data-placeholder-type') === 'header' ||
+                        div.getAttribute('data-placeholder-type') === 'cover';
         const hasText = div.textContent.trim().length > 0;
         const hasImg = div.querySelector('img') !== null;
         const id = div.id;
@@ -434,7 +440,12 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
       // Check all divs with IDs for placeholder characteristics
       const allDivsWithId = searchContainer.querySelectorAll('div[id]');
       allDivsWithId.forEach((div) => {
-        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
+        const hasClass = div.classList.contains('image-placeholder') || 
+                        div.classList.contains('image-drop-zone') ||
+                        div.classList.contains('header-image-placeholder') ||
+                        div.classList.contains('cover-page-placeholder') ||
+                        div.getAttribute('data-placeholder-type') === 'header' ||
+                        div.getAttribute('data-placeholder-type') === 'cover';
         const hasText = div.textContent.trim().length > 0;
         const hasImg = div.querySelector('img') !== null;
         const id = div.id;
@@ -450,14 +461,18 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
         
         // Flexible detection criteria:
         // 1. Has the class (most reliable)
-        // 2. Matches ID pattern (pageX_imgY or pageX_divY) - original pattern
+        // 2. Matches ID pattern (pageX_imgY, pageX_divY, pageX_header_placeholder, cover-page-X) - original pattern
         // 3. Has title attribute and looks like placeholder (empty, no img)
         // 4. Has aspect-ratio CSS (common for image placeholders)
-        const matchesIdPattern = /^page\d+_(?:img|div)\d+$/i.test(id);
+        // 5. Has data-placeholder-type attribute (header or cover)
+        const matchesIdPattern = /^page\d+_(?:img|div|header_placeholder)\d*$/i.test(id) || 
+                                /^cover-page-\d+$/i.test(id);
+        const hasPlaceholderType = div.getAttribute('data-placeholder-type') === 'header' || 
+                                  div.getAttribute('data-placeholder-type') === 'cover';
         const hasAspectRatio = computedStyle.aspectRatio && computedStyle.aspectRatio !== 'auto';
-        const looksLikePlaceholder = !hasText && !hasImg && (hasTitle || hasAspectRatio || hasClass);
+        const looksLikePlaceholder = !hasText && !hasImg && (hasTitle || hasAspectRatio || hasClass || hasPlaceholderType);
         
-        if (hasClass || (matchesIdPattern && looksLikePlaceholder) || (hasTitle && looksLikePlaceholder && isVisible)) {
+        if (hasClass || hasPlaceholderType || (matchesIdPattern && looksLikePlaceholder) || (hasTitle && looksLikePlaceholder && isVisible)) {
           console.log(`[XhtmlCanvas] Found placeholder (flexible): ${id}`, {
             hasClass,
             matchesIdPattern,
@@ -584,13 +599,22 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
         tag: elementAtPoint?.tagName,
         id: elementAtPoint?.id,
         className: elementAtPoint?.className,
-        isPlaceholder: elementAtPoint?.classList?.contains('image-placeholder') || elementAtPoint?.classList?.contains('image-drop-zone')
+        isPlaceholder: elementAtPoint?.classList?.contains('image-placeholder') || 
+                      elementAtPoint?.classList?.contains('image-drop-zone') ||
+                      elementAtPoint?.classList?.contains('header-image-placeholder') ||
+                      elementAtPoint?.classList?.contains('cover-page-placeholder') ||
+                      elementAtPoint?.getAttribute('data-placeholder-type') === 'header' ||
+                      elementAtPoint?.getAttribute('data-placeholder-type') === 'cover'
       });
       
       // Strategy 1: Check if the element itself is a placeholder
       if (elementAtPoint && (
-        elementAtPoint.classList?.contains('image-placeholder') || 
-        elementAtPoint.classList?.contains('image-drop-zone')
+        elementAtPoint.classList?.contains('image-placeholder') ||
+        elementAtPoint.classList?.contains('image-drop-zone') ||
+        elementAtPoint.classList?.contains('header-image-placeholder') ||
+        elementAtPoint.classList?.contains('cover-page-placeholder') ||
+        elementAtPoint.getAttribute('data-placeholder-type') === 'header' ||
+        elementAtPoint.getAttribute('data-placeholder-type') === 'cover'
       )) {
         const placeholderId = elementAtPoint.id;
         if (placeholderId) {
@@ -1090,7 +1114,7 @@ const formatXHTML = (xhtml) => {
 /**
  * Main EpubImageEditor Component
  */
-const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
+const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayout = false }) => {
   const [xhtml, setXhtml] = useState('');
   const [originalXhtml, setOriginalXhtml] = useState('');
   const [images, setImages] = useState([]);
@@ -1105,11 +1129,17 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const [imageEditorVisible, setImageEditorVisible] = useState(false);
   const [galleryWidth, setGalleryWidth] = useState(30); // Percentage width for gallery
   const [isResizing, setIsResizing] = useState(false);
+  const [activeImageSection, setActiveImageSection] = useState('uploaded'); // 'uploaded' or 'extracted'
   const oneByOneMode = true; // One-by-one drop mode (always enabled)
   const [useGrapesJS, setUseGrapesJS] = useState(true); // Toggle between GrapesJS and DraggableCanvas
   const [grapesjsEditor, setGrapesjsEditor] = useState(null); // GrapesJS editor instance
   const [showCodeViewer, setShowCodeViewer] = useState(false); // Show/hide XHTML code viewer
   const [editedXhtml, setEditedXhtml] = useState(''); // Editable XHTML code in viewer
+  const [uploadingImages, setUploadingImages] = useState(false); // Track image upload status
+  const fileInputRef = useRef(null); // Reference to file input element
+  const [selectedImageId, setSelectedImageId] = useState(null); // Track selected image for inline editing
+  const [isResizingImage, setIsResizingImage] = useState(false); // Track if image is being resized
+  const resizeStartDataRef = useRef(null); // Store initial resize data
 
   // Initialize edited XHTML when opening code viewer
   useEffect(() => {
@@ -1133,6 +1163,97 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
     }
     loadDataRef.current = true;
   }, [jobId, pageNumber]);
+
+  // Setup inline image editing - handle image clicks and show resize/crop controls
+  useEffect(() => {
+    if (!editMode || !canvasRef.current) return;
+
+    const handleImageClick = (e) => {
+      // Find if clicked element is an image or inside an image wrapper
+      let imgElement = e.target;
+      if (imgElement.tagName !== 'IMG') {
+        imgElement = imgElement.closest('img');
+      }
+      
+      if (!imgElement) return;
+      
+      const imageId = imgElement.id || imgElement.getAttribute('data-image-id');
+      if (!imageId) return;
+
+      e.stopPropagation();
+      setSelectedImageId(imageId);
+    };
+
+    const handleCanvasClick = (e) => {
+      // If clicking outside an image, deselect
+      if (!e.target.closest('img') && !e.target.closest('.image-resize-handle')) {
+        setSelectedImageId(null);
+      }
+    };
+
+    const canvas = canvasRef.current;
+    const iframe = canvas.querySelector('iframe');
+    const targetDoc = iframe ? iframe.contentDocument : document;
+    const targetWindow = iframe ? iframe.contentWindow : window;
+
+    if (targetDoc) {
+      targetDoc.addEventListener('click', handleImageClick, true);
+      targetDoc.addEventListener('click', handleCanvasClick, true);
+    }
+
+    return () => {
+      if (targetDoc) {
+        targetDoc.removeEventListener('click', handleImageClick, true);
+        targetDoc.removeEventListener('click', handleCanvasClick, true);
+      }
+    };
+  }, [editMode, xhtml]);
+
+  // Handle image resize
+  const handleImageResize = useCallback((imageId, newWidth, newHeight) => {
+    setXhtml((currentXhtml) => {
+      try {
+        const parser = new DOMParser();
+        let doc = parser.parseFromString(currentXhtml, 'text/html');
+        let parserError = doc.querySelector('parsererror');
+        if (parserError) {
+          doc = parser.parseFromString(currentXhtml, 'application/xml');
+        }
+
+        const img = doc.getElementById(imageId) || doc.querySelector(`#${imageId}`);
+        if (!img || img.tagName?.toLowerCase() !== 'img') return currentXhtml;
+
+        img.setAttribute('width', Math.round(newWidth));
+        img.setAttribute('height', Math.round(newHeight));
+        
+        // Remove style width/height to use attributes
+        let style = img.getAttribute('style') || '';
+        style = style.replace(/width\s*:\s*[^;]+;?/gi, '').replace(/height\s*:\s*[^;]+;?/gi, '');
+        img.setAttribute('style', style.trim());
+
+        const serializer = new XMLSerializer();
+        let updated = serializer.serializeToString(doc.documentElement);
+        
+        if (doc.documentElement.tagName === 'HTML' && doc.body) {
+          const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
+          const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
+          const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
+          const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
+          const headContent = doc.head ? doc.head.innerHTML : '';
+          const bodyContent = doc.body ? doc.body.innerHTML : '';
+          updated = `${doctype}\n<html xmlns="${xmlns}">\n${headContent ? `<head>\n${headContent}\n</head>\n` : ''}<body>\n${bodyContent}\n</body>\n</html>`;
+        }
+
+        setModified(true);
+        return updated;
+      } catch (err) {
+        console.error('[EpubImageEditor] Error resizing image:', err);
+        return currentXhtml;
+      }
+    });
+  }, []);
+
+  // Handle image crop
 
   const loadData = async () => {
     try {
@@ -1334,6 +1455,54 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
     }
   };
 
+  const handleImageUpload = async (event) => {
+    const files = event.target.files;
+    if (!files || files.length === 0) {
+      return;
+    }
+
+    setUploadingImages(true);
+    setError('');
+
+    try {
+      const uploadPromises = Array.from(files).map(async (file) => {
+        const formData = new FormData();
+        formData.append('image', file);
+
+        const uploadResponse = await api.post(`/conversions/${jobId}/images/upload`, formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data',
+          },
+        });
+
+        return uploadResponse.data;
+      });
+
+      await Promise.all(uploadPromises);
+      
+      // Refresh the gallery to show newly uploaded images
+      await loadData();
+      
+      // Clear the file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+      
+      setError(''); // Clear any previous errors
+    } catch (err) {
+      console.error('Error uploading images:', err);
+      setError(err.response?.data?.error || err.message || 'Failed to upload images');
+    } finally {
+      setUploadingImages(false);
+    }
+  };
+
+  const triggerFileInput = () => {
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
   const extractPlaceholdersFromXhtml = (xhtmlContent) => {
     const parser = new DOMParser();
     let doc = parser.parseFromString(xhtmlContent, 'text/html');
@@ -1350,11 +1519,20 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       // Fallback to regex - also look for divs with title attributes (image placeholders)
       console.log('[EpubImageEditor] Using regex fallback for placeholder detection');
       
-      // Find divs with image-placeholder or image-drop-zone class
-      const classRegex = /<div[^>]*class=["'][^"]*(?:image-placeholder|image-drop-zone)[^"]*["'][^>]*id=["']([^"']+)["'][^>]*>/gi;
+      // Find divs with image-placeholder or image-drop-zone class (including header and cover placeholders)
+      const classRegex = /<div[^>]*class=["'][^"]*(?:image-placeholder|image-drop-zone|header-image-placeholder|cover-page-placeholder)[^"]*["'][^>]*id=["']([^"']+)["'][^>]*>/gi;
       let match;
       while ((match = classRegex.exec(xhtmlContent)) !== null) {
         found.push({ id: match[1] });
+      }
+      
+      // Also find header and cover placeholders by data attribute
+      const dataPlaceholderRegex = /<div[^>]*data-placeholder-type=["'](?:header|cover)["'][^>]*id=["']([^"']+)["'][^>]*>/gi;
+      while ((match = dataPlaceholderRegex.exec(xhtmlContent)) !== null) {
+        const id = match[1];
+        if (!found.find(p => p.id === id)) {
+          found.push({ id });
+        }
       }
       
       // Also find img tags with IDs matching placeholder pattern (these are placed images)
@@ -1493,7 +1671,8 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         placeholderId,
         fileName: image.fileName,
         relativePath,
-        absoluteUrl
+        absoluteUrl,
+        isFixedLayout
       });
       
       // CRITICAL FIX: Use functional update to get the latest xhtml state
@@ -1513,8 +1692,15 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       
       // For browser preview, replace relative paths with absolute URLs
       // This allows images to display in the preview while keeping EPUB-compatible paths
-      const previewXhtml = modifiedXhtml.replace(
+      // Handle both regular img tags and images inside cover placeholders
+      let previewXhtml = modifiedXhtml.replace(
         new RegExp(`src=["']images/${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'g'),
+        `src="${absoluteUrl}"`
+      );
+      
+      // Also handle if the path is already absolute but needs updating
+      previewXhtml = previewXhtml.replace(
+        new RegExp(`src=["']${api.defaults.baseURL}/conversions/${jobId}/images/${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'g'),
         `src="${absoluteUrl}"`
       );
       
@@ -1526,20 +1712,38 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         Math.min(previewXhtml.length, previewXhtml.indexOf('page1_img2') + 200)
       ));
       
-      // Verify the img tag exists and placeholder was replaced
-      const imgTagPattern = new RegExp(`<img[^>]*id=["']${placeholderId}["'][^>]*>`, 'i');
+      // Verify the img tag exists and placeholder was replaced or updated
+      // For cover placeholders, the img is inside the div, not replacing it
+      const isCoverPlaceholder = previewXhtml.includes(`id="${placeholderId}"`) && 
+                                  (previewXhtml.includes('cover-page-placeholder') || 
+                                   previewXhtml.includes('data-placeholder-type="cover"'));
+      
+      const imgTagPattern = new RegExp(`<img[^>]*src=["'][^"']*${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^"']*["'][^>]*>`, 'i');
       const imgTagMatch = previewXhtml.match(imgTagPattern);
-      const placeholderDivPattern = new RegExp(`<div[^>]*id=["']${placeholderId}["'][^>]*class=["'][^"]*image-drop-zone[^"]*["']`, 'i');
-      const placeholderStillExists = previewXhtml.match(placeholderDivPattern);
+      
+      // For cover placeholders, check if image is inside the div
+      // For regular placeholders, check if placeholder div was replaced
+      let verificationPassed = false;
+      if (isCoverPlaceholder) {
+        // Cover placeholder: check if div contains the image
+        const coverDivPattern = new RegExp(`<div[^>]*id=["']${placeholderId}["'][^>]*>.*?<img[^>]*src=["'][^"']*${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^"']*["'][^>]*>.*?</div>`, 'is');
+        verificationPassed = !!previewXhtml.match(coverDivPattern) || !!imgTagMatch;
+      } else {
+        // Regular placeholder: check if img tag exists and placeholder div was replaced
+        const placeholderDivPattern = new RegExp(`<div[^>]*id=["']${placeholderId}["'][^>]*class=["'][^"]*image-drop-zone[^"]*["']`, 'i');
+        const placeholderStillExists = previewXhtml.match(placeholderDivPattern);
+        verificationPassed = !!imgTagMatch && !placeholderStillExists;
+      }
       
       console.log('[handleDrop] Verification:', {
+        isCoverPlaceholder,
         imgTagFound: !!imgTagMatch,
-        placeholderStillExists: !!placeholderStillExists,
+        verificationPassed,
         hasAbsoluteUrl: previewXhtml.includes(absoluteUrl),
         hasRelativePath: previewXhtml.includes(`images/${image.fileName}`)
       });
       
-        if (imgTagMatch && !placeholderStillExists) {
+        if (verificationPassed) {
           console.log('[handleDrop] ✓ Image successfully injected - updating XHTML state');
           setModified(true);
           
@@ -1605,6 +1809,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                       img.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
                     }, 100);
                   }
+                  
                 } else {
                   // In GrapesJS mode, rendering is async so image might not be in DOM yet
                   if (useGrapesJS) {
@@ -1642,7 +1847,276 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       console.error('Error handling drop:', err);
       setError('Failed to insert image: ' + err.message);
     }
-  }, [jobId, extractPlaceholdersFromXhtml, canvasRef, useGrapesJS]);
+  }, [jobId, extractPlaceholdersFromXhtml, canvasRef, useGrapesJS, isFixedLayout]);
+
+  // Handle deleting a placeholder
+  const handleDeletePlaceholder = useCallback((placeholderId) => {
+    try {
+      if (!placeholderId) {
+        console.error('[handleDeletePlaceholder] No placeholder ID provided');
+        return;
+      }
+
+      // Confirm deletion
+      if (!window.confirm(`Are you sure you want to delete this placeholder?`)) {
+        return;
+      }
+
+      console.log('[handleDeletePlaceholder] Deleting placeholder:', placeholderId);
+
+      // Use functional update to get the latest xhtml state
+      setXhtml((currentXhtml) => {
+        // Parse the XHTML to find and remove the placeholder
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(currentXhtml, 'text/html');
+        let parserError = doc.querySelector('parsererror');
+        
+        if (parserError) {
+          // Try XML parsing
+          const xmlDoc = parser.parseFromString(currentXhtml, 'application/xml');
+          parserError = xmlDoc.querySelector('parsererror');
+          if (!parserError) {
+            // Use regex-based removal as fallback
+            console.log('[handleDeletePlaceholder] Using regex fallback for placeholder removal');
+            // Remove the entire placeholder div (including its content)
+            const placeholderPattern = new RegExp(
+              `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>.*?</div>`,
+              'is'
+            );
+            let modifiedXhtml = currentXhtml.replace(placeholderPattern, '');
+            
+            // Also try removing self-closing divs
+            const selfClosingPattern = new RegExp(
+              `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*/>`,
+              'i'
+            );
+            modifiedXhtml = modifiedXhtml.replace(selfClosingPattern, '');
+            
+            setModified(true);
+            setTimeout(() => {
+              extractPlaceholdersFromXhtml(modifiedXhtml);
+            }, 100);
+            
+            return modifiedXhtml;
+          }
+        }
+
+        if (!parserError) {
+          // Find the placeholder element
+          const placeholder = doc.getElementById(placeholderId);
+          
+          if (placeholder) {
+            // Remove the placeholder element
+            placeholder.remove();
+            
+            // Serialize back to XHTML
+            const serializer = new XMLSerializer();
+            let modifiedXhtml = serializer.serializeToString(doc.documentElement);
+            
+            // If we have a body, extract just the body content
+            if (doc.body) {
+              const bodyContent = doc.body.innerHTML;
+              // Preserve styles from head
+              const headStyles = doc.head ? Array.from(doc.head.querySelectorAll('style')).map(s => s.innerHTML).join('\n') : '';
+              const headLinks = doc.head ? Array.from(doc.head.querySelectorAll('link[rel="stylesheet"]')).map(l => l.outerHTML).join('\n') : '';
+              
+              if (headStyles || headLinks) {
+                modifiedXhtml = `<div class="xhtml-content-wrapper">${headLinks ? headLinks : ''}${headStyles ? `<style>${headStyles}</style>` : ''}${bodyContent}</div>`;
+              } else {
+                modifiedXhtml = `<div class="xhtml-content-wrapper">${bodyContent}</div>`;
+              }
+            }
+            
+            console.log('[handleDeletePlaceholder] ✓ Placeholder removed from XHTML');
+            setModified(true);
+            
+            // Re-extract placeholders after deletion
+            setTimeout(() => {
+              extractPlaceholdersFromXhtml(modifiedXhtml);
+            }, 100);
+            
+            return modifiedXhtml;
+          } else {
+            // Fallback to regex-based removal
+            console.log('[handleDeletePlaceholder] Placeholder not found in DOM, using regex fallback');
+            const placeholderPattern = new RegExp(
+              `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>.*?</div>`,
+              'is'
+            );
+            let modifiedXhtml = currentXhtml.replace(placeholderPattern, '');
+            
+            const selfClosingPattern = new RegExp(
+              `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*/>`,
+              'i'
+            );
+            modifiedXhtml = modifiedXhtml.replace(selfClosingPattern, '');
+            
+            setModified(true);
+            setTimeout(() => {
+              extractPlaceholdersFromXhtml(modifiedXhtml);
+            }, 100);
+            
+            return modifiedXhtml;
+          }
+        } else {
+          // Parsing failed, use regex fallback
+          console.log('[handleDeletePlaceholder] XHTML parsing failed, using regex fallback');
+          const placeholderPattern = new RegExp(
+            `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>.*?</div>`,
+            'is'
+          );
+          let modifiedXhtml = currentXhtml.replace(placeholderPattern, '');
+          
+          const selfClosingPattern = new RegExp(
+            `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*/>`,
+            'i'
+          );
+          modifiedXhtml = modifiedXhtml.replace(selfClosingPattern, '');
+          
+          setModified(true);
+          setTimeout(() => {
+            extractPlaceholdersFromXhtml(modifiedXhtml);
+          }, 100);
+          
+          return modifiedXhtml;
+        }
+      });
+    } catch (err) {
+      console.error('[handleDeletePlaceholder] Error deleting placeholder:', err);
+      setError('Failed to delete placeholder: ' + err.message);
+    }
+  }, [extractPlaceholdersFromXhtml]);
+
+  // Inject delete buttons into placeholders
+  useEffect(() => {
+    if (!editMode || !canvasRef.current) return;
+
+    const injectDeleteButtons = () => {
+      // Find the container where placeholders are rendered
+      let searchContainer = null;
+      if (canvasRef.current) {
+        if (useGrapesJS) {
+          // In GrapesJS mode, placeholders are in an iframe
+          const grapesContainer = canvasRef.current.querySelector('.grapesjs-canvas-container');
+          if (grapesContainer) {
+            const iframe = grapesContainer.querySelector('iframe');
+            if (iframe && iframe.contentDocument) {
+              searchContainer = iframe.contentDocument;
+            }
+          }
+        } else {
+          // In standard mode, placeholders are directly in canvasRef
+          searchContainer = canvasRef.current.querySelector('[data-draggable-canvas="true"]') || 
+                           canvasRef.current.querySelector('.draggable-canvas-container') ||
+                           canvasRef.current;
+        }
+      }
+
+      if (!searchContainer) return;
+
+      // Find all placeholders
+      const allPlaceholders = searchContainer.querySelectorAll(
+        '.image-placeholder, .image-drop-zone, .header-image-placeholder, .cover-page-placeholder, [data-placeholder-type]'
+      );
+
+      allPlaceholders.forEach((placeholder) => {
+        const placeholderId = placeholder.id;
+        if (!placeholderId) return;
+
+        // Check if delete button already exists
+        if (placeholder.querySelector('.placeholder-delete-btn')) return;
+
+        // Create delete button
+        const deleteBtn = document.createElement('button');
+        deleteBtn.className = 'placeholder-delete-btn';
+        deleteBtn.innerHTML = '×';
+        deleteBtn.title = 'Delete placeholder';
+        deleteBtn.style.cssText = `
+          position: absolute;
+          top: 5px;
+          right: 5px;
+          width: 24px;
+          height: 24px;
+          background: #f44336;
+          color: white;
+          border: none;
+          border-radius: 50%;
+          cursor: pointer;
+          font-size: 18px;
+          font-weight: bold;
+          line-height: 1;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          z-index: 10000;
+          box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+          transition: all 0.2s ease;
+        `;
+
+        // Hover effect
+        deleteBtn.addEventListener('mouseenter', () => {
+          deleteBtn.style.background = '#d32f2f';
+          deleteBtn.style.transform = 'scale(1.1)';
+        });
+        deleteBtn.addEventListener('mouseleave', () => {
+          deleteBtn.style.background = '#f44336';
+          deleteBtn.style.transform = 'scale(1)';
+        });
+
+        // Click handler
+        deleteBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          e.preventDefault();
+          handleDeletePlaceholder(placeholderId);
+        });
+
+        // Ensure placeholder has position relative for absolute positioning of button
+        // Use the correct window object (iframe window if in GrapesJS mode)
+        const placeholderWindow = useGrapesJS && searchContainer.defaultView 
+          ? searchContainer.defaultView 
+          : window;
+        const computedStyle = placeholderWindow.getComputedStyle(placeholder);
+        if (computedStyle.position === 'static') {
+          placeholder.style.position = 'relative';
+        }
+
+        // Append delete button to placeholder
+        placeholder.appendChild(deleteBtn);
+      });
+    };
+
+    // Initial injection
+    const timeoutId = setTimeout(() => {
+      injectDeleteButtons();
+    }, 500);
+
+    // Use MutationObserver to watch for new placeholders
+    let observer = null;
+    if (canvasRef.current) {
+      const targetNode = useGrapesJS 
+        ? canvasRef.current.querySelector('.grapesjs-canvas-container')
+        : canvasRef.current;
+      
+      if (targetNode) {
+        observer = new MutationObserver(() => {
+          injectDeleteButtons();
+        });
+
+        observer.observe(targetNode, {
+          childList: true,
+          subtree: true,
+          attributes: false
+        });
+      }
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (observer) {
+        observer.disconnect();
+      }
+    };
+  }, [xhtml, editMode, useGrapesJS, handleDeletePlaceholder]);
 
   // CRITICAL: Add drop handler for GrapesJS mode (bypasses react-dnd)
   // Use document-level handler in capture phase to intercept before react-dnd
@@ -3197,7 +3671,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
               }}
               title={regenerating ? 'Regenerating page...' : `Regenerate page ${pageNumber} XHTML using Gemini AI`}
             >
-              {regenerating ? '🔄 Regenerating...' : '🔄 Regenerate XHTML'}
+              {regenerating ? '⟳ Regenerating...' : '⟳ Regenerate XHTML'}
             </button>
             <button
               onClick={handleSave}
@@ -3222,37 +3696,162 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             className="image-gallery"
             style={{ width: `${galleryWidth}%` }}
           >
-            <h3>Image Gallery ({images.length} images)</h3>
+            <div style={{ padding: '0 1em', borderBottom: '1px solid #e0e0e0', paddingBottom: '10px', marginBottom: '10px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                <h3 style={{ margin: 0 }}>Image Gallery ({images.length} images)</h3>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept="image/*"
+                    multiple
+                    onChange={handleImageUpload}
+                    style={{ display: 'none' }}
+                  />
+                  <button
+                    onClick={triggerFileInput}
+                    disabled={uploadingImages}
+                    className="btn-upload"
+                    style={{
+                      padding: '8px 16px',
+                      backgroundColor: uploadingImages ? '#ccc' : '#4caf50',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: uploadingImages ? 'not-allowed' : 'pointer',
+                      fontSize: '13px',
+                      fontWeight: '500',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}
+                    title="Upload images from your computer"
+                  >
+                    {uploadingImages ? (
+                      <>
+                        <span>Uploading...</span>
+                      </>
+                    ) : (
+                      <>
+                        <span>↑</span>
+                        <span>Upload Images</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+              {/* Toggle Switch for Image Sections */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', marginTop: '8px' }}>
+                <span style={{ color: '#666', fontSize: '13px', fontWeight: '500' }}>View:</span>
+                <div style={{ 
+                  display: 'flex', 
+                  backgroundColor: '#f5f5f5', 
+                  borderRadius: '6px', 
+                  padding: '2px',
+                  border: '1px solid #e0e0e0'
+                }}>
+                  <button
+                    onClick={() => setActiveImageSection('uploaded')}
+                    style={{
+                      padding: '6px 16px',
+                      backgroundColor: activeImageSection === 'uploaded' ? '#4caf50' : 'transparent',
+                      color: activeImageSection === 'uploaded' ? '#fff' : '#666',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                      fontWeight: '500',
+                      transition: 'all 0.2s',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    ↑ Uploaded
+                  </button>
+                  <button
+                    onClick={() => setActiveImageSection('extracted')}
+                    style={{
+                      padding: '6px 16px',
+                      backgroundColor: activeImageSection === 'extracted' ? '#2196f3' : 'transparent',
+                      color: activeImageSection === 'extracted' ? '#fff' : '#666',
+                      border: 'none',
+                      borderRadius: '4px',
+                      cursor: 'pointer',
+                      fontSize: '13px',
+                      fontWeight: '500',
+                      transition: 'all 0.2s',
+                      whiteSpace: 'nowrap'
+                    }}
+                  >
+                    AI Extracted
+                  </button>
+                </div>
+              </div>
+            </div>
             {images.length === 0 ? (
               <div className="empty-gallery">
                 <p>No images available</p>
-                <button onClick={loadData} className="btn-refresh">
-                  Refresh
-                </button>
               </div>
             ) : (
-              <>
-                <div className="gallery-grid">
-                  {images.map((image, index) => (
-                    <DraggableImage
-                      key={index}
-                      image={image}
-                      pageNumber={pageNumber}
-                    />
-                  ))}
-                </div>
-                {/* Debug info - remove in production */}
-                {process.env.NODE_ENV === 'development' && (
-                  <div className="debug-info" style={{ padding: '1em', fontSize: '0.8em', color: '#666', borderTop: '1px solid #e0e0e0' }}>
-                    <strong>Debug:</strong>
-                    {images.slice(0, 2).map((img, idx) => (
-                      <div key={idx} style={{ marginTop: '0.5em', wordBreak: 'break-all' }}>
-                        {img.fileName}: {img.url}
+              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', padding: '0 1em' }}>
+                {/* Separate images into uploaded and extracted */}
+                {(() => {
+                  const uploadedImages = images.filter(img => img.source === 'uploaded' || (!img.source && /^img_\d+_[a-z0-9]+_/i.test(img.fileName)));
+                  const extractedImages = images.filter(img => img.source === 'extracted' || (img.source !== 'uploaded' && !/^img_\d+_[a-z0-9]+_/i.test(img.fileName)));
+                  
+                  // Show only the active section
+                  if (activeImageSection === 'uploaded') {
+                    return (
+                      <div style={{ flex: 1, minHeight: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', paddingTop: '10px' }}>
+                          <h4 style={{ margin: 0, color: '#4caf50', fontSize: '16px', fontWeight: '600' }}>
+                            ↑ Uploaded Images ({uploadedImages.length})
+                          </h4>
+                        </div>
+                        {uploadedImages.length === 0 ? (
+                          <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '14px' }}>
+                            No uploaded images yet
+                          </div>
+                        ) : (
+                          <div className="gallery-grid" style={{ maxHeight: 'none', overflow: 'visible' }}>
+                            {uploadedImages.map((image, index) => (
+                              <DraggableImage
+                                key={`uploaded-${index}`}
+                                image={image}
+                                pageNumber={pageNumber}
+                              />
+                            ))}
+                          </div>
+                        )}
                       </div>
-                    ))}
-                  </div>
-                )}
-              </>
+                    );
+                  } else {
+                    return (
+                      <div style={{ flex: 1, minHeight: 0 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', paddingTop: '10px' }}>
+                          <h4 style={{ margin: 0, color: '#2196f3', fontSize: '16px', fontWeight: '600' }}>
+                            AI Extracted Images ({extractedImages.length})
+                          </h4>
+                        </div>
+                        {extractedImages.length === 0 ? (
+                          <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '14px' }}>
+                            No extracted images available
+                          </div>
+                        ) : (
+                          <div className="gallery-grid" style={{ maxHeight: 'none', overflow: 'visible' }}>
+                            {extractedImages.map((image, index) => (
+                              <DraggableImage
+                                key={`extracted-${index}`}
+                                image={image}
+                                pageNumber={pageNumber}
+                              />
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  }
+                })()}
+              </div>
             )}
           </div>
 
@@ -3284,7 +3883,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             <div 
               className="canvas-wrapper" 
               ref={canvasRef} 
-              style={{ position: 'relative', flex: '1 1 auto', minHeight: 0 }}
+              style={{ position: 'relative', flex: '1 1 auto', minHeight: '400px', display: 'flex', flexDirection: 'column' }}
             >
               {useGrapesJS ? (
                 <>
@@ -3375,6 +3974,384 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                   )}
                 </>
               )}
+              
+              {/* Inline Image Editing Controls - Resize and Crop */}
+              {editMode && selectedImageId && (() => {
+                // Find the selected image in the canvas
+                const iframe = canvasRef.current?.querySelector('iframe');
+                const targetDoc = iframe?.contentDocument || document;
+                const selectedImg = targetDoc?.getElementById(selectedImageId) || targetDoc?.querySelector(`#${selectedImageId}`);
+                
+                if (!selectedImg || selectedImg.tagName?.toLowerCase() !== 'img') return null;
+                
+                const rect = selectedImg.getBoundingClientRect();
+                const canvasWrapperRect = canvasRef.current?.getBoundingClientRect() || { left: 0, top: 0 };
+                
+                // Calculate position relative to canvas wrapper
+                // If in iframe, account for iframe position and scroll
+                let imageLeft, imageTop;
+                if (iframe) {
+                  const iframeRect = iframe.getBoundingClientRect();
+                  const scrollX = iframe.contentWindow?.scrollX || 0;
+                  const scrollY = iframe.contentWindow?.scrollY || 0;
+                  imageLeft = rect.left - canvasWrapperRect.left + scrollX;
+                  imageTop = rect.top - canvasWrapperRect.top + scrollY;
+                } else {
+                  imageLeft = rect.left - canvasWrapperRect.left;
+                  imageTop = rect.top - canvasWrapperRect.top;
+                }
+                
+                const imageWidth = rect.width;
+                const imageHeight = rect.height;
+                
+                return (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      left: `${imageLeft}px`,
+                      top: `${imageTop}px`,
+                      width: `${imageWidth}px`,
+                      height: `${imageHeight}px`,
+                      border: '2px solid #2196f3',
+                      pointerEvents: 'none',
+                      zIndex: 10000,
+                      boxSizing: 'border-box'
+                    }}
+                  >
+                    {/* Resize Handles */}
+                    <>
+                        {/* Corner handles */}
+                        {[
+                          { pos: 'top-left', x: -6, y: -6 },
+                          { pos: 'top-right', x: imageWidth - 6, y: -6 },
+                          { pos: 'bottom-left', x: -6, y: imageHeight - 6 },
+                          { pos: 'bottom-right', x: imageWidth - 6, y: imageHeight - 6 }
+                        ].map((handle) => (
+                          <div
+                            key={handle.pos}
+                            className="image-resize-handle"
+                            style={{
+                              position: 'absolute',
+                              left: `${handle.x}px`,
+                              top: `${handle.y}px`,
+                              width: '12px',
+                              height: '12px',
+                              backgroundColor: '#2196f3',
+                              border: '2px solid #fff',
+                              borderRadius: '2px',
+                              cursor: `${handle.pos.includes('top') ? 'n' : 's'}${handle.pos.includes('left') ? 'w' : 'e'}-resize`,
+                              pointerEvents: 'auto',
+                              zIndex: 10001
+                            }}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsResizingImage(true);
+                              const startX = e.clientX;
+                              const startY = e.clientY;
+                              const startWidth = imageWidth;
+                              const startHeight = imageHeight;
+                              const maintainAspect = e.shiftKey; // Hold Shift to maintain aspect ratio
+                              
+                              const handleMouseMove = (moveE) => {
+                                const deltaX = moveE.clientX - startX;
+                                const deltaY = moveE.clientY - startY;
+                                
+                                let newWidth = startWidth;
+                                let newHeight = startHeight;
+                                
+                                if (handle.pos.includes('right')) {
+                                  newWidth = Math.max(20, startWidth + deltaX);
+                                } else if (handle.pos.includes('left')) {
+                                  newWidth = Math.max(20, startWidth - deltaX);
+                                }
+                                
+                                if (handle.pos.includes('bottom')) {
+                                  newHeight = Math.max(20, startHeight + deltaY);
+                                } else if (handle.pos.includes('top')) {
+                                  newHeight = Math.max(20, startHeight - deltaY);
+                                }
+                                
+                                // Maintain aspect ratio only if Shift key is pressed
+                                if (maintainAspect) {
+                                  const aspectRatio = startWidth / startHeight;
+                                  if (handle.pos === 'bottom-right' || handle.pos === 'top-left') {
+                                    newHeight = newWidth / aspectRatio;
+                                  } else {
+                                    newWidth = newHeight * aspectRatio;
+                                  }
+                                }
+                                
+                                handleImageResize(selectedImageId, newWidth, newHeight);
+                              };
+                              
+                              const handleMouseUp = () => {
+                                setIsResizingImage(false);
+                                document.removeEventListener('mousemove', handleMouseMove);
+                                document.removeEventListener('mouseup', handleMouseUp);
+                              };
+                              
+                              document.addEventListener('mousemove', handleMouseMove);
+                              document.addEventListener('mouseup', handleMouseUp);
+                            }}
+                          />
+                        ))}
+                        
+                        {/* Edge handles for more control */}
+                        {[
+                          { pos: 'top', x: imageWidth / 2 - 6, y: -6, cursor: 'n-resize' },
+                          { pos: 'bottom', x: imageWidth / 2 - 6, y: imageHeight - 6, cursor: 's-resize' },
+                          { pos: 'left', x: -6, y: imageHeight / 2 - 6, cursor: 'w-resize' },
+                          { pos: 'right', x: imageWidth - 6, y: imageHeight / 2 - 6, cursor: 'e-resize' }
+                        ].map((handle) => (
+                          <div
+                            key={handle.pos}
+                            className="image-resize-handle"
+                            style={{
+                              position: 'absolute',
+                              left: `${handle.x}px`,
+                              top: `${handle.y}px`,
+                              width: handle.pos === 'top' || handle.pos === 'bottom' ? '24px' : '12px',
+                              height: handle.pos === 'left' || handle.pos === 'right' ? '24px' : '12px',
+                              backgroundColor: '#2196f3',
+                              border: '2px solid #fff',
+                              borderRadius: '2px',
+                              cursor: handle.cursor,
+                              pointerEvents: 'auto',
+                              zIndex: 10001
+                            }}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setIsResizingImage(true);
+                              const startX = e.clientX;
+                              const startY = e.clientY;
+                              const startWidth = imageWidth;
+                              const startHeight = imageHeight;
+                              
+                              const handleMouseMove = (moveE) => {
+                                const deltaX = moveE.clientX - startX;
+                                const deltaY = moveE.clientY - startY;
+                                
+                                let newWidth = startWidth;
+                                let newHeight = startHeight;
+                                
+                                if (handle.pos === 'right') {
+                                  newWidth = Math.max(20, startWidth + deltaX);
+                                } else if (handle.pos === 'left') {
+                                  newWidth = Math.max(20, startWidth - deltaX);
+                                }
+                                
+                                if (handle.pos === 'bottom') {
+                                  newHeight = Math.max(20, startHeight + deltaY);
+                                } else if (handle.pos === 'top') {
+                                  newHeight = Math.max(20, startHeight - deltaY);
+                                }
+                                
+                                handleImageResize(selectedImageId, newWidth, newHeight);
+                              };
+                              
+                              const handleMouseUp = () => {
+                                setIsResizingImage(false);
+                                document.removeEventListener('mousemove', handleMouseMove);
+                                document.removeEventListener('mouseup', handleMouseUp);
+                              };
+                              
+                              document.addEventListener('mousemove', handleMouseMove);
+                              document.addEventListener('mouseup', handleMouseUp);
+                            }}
+                          />
+                        ))}
+                        
+                        {/* Draggable Border Edges - Allow resizing by dragging anywhere on the border */}
+                        {/* Top edge */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: '0px',
+                            top: '-4px',
+                            width: `${imageWidth}px`,
+                            height: '8px',
+                            cursor: 'n-resize',
+                            pointerEvents: 'auto',
+                            zIndex: 10001,
+                            backgroundColor: 'transparent'
+                          }}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setIsResizingImage(true);
+                            const startY = e.clientY;
+                            const startHeight = imageHeight;
+                            
+                            const handleMouseMove = (moveE) => {
+                              const deltaY = moveE.clientY - startY;
+                              const newHeight = Math.max(20, startHeight - deltaY);
+                              handleImageResize(selectedImageId, imageWidth, newHeight);
+                            };
+                            
+                            const handleMouseUp = () => {
+                              setIsResizingImage(false);
+                              document.removeEventListener('mousemove', handleMouseMove);
+                              document.removeEventListener('mouseup', handleMouseUp);
+                            };
+                            
+                            document.addEventListener('mousemove', handleMouseMove);
+                            document.addEventListener('mouseup', handleMouseUp);
+                          }}
+                        />
+                        
+                        {/* Bottom edge */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: '0px',
+                            top: `${imageHeight - 4}px`,
+                            width: `${imageWidth}px`,
+                            height: '8px',
+                            cursor: 's-resize',
+                            pointerEvents: 'auto',
+                            zIndex: 10001,
+                            backgroundColor: 'transparent'
+                          }}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setIsResizingImage(true);
+                            const startY = e.clientY;
+                            const startHeight = imageHeight;
+                            
+                            const handleMouseMove = (moveE) => {
+                              const deltaY = moveE.clientY - startY;
+                              const newHeight = Math.max(20, startHeight + deltaY);
+                              handleImageResize(selectedImageId, imageWidth, newHeight);
+                            };
+                            
+                            const handleMouseUp = () => {
+                              setIsResizingImage(false);
+                              document.removeEventListener('mousemove', handleMouseMove);
+                              document.removeEventListener('mouseup', handleMouseUp);
+                            };
+                            
+                            document.addEventListener('mousemove', handleMouseMove);
+                            document.addEventListener('mouseup', handleMouseUp);
+                          }}
+                        />
+                        
+                        {/* Left edge */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: '-4px',
+                            top: '0px',
+                            width: '8px',
+                            height: `${imageHeight}px`,
+                            cursor: 'w-resize',
+                            pointerEvents: 'auto',
+                            zIndex: 10001,
+                            backgroundColor: 'transparent'
+                          }}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setIsResizingImage(true);
+                            const startX = e.clientX;
+                            const startWidth = imageWidth;
+                            
+                            const handleMouseMove = (moveE) => {
+                              const deltaX = moveE.clientX - startX;
+                              const newWidth = Math.max(20, startWidth - deltaX);
+                              handleImageResize(selectedImageId, newWidth, imageHeight);
+                            };
+                            
+                            const handleMouseUp = () => {
+                              setIsResizingImage(false);
+                              document.removeEventListener('mousemove', handleMouseMove);
+                              document.removeEventListener('mouseup', handleMouseUp);
+                            };
+                            
+                            document.addEventListener('mousemove', handleMouseMove);
+                            document.addEventListener('mouseup', handleMouseUp);
+                          }}
+                        />
+                        
+                        {/* Right edge */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            left: `${imageWidth - 4}px`,
+                            top: '0px',
+                            width: '8px',
+                            height: `${imageHeight}px`,
+                            cursor: 'e-resize',
+                            pointerEvents: 'auto',
+                            zIndex: 10001,
+                            backgroundColor: 'transparent'
+                          }}
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setIsResizingImage(true);
+                            const startX = e.clientX;
+                            const startWidth = imageWidth;
+                            
+                            const handleMouseMove = (moveE) => {
+                              const deltaX = moveE.clientX - startX;
+                              const newWidth = Math.max(20, startWidth + deltaX);
+                              handleImageResize(selectedImageId, newWidth, imageHeight);
+                            };
+                            
+                            const handleMouseUp = () => {
+                              setIsResizingImage(false);
+                              document.removeEventListener('mousemove', handleMouseMove);
+                              document.removeEventListener('mouseup', handleMouseUp);
+                            };
+                            
+                            document.addEventListener('mousemove', handleMouseMove);
+                            document.addEventListener('mouseup', handleMouseUp);
+                          }}
+                        />
+                        
+                        {/* Control Buttons */}
+                        <div
+                          style={{
+                            position: 'absolute',
+                            top: '-40px',
+                            left: '50%',
+                            transform: 'translateX(-50%)',
+                            display: 'flex',
+                            gap: '8px',
+                            backgroundColor: '#fff',
+                            padding: '4px 8px',
+                            borderRadius: '4px',
+                            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+                            pointerEvents: 'auto',
+                            zIndex: 10002
+                          }}
+                        >
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedImageId(null);
+                            }}
+                            style={{
+                              padding: '4px 12px',
+                              border: '1px solid #ddd',
+                              borderRadius: '4px',
+                              backgroundColor: '#fff',
+                              cursor: 'pointer',
+                              fontSize: '12px',
+                              fontWeight: '500'
+                            }}
+                            title="Close"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                    </>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>

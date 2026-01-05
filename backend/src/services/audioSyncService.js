@@ -130,7 +130,7 @@ export class AudioSyncService {
   }
 
   // Generate TTS audio for text chunks
-  static async generateAudioForText(text, voice = 'standard', pdfId, chunkId, ttsOptions = null) {
+  static async generateAudioForText(text, voice = 'standard', pdfId, chunkId) {
     // Get active AI configuration
     const { AiConfigService } = await import('./aiConfigService.js');
     const aiConfig = await AiConfigService.getActiveConfiguration();
@@ -145,68 +145,31 @@ export class AudioSyncService {
     const audioFilePath = path.join(getTtsOutputDir(), audioFileName);
     
     // Calculate estimated duration using intelligent estimation (like Java app)
-    let estimatedDuration = this.estimateAudioDurationIntelligent(text);
-    
-    // Use TTS options from TTS Management if provided
-    const language = ttsOptions?.language || 'en';
-    const speed = ttsOptions?.speed || 1.0;
-    const gender = ttsOptions?.gender || 'NEUTRAL';
-    
-    // Adjust duration based on speed if provided
-    if (speed !== 1.0 && speed > 0) {
-      estimatedDuration = estimatedDuration / speed;
-    }
+    const estimatedDuration = this.estimateAudioDurationIntelligent(text);
     
     try {
-      // Use TtsService which supports gender/voice tone and other advanced options
-      const { TtsService } = await import('./TtsService.js');
-      const audioBuffer = await TtsService.generateAudio(text, {
-        voice: voice,
-        language: language,
-        speed: speed,
-        gender: gender
-      });
+      // Try to use Google TTS (gtts library - free, no API key needed)
+      const gttsModule = await import('gtts');
+      const Gtts = gttsModule.default || gttsModule.gtts;
       
-      if (audioBuffer && Buffer.isBuffer(audioBuffer) && audioBuffer.length > 0) {
-        // Write the generated audio buffer to file
-        await fs.writeFile(audioFilePath, audioBuffer);
-        
-        const configInfo = ttsOptions ? 
-          `[Language: ${language}, Speed: ${speed}x, Voice: ${voice}, Gender: ${gender}]` : 
-          `[Language: ${language}]`;
-        console.log(`[Audio] Generated TTS audio: ${audioFilePath} (${estimatedDuration.toFixed(2)}s) ${configInfo}`);
-      } else {
-        throw new Error('TtsService returned empty audio buffer');
-      }
-    } catch (ttsError) {
-      console.warn(`[Audio] TtsService failed, trying fallback gtts: ${ttsError.message}`);
+      const gttsInstance = new Gtts(text, 'en'); // Default to English
       
-      // Fallback to gtts if TtsService fails
-      try {
-        const gttsModule = await import('gtts');
-        const Gtts = gttsModule.default || gttsModule.gtts;
-        
-        // Extract language code (e.g., 'en-US' -> 'en')
-        const langCode = language.split('-')[0] || 'en';
-        const gttsInstance = new Gtts(text, langCode);
-        
-        await new Promise((resolve, reject) => {
-          gttsInstance.save(audioFilePath, (err) => {
-            if (err) {
-              console.warn(`[Audio] Google TTS fallback also failed: ${err.message}`);
-              // Final fallback: create silent audio file
-              AudioSyncService.createSilentAudioFile(audioFilePath, estimatedDuration).then(() => resolve()).catch(() => resolve());
-            } else {
-              console.log(`[Audio] Generated TTS audio using gtts fallback: ${audioFilePath} (${estimatedDuration.toFixed(2)}s)`);
-              resolve();
-            }
-          });
+      await new Promise((resolve, reject) => {
+        gttsInstance.save(audioFilePath, (err) => {
+          if (err) {
+            console.warn(`[Audio] Google TTS failed for block ${chunkId}, using estimation: ${err.message}`);
+            // Fallback: create silent audio file
+            AudioSyncService.createSilentAudioFile(audioFilePath, estimatedDuration).then(() => resolve()).catch(() => resolve());
+          } else {
+            console.log(`[Audio] Generated TTS audio: ${audioFilePath} (${estimatedDuration}s)`);
+            resolve();
+          }
         });
-      } catch (fallbackError) {
-        console.warn(`[Audio] All TTS methods failed, using estimation: ${fallbackError.message}`);
-        // Final fallback: create silent audio file with estimated duration
-        await this.createSilentAudioFile(audioFilePath, estimatedDuration);
-      }
+      });
+    } catch (ttsError) {
+      console.warn(`[Audio] TTS library not available, using estimation: ${ttsError.message}`);
+      // Fallback: create silent audio file with estimated duration
+      await this.createSilentAudioFile(audioFilePath, estimatedDuration);
     }
 
     return {
@@ -216,10 +179,10 @@ export class AudioSyncService {
     };
   }
 
-  // Natural audio duration estimation - no restrictions, pure natural speech
+  // Intelligent audio duration estimation (like Java app - KITABOO-style)
   static estimateAudioDurationIntelligent(text) {
     if (!text || text.trim().length === 0) {
-      return 0; // No minimum restriction
+      return 0.5;
     }
     
     const trimmedText = text.trim();
@@ -227,15 +190,33 @@ export class AudioSyncService {
     // Count words
     const wordCount = trimmedText.split(/\s+/).length;
     
+    // Count sentences (periods, exclamation, question marks)
+    const sentenceCount = trimmedText.split(/[.!?]+/).filter(s => s.trim().length > 0).length || 1;
+    
+    // Count punctuation (adds pauses)
+    const punctuationCount = (trimmedText.match(/[.,!?;:]/g) || []).length;
+    
     // Base reading speed: 200 words per minute = 3.33 words per second
-    // Pure natural speech speed - TTS will generate at its natural pace
     const wordsPerSecond = 3.33;
     
-    // Calculate natural duration - no artificial pauses, no minimums, no rounding
-    const estimatedDuration = wordCount / wordsPerSecond;
+    // Calculate base duration
+    const baseDuration = wordCount / wordsPerSecond;
     
-    // Return exact duration without any restrictions
-    return estimatedDuration;
+    // Add pause time for punctuation (0.3s per punctuation mark)
+    const pauseTime = punctuationCount * 0.3;
+    
+    // Add pause time for sentence breaks (0.5s per sentence break)
+    const sentencePauseTime = (sentenceCount - 1) * 0.5;
+    
+    // Total estimated duration
+    let estimatedDuration = baseDuration + pauseTime + sentencePauseTime;
+    
+    // Minimum duration
+    if (estimatedDuration < 0.5) {
+      estimatedDuration = 0.5;
+    }
+    
+    return Math.ceil(estimatedDuration);
   }
 
   // Create a silent audio file with estimated duration
@@ -252,25 +233,7 @@ export class AudioSyncService {
   }
 
   // Generate complete audio for all text chunks
-  static async generateCompleteAudio(textChunks, voice, pdfId, jobId, ttsOptions = null) {
-    // DIAGNOSTIC: Log input
-    console.log(`[DIAGNOSTIC] generateCompleteAudio - Starting:`, {
-      totalChunks: textChunks.length,
-      voice,
-      pdfId,
-      jobId,
-      sampleChunks: textChunks.slice(0, 5).map(chunk => ({
-        id: chunk.id,
-        pageNumber: chunk.pageNumber,
-        textLength: chunk.text?.length || 0,
-        textPreview: chunk.text?.substring(0, 50) || '',
-        isParagraphId: chunk.id?.match(/^page\d+_p\d+$/),
-        hasWordId: chunk.id?.includes('_w')
-      })),
-      chunksWithWordIds: textChunks.filter(c => c.id?.includes('_w')).length,
-      chunksWithParagraphIds: textChunks.filter(c => c.id?.match(/^page\d+_p\d+$/)).length
-    });
-    
+  static async generateCompleteAudio(textChunks, voice, pdfId, jobId) {
     const audioSegments = [];
     let currentTime = 0;
     
@@ -282,21 +245,9 @@ export class AudioSyncService {
     // Store individual audio file paths for concatenation
     const individualAudioFiles = [];
 
-    for (let idx = 0; idx < textChunks.length; idx++) {
-      const chunk = textChunks[idx];
+    for (const chunk of textChunks) {
       try {
-        // DIAGNOSTIC: Log each chunk being processed
-        console.log(`[DIAGNOSTIC] generateCompleteAudio - Processing chunk ${idx + 1}/${textChunks.length}:`, {
-          id: chunk.id,
-          pageNumber: chunk.pageNumber,
-          textLength: chunk.text?.length || 0,
-          textPreview: chunk.text?.substring(0, 60) || '',
-          isParagraphId: chunk.id?.match(/^page\d+_p\d+$/),
-          hasWordId: chunk.id?.includes('_w'),
-          wordCount: chunk.text?.split(/\s+/).length || 0
-        });
-        
-        const audio = await this.generateAudioForText(chunk.text, voice, pdfId, chunk.id, ttsOptions);
+        const audio = await this.generateAudioForText(chunk.text, voice, pdfId, chunk.id);
         individualAudioFiles.push(audio.audioFilePath);
         
         const audioSync = await AudioSyncModel.create({

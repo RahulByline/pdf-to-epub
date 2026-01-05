@@ -10,8 +10,8 @@ import SyncStudio from './pages/SyncStudio';
 import MediaOverlaySyncEditor from './pages/MediaOverlaySyncEditor';
 import AudioScript from './pages/AudioScript';
 import AiConfig from './pages/AiConfig';
+import TtsManagement from './pages/TtsManagement';
 import EpubImageEditorPage from './pages/EpubImageEditorPage';
-import TTSManagement from './pages/TTSManagement';
 
 function App() {
   return (
@@ -28,7 +28,7 @@ function App() {
           <Route path="media-overlay-sync/:jobId/:pageNumber" element={<MediaOverlaySyncEditor />} />
           <Route path="epub-image-editor/:jobId" element={<EpubImageEditorPage />} />
           <Route path="ai-config" element={<AiConfig />} />
-          <Route path="tts-management" element={<TTSManagement />} />
+          <Route path="tts-management" element={<TtsManagement />} />
         </Route>
       </Routes>
     </Router>

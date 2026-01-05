@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { conversionService } from '../services/conversionService';
 import { pdfService } from '../services/pdfService';
 import { HiOutlineViewGrid, HiOutlineViewList, HiOutlineAdjustments, HiOutlineTrash, HiOutlinePhotograph } from 'react-icons/hi';
-import { Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 
 const Conversions = () => {
   const [conversions, setConversions] = useState([]);
@@ -11,6 +11,9 @@ const Conversions = () => {
   const [statusFilter, setStatusFilter] = useState('all');
   const [pdfThumbnails, setPdfThumbnails] = useState({});
   const [viewMode, setViewMode] = useState('card'); // 'card' or 'list'
+  const [showFormatModal, setShowFormatModal] = useState(false);
+  const [selectedJobId, setSelectedJobId] = useState(null);
+  const navigate = useNavigate();
 
   useEffect(() => {
     let isMounted = true;
@@ -166,6 +169,32 @@ const Conversions = () => {
       CANCELLED: 'badge-danger'
     };
     return badges[status] || 'badge-info';
+  };
+
+  const handleImageEditorClick = (jobId) => {
+    setSelectedJobId(jobId);
+    setShowFormatModal(true);
+  };
+
+  const handleFormatSelection = (format) => {
+    if (!selectedJobId) return;
+    
+    setShowFormatModal(false);
+    
+    if (format === 'reflowable') {
+      // Navigate to image editor (current behavior)
+      navigate(`/epub-image-editor/${selectedJobId}`);
+    } else if (format === 'fixed-layout') {
+      // Navigate to fixed layout image editor (to be implemented)
+      navigate(`/epub-image-editor/${selectedJobId}?layout=fixed`);
+    }
+    
+    setSelectedJobId(null);
+  };
+
+  const handleCloseModal = () => {
+    setShowFormatModal(false);
+    setSelectedJobId(null);
   };
 
   if (loading && conversions.length === 0) {
@@ -418,14 +447,14 @@ const Conversions = () => {
 
               <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
                 {job.status === 'COMPLETED' && (
-                  <Link
-                    to={`/epub-image-editor/${job.id}`}
+                  <button
+                    onClick={() => handleImageEditorClick(job.id)}
                     className="btn btn-primary"
-                    style={{ flex: 1, textAlign: 'center', textDecoration: 'none', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
+                    style={{ flex: 1, textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}
                   >
                     <HiOutlinePhotograph size={18} />
                     Image Editor
-                  </Link>
+                  </button>
                 )}
                 {job.status === 'IN_PROGRESS' && (
                   <button
@@ -549,15 +578,15 @@ const Conversions = () => {
                   <td>{new Date(job.createdAt).toLocaleString()}</td>
                   <td>
                     {job.status === 'COMPLETED' && (
-                      <Link
-                        to={`/epub-image-editor/${job.id}`}
+                      <button
+                        onClick={() => handleImageEditorClick(job.id)}
                         className="btn btn-primary"
-                        style={{ padding: '6px 12px', fontSize: '14px', textDecoration: 'none', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                        style={{ padding: '6px 12px', fontSize: '14px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
                         title="Edit Images in EPUB"
                       >
                         <HiOutlinePhotograph size={14} />
                         Images
-                      </Link>
+                      </button>
                     )}
                     {job.status === 'IN_PROGRESS' && (
                       <button
@@ -601,6 +630,135 @@ const Conversions = () => {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+
+      {/* Format Selection Modal */}
+      {showFormatModal && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000
+          }}
+          onClick={handleCloseModal}
+        >
+          <div
+            style={{
+              backgroundColor: '#fff',
+              borderRadius: '12px',
+              padding: '32px',
+              maxWidth: '500px',
+              width: '90%',
+              boxShadow: '0 4px 20px rgba(0, 0, 0, 0.15)',
+              position: 'relative'
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h2 style={{ margin: '0 0 24px 0', fontSize: '24px', fontWeight: '600', color: '#212121' }}>
+              Select EPUB Format
+            </h2>
+            <p style={{ margin: '0 0 24px 0', fontSize: '14px', color: '#666' }}>
+              Choose the format for your EPUB conversion:
+            </p>
+            
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '24px' }}>
+              <button
+                onClick={() => handleFormatSelection('reflowable')}
+                style={{
+                  padding: '16px 20px',
+                  border: '2px solid #4caf50',
+                  borderRadius: '8px',
+                  backgroundColor: '#f1f8f4',
+                  color: '#212121',
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  fontWeight: '500',
+                  textAlign: 'left',
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px'
+                }}
+                onMouseEnter={(e) => {
+                  e.target.style.backgroundColor = '#e8f5e9';
+                  e.target.style.borderColor = '#4caf50';
+                }}
+                onMouseLeave={(e) => {
+                  e.target.style.backgroundColor = '#f1f8f4';
+                  e.target.style.borderColor = '#4caf50';
+                }}
+              >
+                <span style={{ fontWeight: '600', color: '#4caf50' }}>Reflowable</span>
+                <span style={{ fontSize: '13px', color: '#666' }}>
+                  Text flows and adapts to screen size. Best for text-heavy content.
+                </span>
+              </button>
+
+              <button
+                onClick={() => handleFormatSelection('fixed-layout')}
+                style={{
+                  padding: '16px 20px',
+                  border: '2px solid #2196f3',
+                  borderRadius: '8px',
+                  backgroundColor: '#f3f7fb',
+                  color: '#212121',
+                  cursor: 'pointer',
+                  fontSize: '16px',
+                  fontWeight: '500',
+                  textAlign: 'left',
+                  transition: 'all 0.2s ease',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '4px'
+                }}
+                onMouseEnter={(e) => {
+                  e.target.style.backgroundColor = '#e3f2fd';
+                  e.target.style.borderColor = '#2196f3';
+                }}
+                onMouseLeave={(e) => {
+                  e.target.style.backgroundColor = '#f3f7fb';
+                  e.target.style.borderColor = '#2196f3';
+                }}
+              >
+                <span style={{ fontWeight: '600', color: '#2196f3' }}>Fixed Layout</span>
+                <span style={{ fontSize: '13px', color: '#666' }}>
+                  Preserves exact page layout. Best for image-heavy or design-focused content.
+                </span>
+              </button>
+            </div>
+
+            <button
+              onClick={handleCloseModal}
+              style={{
+                padding: '10px 20px',
+                border: '1px solid #e0e0e0',
+                borderRadius: '6px',
+                backgroundColor: '#fff',
+                color: '#666',
+                cursor: 'pointer',
+                fontSize: '14px',
+                fontWeight: '500',
+                width: '100%',
+                transition: 'all 0.2s ease'
+              }}
+              onMouseEnter={(e) => {
+                e.target.style.backgroundColor = '#f5f5f5';
+              }}
+              onMouseLeave={(e) => {
+                e.target.style.backgroundColor = '#fff';
+              }}
+            >
+              Cancel
+            </button>
+          </div>
         </div>
       )}
     </div>

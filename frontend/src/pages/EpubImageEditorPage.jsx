@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { conversionService } from '../services/conversionService';
 import EpubImageEditor from '../components/EpubImageEditor';
 import { HiOutlineVolumeUp } from 'react-icons/hi';
@@ -7,6 +7,8 @@ import { HiOutlineVolumeUp } from 'react-icons/hi';
 const EpubImageEditorPage = () => {
   const { jobId } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const layout = searchParams.get('layout'); // 'fixed' or null
   const [pages, setPages] = useState([]);
   const [selectedPage, setSelectedPage] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -192,6 +194,7 @@ const EpubImageEditorPage = () => {
             pageNumber={selectedPage}
             onSave={handleSave}
             onStateChange={handleEditorStateChange}
+            isFixedLayout={layout === 'fixed'}
           />
         </div>
       )}

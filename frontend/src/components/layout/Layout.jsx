@@ -8,7 +8,7 @@ import {
   HiOutlineCog,
   HiOutlineLogout,
   HiOutlineBookOpen,
-  HiOutlineVolumeUp
+  HiOutlineSpeakerphone
 } from 'react-icons/hi';
 import './Layout.css';
 
@@ -87,7 +87,7 @@ const Layout = () => {
             <span>AI Config</span>
           </Link>
           <Link to="/tts-management" className={`sidebar-link ${isActive('/tts-management')}`}>
-            <HiOutlineVolumeUp className="sidebar-icon" />
+            <HiOutlineSpeakerphone className="sidebar-icon" />
             <span>TTS Management</span>
           </Link>
         </nav>

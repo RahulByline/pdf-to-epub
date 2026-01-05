@@ -237,48 +237,5 @@ export class TtsService {
       return { audioFilePath: null, timings: [], audioBuffer: null };
     }
   }
-
-  /**
-   * Generate audio from text (simplified API for TTS Management)
-   * @param {string} text - Text to convert to speech
-   * @param {object} options - Options { voice, language, speed }
-   * @returns {Promise<Buffer>} Audio buffer
-   */
-  static async generateAudio(text, options = {}) {
-    if (!text || !text.trim()) {
-      return null;
-    }
-
-    // Create a temporary file path
-    const tempDir = path.join(process.cwd(), 'temp');
-    await fs.mkdir(tempDir, { recursive: true }).catch(() => {});
-    const tempAudioPath = path.join(tempDir, `tts_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
-
-    // Map options to voice config
-    const voiceConfig = {
-      languageCode: options.language || 'en-US',
-      name: options.voice || undefined,
-      ssmlGender: options.gender || 'NEUTRAL'
-    };
-
-    try {
-      const result = await this.synthesizePageAudio({
-        text,
-        audioOutPath: tempAudioPath,
-        voice: voiceConfig
-      });
-
-      // Clean up temp file after reading
-      if (tempAudioPath && await fs.access(tempAudioPath).then(() => true).catch(() => false)) {
-        // Don't delete immediately - let it be cleaned up later or keep for testing
-        // await fs.unlink(tempAudioPath).catch(() => {});
-      }
-
-      return result.audioBuffer || null;
-    } catch (error) {
-      console.error('[TTS] Error in generateAudio:', error.message);
-      return null;
-    }
-  }
 }
 
