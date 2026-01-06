@@ -71,6 +71,13 @@ export const conversionService = {
     api.post(`/conversions/${jobId}/regenerate`, options).then(res => res.data.data),
   
   regeneratePageXhtml: (jobId, pageNumber) =>
-    api.post(`/conversions/${jobId}/regenerate-page/${pageNumber}`).then(res => res.data.data)
+    api.post(`/conversions/${jobId}/regenerate-page/${pageNumber}`).then(res => res.data.data),
+
+  extractPageRegion: (jobId, payload) =>
+    api.post(`/conversions/${jobId}/extract-region`, payload).then(res => res.data.data),
+
+  getPageImage: (jobId, pageNumber) =>
+    api.get(`/conversions/${jobId}/page-image/${pageNumber}`, { responseType: 'blob' })
+      .then(res => URL.createObjectURL(res.data))
 };
 

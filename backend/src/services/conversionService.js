@@ -7452,4 +7452,112 @@ article[style*="border"] {
       throw error;
     }
   }
+
+  /**
+   * Extract XHTML for a specific rectangular region of a PDF page.
+   * Uses the rendered PNG page, crops to the selected region, and calls Gemini to
+   * generate structured XHTML that visually matches that region.
+   *
+   * @param {number} jobId
+   * @param {number} pageNumber
+   * @param {{normalizedX:number, normalizedY:number, normalizedWidth:number, normalizedHeight:number}} bbox
+   *        bbox is top-left origin, normalized (0-1) relative to rendered image size
+   */
+  static async extractPageRegionXhtml(jobId, pageNumber, bbox) {
+    if (!bbox || bbox.normalizedWidth <= 0 || bbox.normalizedHeight <= 0) {
+      throw new Error('Invalid bounding box');
+    }
+
+    const job = await ConversionJobModel.findById(jobId);
+    if (!job) {
+      throw new Error(`Conversion job ${jobId} not found`);
+    }
+
+    const { getHtmlIntermediateDir } = await import('../config/fileStorage.js');
+    const { GeminiService } = await import('./geminiService.js');
+    const htmlIntermediateDir = getHtmlIntermediateDir();
+
+    const jobPngDir = path.join(htmlIntermediateDir, `job_${jobId}_png`);
+    const pngImagePath = path.join(jobPngDir, `page_${pageNumber}.png`);
+
+    try {
+      await fs.access(pngImagePath);
+    } catch (err) {
+      throw new Error(`PNG image for page ${pageNumber} not found at ${pngImagePath}`);
+    }
+
+    // Read image dimensions so we can convert normalized bbox to pixels
+    const sharp = (await import('sharp')).default;
+    const pngBuffer = await fs.readFile(pngImagePath);
+    const meta = await sharp(pngBuffer).metadata();
+    const imgWidth = meta.width || 0;
+    const imgHeight = meta.height || 0;
+
+    if (!imgWidth || !imgHeight) {
+      throw new Error(`Could not determine dimensions for ${pngImagePath}`);
+    }
+
+    const cropLeft = Math.max(0, Math.min(imgWidth, Math.round(bbox.normalizedX * imgWidth)));
+    const cropTop = Math.max(0, Math.min(imgHeight, Math.round(bbox.normalizedY * imgHeight)));
+    const cropWidth = Math.max(1, Math.min(imgWidth - cropLeft, Math.round(bbox.normalizedWidth * imgWidth)));
+    const cropHeight = Math.max(1, Math.min(imgHeight - cropTop, Math.round(bbox.normalizedHeight * imgHeight)));
+
+    // If the selection is effectively empty, short‑circuit
+    if (cropWidth <= 1 || cropHeight <= 1) {
+      return {
+        pageNumber,
+        xhtml: `<section id="page${pageNumber}_region_empty"></section>`,
+        region: { x: cropLeft, y: cropTop, width: cropWidth, height: cropHeight }
+      };
+    }
+
+    // Crop the region from the page PNG
+    const regionImagePath = path.join(jobPngDir, `page_${pageNumber}_region_${Date.now()}.png`);
+    await sharp(pngBuffer)
+      .extract({ left: cropLeft, top: cropTop, width: cropWidth, height: cropHeight })
+      .toFile(regionImagePath);
+
+    // Ask Gemini to convert JUST this region PNG into XHTML
+    const xhtmlResult = await GeminiService.convertPngToXhtml(
+      regionImagePath,
+      pageNumber,
+      []
+    );
+
+    // Clean up temp region image (best‑effort)
+    fs.rm(regionImagePath, { force: true }).catch(() => {});
+
+    if (!xhtmlResult || !xhtmlResult.xhtml) {
+      throw new Error(`Gemini API failed to generate XHTML for selected region on page ${pageNumber}`);
+    }
+
+    let xhtmlContent = xhtmlResult.xhtml;
+
+    // Apply the same sanitization as in regeneratePageXhtml
+    xhtmlContent = xhtmlContent.replace(/\\\\/g, '\\');
+    xhtmlContent = xhtmlContent.replace(/\\"/g, '"');
+    xhtmlContent = xhtmlContent.replace(/\\'/g, "'");
+    xhtmlContent = xhtmlContent.replace(/\\n/g, '\n');
+    xhtmlContent = xhtmlContent.replace(/\\r/g, '\r');
+    xhtmlContent = xhtmlContent.replace(/\\t/g, '\t');
+
+    const correctDoctype = '<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">';
+    xhtmlContent = xhtmlContent.replace(/<!DOCTYPE\s+html[^>]*>/i, correctDoctype);
+    xhtmlContent = xhtmlContent.replace(
+      /http:\/\/www\.w3\.org\/TR\/xhtml\/DTD\/xhtml1-strict\.dtd/gi,
+      'http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd'
+    );
+    xhtmlContent = xhtmlContent.replace(/&(?!#?[a-zA-Z0-9]+;)/g, '&amp;');
+
+    return {
+      pageNumber,
+      xhtml: xhtmlContent,
+      region: {
+        x: cropLeft,
+        y: cropTop,
+        width: cropWidth,
+        height: cropHeight
+      }
+    };
+  }
 }

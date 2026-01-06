@@ -1138,8 +1138,14 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
   const [uploadingImages, setUploadingImages] = useState(false); // Track image upload status
   const fileInputRef = useRef(null); // Reference to file input element
   const [selectedImageId, setSelectedImageId] = useState(null); // Track selected image for inline editing
-  const [isResizingImage, setIsResizingImage] = useState(false); // Track if image is being resized
-  const resizeStartDataRef = useRef(null); // Store initial resize data
+
+  // Allow external tools (e.g. PDF region selector) to replace the XHTML for this page
+  const applyExternalXhtml = useCallback((newXhtml) => {
+    if (!newXhtml || typeof newXhtml !== 'string') return;
+    setXhtml(newXhtml);
+    setModified(true);
+    setError('');
+  }, []);
 
   // Initialize edited XHTML when opening code viewer
   useEffect(() => {
@@ -1186,7 +1192,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
 
     const handleCanvasClick = (e) => {
       // If clicking outside an image, deselect
-      if (!e.target.closest('img') && !e.target.closest('.image-resize-handle')) {
+      if (!e.target.closest('img')) {
         setSelectedImageId(null);
       }
     };
@@ -1208,50 +1214,6 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
       }
     };
   }, [editMode, xhtml]);
-
-  // Handle image resize
-  const handleImageResize = useCallback((imageId, newWidth, newHeight) => {
-    setXhtml((currentXhtml) => {
-      try {
-        const parser = new DOMParser();
-        let doc = parser.parseFromString(currentXhtml, 'text/html');
-        let parserError = doc.querySelector('parsererror');
-        if (parserError) {
-          doc = parser.parseFromString(currentXhtml, 'application/xml');
-        }
-
-        const img = doc.getElementById(imageId) || doc.querySelector(`#${imageId}`);
-        if (!img || img.tagName?.toLowerCase() !== 'img') return currentXhtml;
-
-        img.setAttribute('width', Math.round(newWidth));
-        img.setAttribute('height', Math.round(newHeight));
-        
-        // Remove style width/height to use attributes
-        let style = img.getAttribute('style') || '';
-        style = style.replace(/width\s*:\s*[^;]+;?/gi, '').replace(/height\s*:\s*[^;]+;?/gi, '');
-        img.setAttribute('style', style.trim());
-
-        const serializer = new XMLSerializer();
-        let updated = serializer.serializeToString(doc.documentElement);
-        
-        if (doc.documentElement.tagName === 'HTML' && doc.body) {
-          const doctypeMatch = currentXhtml.match(/<!DOCTYPE[^>]*>/i);
-          const doctype = doctypeMatch ? doctypeMatch[0] : '<!DOCTYPE html>';
-          const xmlnsMatch = currentXhtml.match(/<html[^>]*xmlns=["']([^"']+)["']/i);
-          const xmlns = xmlnsMatch ? xmlnsMatch[1] : 'http://www.w3.org/1999/xhtml';
-          const headContent = doc.head ? doc.head.innerHTML : '';
-          const bodyContent = doc.body ? doc.body.innerHTML : '';
-          updated = `${doctype}\n<html xmlns="${xmlns}">\n${headContent ? `<head>\n${headContent}\n</head>\n` : ''}<body>\n${bodyContent}\n</body>\n</html>`;
-        }
-
-        setModified(true);
-        return updated;
-      } catch (err) {
-        console.error('[EpubImageEditor] Error resizing image:', err);
-        return currentXhtml;
-      }
-    });
-  }, []);
 
   // Handle image crop
 
@@ -3561,11 +3523,13 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
         saving, 
         handleSave, 
         handleReset, 
-        setEditMode 
+        setEditMode,
+        applyExternalXhtml,
+        currentXhtml: xhtml
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editMode, modified, saving]); // Functions are stable (useCallback), onStateChange should be stable in parent
+  }, [editMode, modified, saving, xhtml]); // Functions are stable (useCallback), onStateChange should be stable in parent
 
   if (loading) {
     return (
@@ -3975,7 +3939,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
                 </>
               )}
               
-              {/* Inline Image Editing Controls - Resize and Crop */}
++              {/* Inline Image Editing Controls - Crop */}
               {editMode && selectedImageId && (() => {
                 // Find the selected image in the canvas
                 const iframe = canvasRef.current?.querySelector('iframe');
@@ -4018,300 +3982,6 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
                       boxSizing: 'border-box'
                     }}
                   >
-                    {/* Resize Handles */}
-                    <>
-                        {/* Corner handles */}
-                        {[
-                          { pos: 'top-left', x: -6, y: -6 },
-                          { pos: 'top-right', x: imageWidth - 6, y: -6 },
-                          { pos: 'bottom-left', x: -6, y: imageHeight - 6 },
-                          { pos: 'bottom-right', x: imageWidth - 6, y: imageHeight - 6 }
-                        ].map((handle) => (
-                          <div
-                            key={handle.pos}
-                            className="image-resize-handle"
-                            style={{
-                              position: 'absolute',
-                              left: `${handle.x}px`,
-                              top: `${handle.y}px`,
-                              width: '12px',
-                              height: '12px',
-                              backgroundColor: '#2196f3',
-                              border: '2px solid #fff',
-                              borderRadius: '2px',
-                              cursor: `${handle.pos.includes('top') ? 'n' : 's'}${handle.pos.includes('left') ? 'w' : 'e'}-resize`,
-                              pointerEvents: 'auto',
-                              zIndex: 10001
-                            }}
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setIsResizingImage(true);
-                              const startX = e.clientX;
-                              const startY = e.clientY;
-                              const startWidth = imageWidth;
-                              const startHeight = imageHeight;
-                              const maintainAspect = e.shiftKey; // Hold Shift to maintain aspect ratio
-                              
-                              const handleMouseMove = (moveE) => {
-                                const deltaX = moveE.clientX - startX;
-                                const deltaY = moveE.clientY - startY;
-                                
-                                let newWidth = startWidth;
-                                let newHeight = startHeight;
-                                
-                                if (handle.pos.includes('right')) {
-                                  newWidth = Math.max(20, startWidth + deltaX);
-                                } else if (handle.pos.includes('left')) {
-                                  newWidth = Math.max(20, startWidth - deltaX);
-                                }
-                                
-                                if (handle.pos.includes('bottom')) {
-                                  newHeight = Math.max(20, startHeight + deltaY);
-                                } else if (handle.pos.includes('top')) {
-                                  newHeight = Math.max(20, startHeight - deltaY);
-                                }
-                                
-                                // Maintain aspect ratio only if Shift key is pressed
-                                if (maintainAspect) {
-                                  const aspectRatio = startWidth / startHeight;
-                                  if (handle.pos === 'bottom-right' || handle.pos === 'top-left') {
-                                    newHeight = newWidth / aspectRatio;
-                                  } else {
-                                    newWidth = newHeight * aspectRatio;
-                                  }
-                                }
-                                
-                                handleImageResize(selectedImageId, newWidth, newHeight);
-                              };
-                              
-                              const handleMouseUp = () => {
-                                setIsResizingImage(false);
-                                document.removeEventListener('mousemove', handleMouseMove);
-                                document.removeEventListener('mouseup', handleMouseUp);
-                              };
-                              
-                              document.addEventListener('mousemove', handleMouseMove);
-                              document.addEventListener('mouseup', handleMouseUp);
-                            }}
-                          />
-                        ))}
-                        
-                        {/* Edge handles for more control */}
-                        {[
-                          { pos: 'top', x: imageWidth / 2 - 6, y: -6, cursor: 'n-resize' },
-                          { pos: 'bottom', x: imageWidth / 2 - 6, y: imageHeight - 6, cursor: 's-resize' },
-                          { pos: 'left', x: -6, y: imageHeight / 2 - 6, cursor: 'w-resize' },
-                          { pos: 'right', x: imageWidth - 6, y: imageHeight / 2 - 6, cursor: 'e-resize' }
-                        ].map((handle) => (
-                          <div
-                            key={handle.pos}
-                            className="image-resize-handle"
-                            style={{
-                              position: 'absolute',
-                              left: `${handle.x}px`,
-                              top: `${handle.y}px`,
-                              width: handle.pos === 'top' || handle.pos === 'bottom' ? '24px' : '12px',
-                              height: handle.pos === 'left' || handle.pos === 'right' ? '24px' : '12px',
-                              backgroundColor: '#2196f3',
-                              border: '2px solid #fff',
-                              borderRadius: '2px',
-                              cursor: handle.cursor,
-                              pointerEvents: 'auto',
-                              zIndex: 10001
-                            }}
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              setIsResizingImage(true);
-                              const startX = e.clientX;
-                              const startY = e.clientY;
-                              const startWidth = imageWidth;
-                              const startHeight = imageHeight;
-                              
-                              const handleMouseMove = (moveE) => {
-                                const deltaX = moveE.clientX - startX;
-                                const deltaY = moveE.clientY - startY;
-                                
-                                let newWidth = startWidth;
-                                let newHeight = startHeight;
-                                
-                                if (handle.pos === 'right') {
-                                  newWidth = Math.max(20, startWidth + deltaX);
-                                } else if (handle.pos === 'left') {
-                                  newWidth = Math.max(20, startWidth - deltaX);
-                                }
-                                
-                                if (handle.pos === 'bottom') {
-                                  newHeight = Math.max(20, startHeight + deltaY);
-                                } else if (handle.pos === 'top') {
-                                  newHeight = Math.max(20, startHeight - deltaY);
-                                }
-                                
-                                handleImageResize(selectedImageId, newWidth, newHeight);
-                              };
-                              
-                              const handleMouseUp = () => {
-                                setIsResizingImage(false);
-                                document.removeEventListener('mousemove', handleMouseMove);
-                                document.removeEventListener('mouseup', handleMouseUp);
-                              };
-                              
-                              document.addEventListener('mousemove', handleMouseMove);
-                              document.addEventListener('mouseup', handleMouseUp);
-                            }}
-                          />
-                        ))}
-                        
-                        {/* Draggable Border Edges - Allow resizing by dragging anywhere on the border */}
-                        {/* Top edge */}
-                        <div
-                          style={{
-                            position: 'absolute',
-                            left: '0px',
-                            top: '-4px',
-                            width: `${imageWidth}px`,
-                            height: '8px',
-                            cursor: 'n-resize',
-                            pointerEvents: 'auto',
-                            zIndex: 10001,
-                            backgroundColor: 'transparent'
-                          }}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setIsResizingImage(true);
-                            const startY = e.clientY;
-                            const startHeight = imageHeight;
-                            
-                            const handleMouseMove = (moveE) => {
-                              const deltaY = moveE.clientY - startY;
-                              const newHeight = Math.max(20, startHeight - deltaY);
-                              handleImageResize(selectedImageId, imageWidth, newHeight);
-                            };
-                            
-                            const handleMouseUp = () => {
-                              setIsResizingImage(false);
-                              document.removeEventListener('mousemove', handleMouseMove);
-                              document.removeEventListener('mouseup', handleMouseUp);
-                            };
-                            
-                            document.addEventListener('mousemove', handleMouseMove);
-                            document.addEventListener('mouseup', handleMouseUp);
-                          }}
-                        />
-                        
-                        {/* Bottom edge */}
-                        <div
-                          style={{
-                            position: 'absolute',
-                            left: '0px',
-                            top: `${imageHeight - 4}px`,
-                            width: `${imageWidth}px`,
-                            height: '8px',
-                            cursor: 's-resize',
-                            pointerEvents: 'auto',
-                            zIndex: 10001,
-                            backgroundColor: 'transparent'
-                          }}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setIsResizingImage(true);
-                            const startY = e.clientY;
-                            const startHeight = imageHeight;
-                            
-                            const handleMouseMove = (moveE) => {
-                              const deltaY = moveE.clientY - startY;
-                              const newHeight = Math.max(20, startHeight + deltaY);
-                              handleImageResize(selectedImageId, imageWidth, newHeight);
-                            };
-                            
-                            const handleMouseUp = () => {
-                              setIsResizingImage(false);
-                              document.removeEventListener('mousemove', handleMouseMove);
-                              document.removeEventListener('mouseup', handleMouseUp);
-                            };
-                            
-                            document.addEventListener('mousemove', handleMouseMove);
-                            document.addEventListener('mouseup', handleMouseUp);
-                          }}
-                        />
-                        
-                        {/* Left edge */}
-                        <div
-                          style={{
-                            position: 'absolute',
-                            left: '-4px',
-                            top: '0px',
-                            width: '8px',
-                            height: `${imageHeight}px`,
-                            cursor: 'w-resize',
-                            pointerEvents: 'auto',
-                            zIndex: 10001,
-                            backgroundColor: 'transparent'
-                          }}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setIsResizingImage(true);
-                            const startX = e.clientX;
-                            const startWidth = imageWidth;
-                            
-                            const handleMouseMove = (moveE) => {
-                              const deltaX = moveE.clientX - startX;
-                              const newWidth = Math.max(20, startWidth - deltaX);
-                              handleImageResize(selectedImageId, newWidth, imageHeight);
-                            };
-                            
-                            const handleMouseUp = () => {
-                              setIsResizingImage(false);
-                              document.removeEventListener('mousemove', handleMouseMove);
-                              document.removeEventListener('mouseup', handleMouseUp);
-                            };
-                            
-                            document.addEventListener('mousemove', handleMouseMove);
-                            document.addEventListener('mouseup', handleMouseUp);
-                          }}
-                        />
-                        
-                        {/* Right edge */}
-                        <div
-                          style={{
-                            position: 'absolute',
-                            left: `${imageWidth - 4}px`,
-                            top: '0px',
-                            width: '8px',
-                            height: `${imageHeight}px`,
-                            cursor: 'e-resize',
-                            pointerEvents: 'auto',
-                            zIndex: 10001,
-                            backgroundColor: 'transparent'
-                          }}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setIsResizingImage(true);
-                            const startX = e.clientX;
-                            const startWidth = imageWidth;
-                            
-                            const handleMouseMove = (moveE) => {
-                              const deltaX = moveE.clientX - startX;
-                              const newWidth = Math.max(20, startWidth + deltaX);
-                              handleImageResize(selectedImageId, newWidth, imageHeight);
-                            };
-                            
-                            const handleMouseUp = () => {
-                              setIsResizingImage(false);
-                              document.removeEventListener('mousemove', handleMouseMove);
-                              document.removeEventListener('mouseup', handleMouseUp);
-                            };
-                            
-                            document.addEventListener('mousemove', handleMouseMove);
-                            document.addEventListener('mouseup', handleMouseUp);
-                          }}
-                        />
-                        
                         {/* Control Buttons */}
                         <div
                           style={{
@@ -4348,7 +4018,6 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
                             ✕
                           </button>
                         </div>
-                    </>
                   </div>
                 );
               })()}

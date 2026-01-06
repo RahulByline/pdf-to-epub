@@ -609,6 +609,31 @@ router.post('/:jobId/regenerate-page/:pageNumber', async (req, res) => {
   }
 });
 
+// POST /api/conversions/:jobId/extract-region - Extract XHTML for a page region
+router.post('/:jobId/extract-region', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const { pageNumber, bbox } = req.body || {};
+
+    if (!pageNumber || !bbox) {
+      return badRequestResponse(res, 'pageNumber and bbox are required');
+    }
+
+    const result = await ConversionService.extractPageRegionXhtml(jobId, parseInt(pageNumber), {
+      normalizedX: bbox.normalizedX,
+      normalizedY: bbox.normalizedY,
+      normalizedWidth: bbox.normalizedWidth,
+      normalizedHeight: bbox.normalizedHeight
+    });
+
+    res.setHeader('Content-Type', 'application/json');
+    return successResponse(res, result);
+  } catch (error) {
+    console.error('[API] Error extracting page region:', error);
+    return errorResponse(res, error.message, 500);
+  }
+});
+
 // GET /api/conversions/:jobId/xhtml/:pageNumber - Get XHTML file for a specific page
 router.get('/:jobId/xhtml/:pageNumber', async (req, res) => {
   try {
@@ -628,6 +653,31 @@ router.get('/:jobId/xhtml/:pageNumber', async (req, res) => {
       return notFoundResponse(res, `XHTML file for page ${pageNumber} not found`);
     }
   } catch (error) {
+    return errorResponse(res, error.message, 500);
+  }
+});
+
+// GET /api/conversions/:jobId/page-image/:pageNumber - Return rendered PNG for a page
+router.get('/:jobId/page-image/:pageNumber', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const pageNumber = parseInt(req.params.pageNumber);
+    const htmlIntermediateDir = getHtmlIntermediateDir();
+    const jobPngDir = path.join(htmlIntermediateDir, `job_${jobId}_png`);
+    const pngPath = path.join(jobPngDir, `page_${pageNumber}.png`);
+
+    try {
+      await fs.access(pngPath);
+    } catch (err) {
+      return notFoundResponse(res, `Page image ${pageNumber} not found`);
+    }
+
+    const buffer = await fs.readFile(pngPath);
+    res.setHeader('Content-Type', 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=604800');
+    return res.send(buffer);
+  } catch (error) {
+    console.error('[API] Error serving page image:', error);
     return errorResponse(res, error.message, 500);
   }
 });
