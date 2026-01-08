@@ -217,3 +217,20 @@
   }
 }
 
+/* Danger button for placeholder deletion */
+.grapesjs-footer-button.danger {
+  background-color: #f44336 !important;
+  color: white !important;
+  border: 1px solid #f44336 !important;
+}
+
+.grapesjs-footer-button.danger:hover {
+  background-color: #d32f2f !important;
+  border-color: #d32f2f !important;
+}
+
+/* Placeholder info styling */
+.grapesjs-footer-section .grapesjs-footer-label {
+  margin-right: 10px;
+  font-weight: 500;
+}

@@ -1,15 +1,12 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { conversionService } from '../services/conversionService';
 import EpubImageEditor from '../components/EpubImageEditor';
-import PdfRegionSelector from '../components/PdfRegionSelector';
 import { HiOutlineVolumeUp } from 'react-icons/hi';
 
 const EpubImageEditorPage = () => {
   const { jobId } = useParams();
   const navigate = useNavigate();
-  const [searchParams] = useSearchParams();
-  const layout = searchParams.get('layout'); // 'fixed' or null
   const [pages, setPages] = useState([]);
   const [selectedPage, setSelectedPage] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -41,7 +38,6 @@ const EpubImageEditorPage = () => {
 
   const [regenerating, setRegenerating] = useState(false);
   const [editorState, setEditorState] = useState(null);
-  const [showRegionSelector, setShowRegionSelector] = useState(false);
 
   const handleSave = (xhtml) => {
     console.log('XHTML saved:', xhtml);
@@ -99,19 +95,6 @@ const EpubImageEditorPage = () => {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <h1>EPUB Image Editor - Job {jobId}</h1>
           <div style={{ display: 'flex', gap: '1em', alignItems: 'center' }}>
-            <button
-              onClick={() => setShowRegionSelector(true)}
-              style={{
-                padding: '0.5em 1em',
-                backgroundColor: '#e3f2fd',
-                color: '#0d47a1',
-                border: '1px solid #bbdefb',
-                borderRadius: '4px',
-                cursor: 'pointer'
-              }}
-            >
-              Select PDF Region
-            </button>
             <label>
               Select Page:
               <select
@@ -209,21 +192,8 @@ const EpubImageEditorPage = () => {
             pageNumber={selectedPage}
             onSave={handleSave}
             onStateChange={handleEditorStateChange}
-            isFixedLayout={layout === 'fixed'}
           />
         </div>
-      )}
-      {showRegionSelector && selectedPage && (
-        <PdfRegionSelector
-          jobId={parseInt(jobId)}
-          pageNumber={selectedPage}
-          onClose={() => setShowRegionSelector(false)}
-          onResult={(result) => {
-            if (result?.xhtml && editorState?.applyExternalXhtml) {
-              editorState.applyExternalXhtml(result.xhtml);
-            }
-          }}
-        />
       )}
     </div>
   );

@@ -1309,60 +1309,16 @@ router.post('/linear-spread', async (req, res) => {
 });
 
 // GET /api/audio-sync/:id/audio - Stream audio file
-// Supports both sync ID and job ID (if sync ID not found, try as job ID)
 router.get('/:id/audio', async (req, res) => {
   try {
-    const id = parseInt(req.params.id);
-    
-    // First, try to find by sync ID
-    let sync = await AudioSyncModel.findById(id);
-    let filePath = null;
-    
-    if (sync && sync.audio_file_path) {
-      // Found sync by ID, use its audio file path
-      filePath = sync.audio_file_path;
-    } else {
-      // Not found as sync ID, try as job ID
-      console.log(`[AudioSync] ID ${id} not found as sync ID, trying as job ID...`);
-      const syncs = await AudioSyncModel.findByJobId(id);
-      
-      if (syncs && syncs.length > 0) {
-        // Find first sync with an audio file path
-        const syncWithAudio = syncs.find(s => s.audio_file_path);
-        if (syncWithAudio) {
-          filePath = syncWithAudio.audio_file_path;
-          console.log(`[AudioSync] Found audio for job ${id} via sync ${syncWithAudio.id}`);
-        } else {
-          // No syncs with audio path, try to find audio file in job directory
-          const { getEpubOutputDir } = await import('../config/fileStorage.js');
-          const jobDir = path.join(getEpubOutputDir(), `job_${id}`);
-          const possibleAudioPaths = [
-            path.join(jobDir, 'assets', 'audio', `page_1_tts.mp3`),
-            path.join(jobDir, 'assets', 'audio', `page_1_human.mp3`),
-            path.join(jobDir, 'assets', 'audio', `combined_audio_${id}.mp3`),
-            path.join(getUploadDir(), 'tts_audio', `combined_audio_${id}.mp3`),
-            path.join(getUploadDir(), 'audio', `combined_audio_${id}.mp3`)
-          ];
-          
-          for (const possiblePath of possibleAudioPaths) {
-            try {
-              await fs.access(possiblePath);
-              filePath = possiblePath;
-              console.log(`[AudioSync] Found audio file for job ${id} at: ${filePath}`);
-              break;
-            } catch (e) {
-              // Not found, try next
-            }
-          }
-        }
-      }
-    }
-    
-    if (!filePath) {
-      return notFoundResponse(res, 'Audio file not found for this sync/job ID');
+    const sync = await AudioSyncModel.findById(parseInt(req.params.id));
+    if (!sync || !sync.audio_file_path) {
+      return notFoundResponse(res, 'Audio sync not found');
     }
 
     // Resolve audio path - it could be relative to uploads dir or absolute
+    let filePath = sync.audio_file_path;
+
     if (!path.isAbsolute(filePath)) {
       // Normalize path: remove all leading 'audio/' segments, then add one
       let normalizedPath = filePath.replace(/^(audio[\\/])+/i, ''); // Remove all leading 'audio/' or 'audio\'
@@ -1374,19 +1330,13 @@ router.get('/:id/audio', async (req, res) => {
 
     try {
       await fs.access(filePath);
-      const stats = await fs.stat(filePath);
-      if (stats.size === 0) {
-        return notFoundResponse(res, 'Audio file is empty');
-      }
       res.setHeader('Content-Type', 'audio/mpeg');
-      res.setHeader('Content-Length', stats.size);
-      return res.sendFile(path.resolve(filePath));
+      return res.sendFile(filePath);
     } catch (fileError) {
-      console.error(`[AudioSync] Audio file not found: ${filePath}`, fileError);
+      console.error(`[AudioSync] Audio file not found: ${filePath}`);
       return notFoundResponse(res, 'Audio file not found on server');
     }
   } catch (error) {
-    console.error(`[AudioSync] Error serving audio:`, error);
     return errorResponse(res, error.message, 500);
   }
 });

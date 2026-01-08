@@ -9,9 +9,12 @@ const GrapesJSFooter = ({
   editor, 
   editMode, 
   images = [],
+  selectedPlaceholder, // New prop for single placeholder selection
   onImageReplace,
   onXhtmlChange,
-  onContentModified 
+  onContentModified,
+  onDeletePlaceholder, // New prop for deleting placeholders
+  onPlaceholderSelect // New prop for placeholder selection callback
 }) => {
   const [fontSize, setFontSize] = useState('16');
   const [fontColor, setFontColor] = useState('#000000');
@@ -20,7 +23,9 @@ const GrapesJSFooter = ({
   const [selectedComponent, setSelectedComponent] = useState(null);
   const [isImageSelected, setIsImageSelected] = useState(false);
   const [selectedImageId, setSelectedImageId] = useState(null);
-  const [footerMode, setFooterMode] = useState('text'); // 'text' or 'image'
+  const [isPlaceholderSelected, setIsPlaceholderSelected] = useState(false);
+  const [selectedPlaceholderId, setSelectedPlaceholderId] = useState(null);
+  const [footerMode, setFooterMode] = useState('text'); // 'text', 'image', or 'placeholder'
   const footerRef = useRef(null);
 
   // Get iframe document helper
@@ -123,11 +128,28 @@ const GrapesJSFooter = ({
                   const imgId = img.id || imgComponent.getId();
                   setSelectedImageId(imgId);
                   setSelectedComponent(imgComponent);
+                  setIsPlaceholderSelected(false);
+                  setSelectedPlaceholderId(null);
                   return;
                 }
               } catch (err) {
                 console.warn('[GrapesJSFooter] Error finding image component:', err);
               }
+            }
+
+            // Check if the clicked element is a placeholder
+            const placeholder = clickedElement.classList.contains('image-placeholder') || clickedElement.classList.contains('image-drop-zone') 
+              ? clickedElement 
+              : clickedElement.closest('.image-placeholder, .image-drop-zone');
+            
+            if (placeholder && placeholder.id) {
+              console.log('[GrapesJSFooter] Placeholder clicked in iframe:', placeholder.id);
+              setIsPlaceholderSelected(true);
+              setSelectedPlaceholderId(placeholder.id);
+              setIsImageSelected(false);
+              setSelectedImageId(null);
+              setSelectedComponent(null);
+              return;
             }
           }
         }
@@ -136,6 +158,8 @@ const GrapesJSFooter = ({
         setSelectedComponent(null);
         setIsImageSelected(false);
         setSelectedImageId(null);
+        setIsPlaceholderSelected(false);
+        setSelectedPlaceholderId(null);
 
         // If there's a text selection, update text formatting state
         if (selection && selection.rangeCount > 0) {
@@ -241,11 +265,48 @@ const GrapesJSFooter = ({
                 setIsImageSelected(true);
                 setSelectedImageId(img.id);
                 setSelectedComponent(imgComponent);
+                setIsPlaceholderSelected(false);
+                setSelectedPlaceholderId(null);
               } else {
                 console.warn('[GrapesJSFooter] Could not find image component for:', img.id);
               }
             } catch (err) {
               console.warn('[GrapesJSFooter] Error selecting image component on click:', err);
+            }
+          }, true);
+        });
+
+        // Make placeholders clickable and selectable
+        const placeholders = frameDoc.querySelectorAll('.image-placeholder, .image-drop-zone');
+        placeholders.forEach(placeholder => {
+          // Make placeholders clickable
+          placeholder.style.cursor = 'pointer';
+          placeholder.style.pointerEvents = 'auto';
+          placeholder.style.userSelect = 'none';
+          
+          // Add click handler to select placeholder
+          placeholder.addEventListener('click', (e) => {
+            e.stopPropagation();
+            e.preventDefault();
+            console.log('[GrapesJSFooter] Placeholder clicked:', placeholder.id);
+            
+            // Notify parent component about placeholder selection
+            if (onPlaceholderSelect) {
+              onPlaceholderSelect(placeholder.id);
+            }
+            
+            // Update local footer state for placeholder selection
+            setIsPlaceholderSelected(true);
+            setSelectedPlaceholderId(placeholder.id);
+            setIsImageSelected(false);
+            setSelectedImageId(null);
+            setSelectedComponent(null);
+            
+            // Clear any GrapesJS selection
+            try {
+              editor.select(null);
+            } catch (err) {
+              console.warn('[GrapesJSFooter] Error clearing GrapesJS selection:', err);
             }
           }, true);
         });
@@ -278,6 +339,8 @@ const GrapesJSFooter = ({
             const imgId = selected.get('attributes')?.id || selected.getId();
             setSelectedImageId(imgId);
             setSelectedComponent(selected);
+            setIsPlaceholderSelected(false);
+            setSelectedPlaceholderId(null);
           } else {
             updateFooterState();
           }
@@ -765,10 +828,72 @@ const GrapesJSFooter = ({
   }, [editor, selectedComponent, isImageSelected, selectedImageId, onImageReplace, onContentModified]);
 
 
-  // Toggle between text and image modes
+  // Handle placeholder deletion
+  const handlePlaceholderDelete = useCallback(() => {
+    if (!isPlaceholderSelected || !selectedPlaceholderId || !onDeletePlaceholder) return;
+
+    try {
+      // Call the parent's delete handler
+      onDeletePlaceholder(selectedPlaceholderId);
+      
+      // Reset selection state
+      setIsPlaceholderSelected(false);
+      setSelectedPlaceholderId(null);
+      
+      console.log('[GrapesJSFooter] Placeholder deleted:', selectedPlaceholderId);
+    } catch (err) {
+      console.error('[GrapesJSFooter] Error deleting placeholder:', err);
+    }
+  }, [isPlaceholderSelected, selectedPlaceholderId, onDeletePlaceholder]);
+
+  // Toggle between text and image modes (placeholder mode is controlled by parent)
   const handleModeToggle = useCallback(() => {
-    setFooterMode(prev => prev === 'text' ? 'image' : 'text');
-  }, []);
+    if (selectedPlaceholder) {
+      // Can't toggle when placeholder is selected
+      return;
+    } else if (isImageSelected) {
+      setFooterMode('image');
+    } else {
+      setFooterMode(prev => prev === 'text' ? 'image' : 'text');
+    }
+  }, [selectedPlaceholder, isImageSelected]);
+
+  // Handle image drop to selected placeholder
+  const handleImageDropToPlaceholder = useCallback((image) => {
+    if (!selectedPlaceholder) {
+      console.warn('[GrapesJSFooter] No placeholder selected for image drop');
+      return;
+    }
+
+    try {
+      // Call the parent's image replacement handler with the selected placeholder
+      if (onImageReplace) {
+        onImageReplace(selectedPlaceholder, image);
+      }
+      
+      console.log('[GrapesJSFooter] Image dropped to placeholder:', selectedPlaceholder, image.fileName);
+    } catch (err) {
+      console.error('[GrapesJSFooter] Error dropping image to placeholder:', err);
+    }
+  }, [selectedPlaceholder, onImageReplace]);
+
+  // Update footer mode based on selection
+  useEffect(() => {
+    if (selectedPlaceholder) {
+      setFooterMode('placeholder');
+      setIsPlaceholderSelected(true);
+      setSelectedPlaceholderId(selectedPlaceholder);
+      setIsImageSelected(false);
+      setSelectedImageId(null);
+      setSelectedComponent(null);
+    } else if (isImageSelected) {
+      setFooterMode('image');
+    } else {
+      setFooterMode('text');
+      setIsPlaceholderSelected(false);
+      setSelectedPlaceholderId(null);
+    }
+  }, [selectedPlaceholder, isImageSelected]);
 
   if (!editMode) return null;
 
@@ -780,13 +905,70 @@ const GrapesJSFooter = ({
           <button
             className="grapesjs-footer-mode-toggle"
             onClick={handleModeToggle}
-            title={footerMode === 'text' ? 'Switch to Image Replacement' : 'Switch to Text Formatting'}
+            disabled={selectedPlaceholder}
+            title={
+              selectedPlaceholder ? `Placeholder Selected: ${selectedPlaceholder}` :
+              isImageSelected ? 'Image Selected' :
+              footerMode === 'text' ? 'Switch to Image Replacement' : 'Switch to Text Formatting'
+            }
+            style={{
+              opacity: selectedPlaceholder ? 0.6 : 1,
+              cursor: selectedPlaceholder ? 'not-allowed' : 'pointer'
+            }}
           >
-            {footerMode === 'text' ? '🖼️ Images' : '✏️ Text'}
+            {selectedPlaceholder ? `📍 ${selectedPlaceholder}` :
+             isImageSelected ? '🖼️ Image' :
+             footerMode === 'text' ? '🖼️ Images' : '✏️ Text'}
           </button>
         </div>
 
-        {footerMode === 'image' ? (
+        {selectedPlaceholder ? (
+          // Placeholder selected - show options
+          <div className="grapesjs-footer-section">
+            <div className="grapesjs-footer-label">Selected: {selectedPlaceholder}</div>
+            <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+              <button
+                className="grapesjs-footer-button danger"
+                onClick={handlePlaceholderDelete}
+                title="Delete this placeholder"
+                style={{
+                  backgroundColor: '#f44336',
+                  color: 'white',
+                  border: '1px solid #f44336',
+                  padding: '6px 12px',
+                  borderRadius: '4px',
+                  cursor: 'pointer'
+                }}
+              >
+                🗑️ Delete
+              </button>
+              <div style={{ fontSize: '12px', color: '#666' }}>
+                Drag an image from gallery to inject into this placeholder
+              </div>
+            </div>
+            
+            {/* Image gallery for dropping */}
+            <div className="grapesjs-footer-label" style={{ marginTop: '10px' }}>Drop Image:</div>
+            <div className="grapesjs-footer-image-gallery">
+              {images.map((image, index) => (
+                <div
+                  key={index}
+                  className="grapesjs-footer-image-item"
+                  onClick={() => handleImageDropToPlaceholder(image)}
+                  title={`Drop ${image.fileName || `Image ${index + 1}`} into ${selectedPlaceholder}`}
+                  style={{ cursor: 'pointer', border: '2px solid transparent' }}
+                  onMouseOver={(e) => e.target.style.border = '2px solid #2196F3'}
+                  onMouseOut={(e) => e.target.style.border = '2px solid transparent'}
+                >
+                  <img 
+                    src={image.url || image.src} 
+                    alt={image.alt || image.fileName || `Image ${index + 1}`}
+                  />
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : footerMode === 'image' ? (
           // Image replacement mode
           <div className="grapesjs-footer-section">
             {isImageSelected && selectedImageId ? (
