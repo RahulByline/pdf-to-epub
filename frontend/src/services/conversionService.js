@@ -61,6 +61,11 @@ export const conversionService = {
   getJobImages: (jobId) =>
     api.get(`/conversions/${jobId}/images`).then(res => res.data.data),
   
+  uploadJobImages: (jobId, formData) =>
+    api.post(`/conversions/${jobId}/images/upload`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    }).then(res => res.data.data),
+  
   getJobPages: (jobId) =>
     api.get(`/conversions/${jobId}/pages`).then(res => res.data.data),
   
@@ -71,13 +76,6 @@ export const conversionService = {
     api.post(`/conversions/${jobId}/regenerate`, options).then(res => res.data.data),
   
   regeneratePageXhtml: (jobId, pageNumber) =>
-    api.post(`/conversions/${jobId}/regenerate-page/${pageNumber}`).then(res => res.data.data),
-
-  extractPageRegion: (jobId, payload) =>
-    api.post(`/conversions/${jobId}/extract-region`, payload).then(res => res.data.data),
-
-  getPageImage: (jobId, pageNumber) =>
-    api.get(`/conversions/${jobId}/page-image/${pageNumber}`, { responseType: 'blob' })
-      .then(res => URL.createObjectURL(res.data))
+    api.post(`/conversions/${jobId}/regenerate-page/${pageNumber}`).then(res => res.data.data)
 };
 

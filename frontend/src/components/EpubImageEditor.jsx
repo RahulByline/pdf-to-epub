@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo, Component } f
 import { DndProvider, useDrag, useDrop } from 'react-dnd';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import api from '../services/api';
+import { conversionService } from '../services/conversionService';
 import { injectImageIntoXhtml, applyReflowableCss } from '../utils/xhtmlUtils';
 import DraggableCanvas from './DraggableCanvas';
 import GrapesJSCanvas from './GrapesJSCanvas';
@@ -84,6 +85,24 @@ const DraggableImage = ({ image, pageNumber }) => {
           url: image.url,
           originalUrl: image.originalUrl
         });
+        
+        // Check if URL is a blob URL (uploaded images)
+        if (image.url.startsWith('blob:')) {
+          console.log('[DraggableImage] Using blob URL directly:', image.url);
+          setImgSrc(image.url);
+          setImgError(false);
+          setLoading(false);
+          return;
+        }
+        
+        // Check if URL is a data URL (base64 encoded local images)
+        if (image.url.startsWith('data:')) {
+          console.log('[DraggableImage] Using data URL directly:', image.url.substring(0, 50) + '...');
+          setImgSrc(image.url);
+          setImgError(false);
+          setLoading(false);
+          return;
+        }
         
         // Check if URL is already absolute (includes http/https)
         const isAbsoluteUrl = image.url.startsWith('http://') || image.url.startsWith('https://');
@@ -280,7 +299,18 @@ class ErrorBoundary extends Component {
  * Drop Zone Overlay Component (for image drops only)
  * This is a transparent overlay that handles image drops
  */
-const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false, oneByOneMode = true, useGrapesJS = false }) => {
+const XhtmlCanvas = ({ 
+  xhtml, 
+  placeholders, 
+  onDrop, 
+  canvasRef, 
+  editMode = false, 
+  oneByOneMode = true, 
+  useGrapesJS = false,
+  selectedPlaceholders = new Set(),
+  onToggleSelectPlaceholder,
+  onDeletePlaceholder
+}) => {
   // Early return if onDrop is not a valid function
   if (!onDrop || typeof onDrop !== 'function') {
     console.warn('[XhtmlCanvas] onDrop is not a function, returning null');
@@ -396,8 +426,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
         // Get ALL placeholders - search the entire container recursively
       // Include both divs with the class AND divs with title attributes that look like placeholders
       // Use querySelectorAll with a more comprehensive selector to find nested placeholders
-      // Include header and cover placeholders
-      let allPlaceholders = searchContainer.querySelectorAll('.image-placeholder, .image-drop-zone, .header-image-placeholder, .cover-page-placeholder, [data-placeholder-type="header"], [data-placeholder-type="cover"]');
+      let allPlaceholders = searchContainer.querySelectorAll('.image-placeholder, .image-drop-zone');
       
       console.log(`[XhtmlCanvas] Initial query found ${allPlaceholders.length} placeholders`);
       
@@ -406,12 +435,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
       console.log(`[XhtmlCanvas] Found ${divsWithTitle.length} divs with title attributes`);
       
       divsWithTitle.forEach((div) => {
-        const hasClass = div.classList.contains('image-placeholder') || 
-                        div.classList.contains('image-drop-zone') ||
-                        div.classList.contains('header-image-placeholder') ||
-                        div.classList.contains('cover-page-placeholder') ||
-                        div.getAttribute('data-placeholder-type') === 'header' ||
-                        div.getAttribute('data-placeholder-type') === 'cover';
+        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
         const hasText = div.textContent.trim().length > 0;
         const hasImg = div.querySelector('img') !== null;
         const id = div.id;
@@ -440,12 +464,7 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
       // Check all divs with IDs for placeholder characteristics
       const allDivsWithId = searchContainer.querySelectorAll('div[id]');
       allDivsWithId.forEach((div) => {
-        const hasClass = div.classList.contains('image-placeholder') || 
-                        div.classList.contains('image-drop-zone') ||
-                        div.classList.contains('header-image-placeholder') ||
-                        div.classList.contains('cover-page-placeholder') ||
-                        div.getAttribute('data-placeholder-type') === 'header' ||
-                        div.getAttribute('data-placeholder-type') === 'cover';
+        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
         const hasText = div.textContent.trim().length > 0;
         const hasImg = div.querySelector('img') !== null;
         const id = div.id;
@@ -461,18 +480,14 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
         
         // Flexible detection criteria:
         // 1. Has the class (most reliable)
-        // 2. Matches ID pattern (pageX_imgY, pageX_divY, pageX_header_placeholder, cover-page-X) - original pattern
+        // 2. Matches ID pattern (pageX_imgY or pageX_divY) - original pattern
         // 3. Has title attribute and looks like placeholder (empty, no img)
         // 4. Has aspect-ratio CSS (common for image placeholders)
-        // 5. Has data-placeholder-type attribute (header or cover)
-        const matchesIdPattern = /^page\d+_(?:img|div|header_placeholder)\d*$/i.test(id) || 
-                                /^cover-page-\d+$/i.test(id);
-        const hasPlaceholderType = div.getAttribute('data-placeholder-type') === 'header' || 
-                                  div.getAttribute('data-placeholder-type') === 'cover';
+        const matchesIdPattern = /^page\d+_(?:img|div)\d+$/i.test(id);
         const hasAspectRatio = computedStyle.aspectRatio && computedStyle.aspectRatio !== 'auto';
-        const looksLikePlaceholder = !hasText && !hasImg && (hasTitle || hasAspectRatio || hasClass || hasPlaceholderType);
+        const looksLikePlaceholder = !hasText && !hasImg && (hasTitle || hasAspectRatio || hasClass);
         
-        if (hasClass || hasPlaceholderType || (matchesIdPattern && looksLikePlaceholder) || (hasTitle && looksLikePlaceholder && isVisible)) {
+        if (hasClass || (matchesIdPattern && looksLikePlaceholder) || (hasTitle && looksLikePlaceholder && isVisible)) {
           console.log(`[XhtmlCanvas] Found placeholder (flexible): ${id}`, {
             hasClass,
             matchesIdPattern,
@@ -599,22 +614,13 @@ const XhtmlCanvas = ({ xhtml, placeholders, onDrop, canvasRef, editMode = false,
         tag: elementAtPoint?.tagName,
         id: elementAtPoint?.id,
         className: elementAtPoint?.className,
-        isPlaceholder: elementAtPoint?.classList?.contains('image-placeholder') || 
-                      elementAtPoint?.classList?.contains('image-drop-zone') ||
-                      elementAtPoint?.classList?.contains('header-image-placeholder') ||
-                      elementAtPoint?.classList?.contains('cover-page-placeholder') ||
-                      elementAtPoint?.getAttribute('data-placeholder-type') === 'header' ||
-                      elementAtPoint?.getAttribute('data-placeholder-type') === 'cover'
+        isPlaceholder: elementAtPoint?.classList?.contains('image-placeholder') || elementAtPoint?.classList?.contains('image-drop-zone')
       });
       
       // Strategy 1: Check if the element itself is a placeholder
       if (elementAtPoint && (
-        elementAtPoint.classList?.contains('image-placeholder') ||
-        elementAtPoint.classList?.contains('image-drop-zone') ||
-        elementAtPoint.classList?.contains('header-image-placeholder') ||
-        elementAtPoint.classList?.contains('cover-page-placeholder') ||
-        elementAtPoint.getAttribute('data-placeholder-type') === 'header' ||
-        elementAtPoint.getAttribute('data-placeholder-type') === 'cover'
+        elementAtPoint.classList?.contains('image-placeholder') || 
+        elementAtPoint.classList?.contains('image-drop-zone')
       )) {
         const placeholderId = elementAtPoint.id;
         if (placeholderId) {
@@ -1114,7 +1120,7 @@ const formatXHTML = (xhtml) => {
 /**
  * Main EpubImageEditor Component
  */
-const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayout = false }) => {
+const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
   const [xhtml, setXhtml] = useState('');
   const [originalXhtml, setOriginalXhtml] = useState('');
   const [images, setImages] = useState([]);
@@ -1129,23 +1135,18 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
   const [imageEditorVisible, setImageEditorVisible] = useState(false);
   const [galleryWidth, setGalleryWidth] = useState(30); // Percentage width for gallery
   const [isResizing, setIsResizing] = useState(false);
-  const [activeImageSection, setActiveImageSection] = useState('uploaded'); // 'uploaded' or 'extracted'
+  const [selectedPlaceholder, setSelectedPlaceholder] = useState(null); // Single placeholder selection for targeted drops
+  
+  // Debug: Log selectedPlaceholder changes
+  useEffect(() => {
+    console.log('[EpubImageEditor] selectedPlaceholder state changed to:', selectedPlaceholder);
+  }, [selectedPlaceholder]);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(null); // Placeholder ID to confirm deletion
   const oneByOneMode = true; // One-by-one drop mode (always enabled)
   const [useGrapesJS, setUseGrapesJS] = useState(true); // Toggle between GrapesJS and DraggableCanvas
   const [grapesjsEditor, setGrapesjsEditor] = useState(null); // GrapesJS editor instance
   const [showCodeViewer, setShowCodeViewer] = useState(false); // Show/hide XHTML code viewer
   const [editedXhtml, setEditedXhtml] = useState(''); // Editable XHTML code in viewer
-  const [uploadingImages, setUploadingImages] = useState(false); // Track image upload status
-  const fileInputRef = useRef(null); // Reference to file input element
-  const [selectedImageId, setSelectedImageId] = useState(null); // Track selected image for inline editing
-
-  // Allow external tools (e.g. PDF region selector) to replace the XHTML for this page
-  const applyExternalXhtml = useCallback((newXhtml) => {
-    if (!newXhtml || typeof newXhtml !== 'string') return;
-    setXhtml(newXhtml);
-    setModified(true);
-    setError('');
-  }, []);
 
   // Initialize edited XHTML when opening code viewer
   useEffect(() => {
@@ -1169,53 +1170,6 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
     }
     loadDataRef.current = true;
   }, [jobId, pageNumber]);
-
-  // Setup inline image editing - handle image clicks and show resize/crop controls
-  useEffect(() => {
-    if (!editMode || !canvasRef.current) return;
-
-    const handleImageClick = (e) => {
-      // Find if clicked element is an image or inside an image wrapper
-      let imgElement = e.target;
-      if (imgElement.tagName !== 'IMG') {
-        imgElement = imgElement.closest('img');
-      }
-      
-      if (!imgElement) return;
-      
-      const imageId = imgElement.id || imgElement.getAttribute('data-image-id');
-      if (!imageId) return;
-
-      e.stopPropagation();
-      setSelectedImageId(imageId);
-    };
-
-    const handleCanvasClick = (e) => {
-      // If clicking outside an image, deselect
-      if (!e.target.closest('img')) {
-        setSelectedImageId(null);
-      }
-    };
-
-    const canvas = canvasRef.current;
-    const iframe = canvas.querySelector('iframe');
-    const targetDoc = iframe ? iframe.contentDocument : document;
-    const targetWindow = iframe ? iframe.contentWindow : window;
-
-    if (targetDoc) {
-      targetDoc.addEventListener('click', handleImageClick, true);
-      targetDoc.addEventListener('click', handleCanvasClick, true);
-    }
-
-    return () => {
-      if (targetDoc) {
-        targetDoc.removeEventListener('click', handleImageClick, true);
-        targetDoc.removeEventListener('click', handleCanvasClick, true);
-      }
-    };
-  }, [editMode, xhtml]);
-
-  // Handle image crop
 
   const loadData = async () => {
     try {
@@ -1407,61 +1361,23 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
       console.log('[EpubImageEditor] Final images with absolute URLs:', imagesWithAbsoluteUrls.length);
       
       console.log('Images with absolute URLs:', imagesWithAbsoluteUrls);
-      setImages(imagesWithAbsoluteUrls);
+      
+      // Load local images from localStorage
+      const storageKey = `epub_local_images_${jobId}`;
+      const localImages = JSON.parse(localStorage.getItem(storageKey) || '[]');
+      console.log('[EpubImageEditor] Loaded local images:', localImages.length, 'images');
+      
+      // Combine server and local images
+      const allImages = [...imagesWithAbsoluteUrls, ...localImages];
+      console.log('[EpubImageEditor] Total images (server + local):', allImages.length);
+      
+      setImages(allImages);
       
     } catch (err) {
       console.error('Error loading data:', err);
       setError(err.response?.data?.message || err.message || 'Failed to load data');
     } finally {
       setLoading(false);
-    }
-  };
-
-  const handleImageUpload = async (event) => {
-    const files = event.target.files;
-    if (!files || files.length === 0) {
-      return;
-    }
-
-    setUploadingImages(true);
-    setError('');
-
-    try {
-      const uploadPromises = Array.from(files).map(async (file) => {
-        const formData = new FormData();
-        formData.append('image', file);
-
-        const uploadResponse = await api.post(`/conversions/${jobId}/images/upload`, formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-        });
-
-        return uploadResponse.data;
-      });
-
-      await Promise.all(uploadPromises);
-      
-      // Refresh the gallery to show newly uploaded images
-      await loadData();
-      
-      // Clear the file input
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-      
-      setError(''); // Clear any previous errors
-    } catch (err) {
-      console.error('Error uploading images:', err);
-      setError(err.response?.data?.error || err.message || 'Failed to upload images');
-    } finally {
-      setUploadingImages(false);
-    }
-  };
-
-  const triggerFileInput = () => {
-    if (fileInputRef.current) {
-      fileInputRef.current.click();
     }
   };
 
@@ -1481,24 +1397,16 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
       // Fallback to regex - also look for divs with title attributes (image placeholders)
       console.log('[EpubImageEditor] Using regex fallback for placeholder detection');
       
-      // Find divs with image-placeholder or image-drop-zone class (including header and cover placeholders)
-      const classRegex = /<div[^>]*class=["'][^"]*(?:image-placeholder|image-drop-zone|header-image-placeholder|cover-page-placeholder)[^"]*["'][^>]*id=["']([^"']+)["'][^>]*>/gi;
+      // Find divs with image-placeholder or image-drop-zone class
+      const classRegex = /<div[^>]*class=["'][^"]*(?:image-placeholder|image-drop-zone)[^"]*["'][^>]*id=["']([^"']+)["'][^>]*>/gi;
       let match;
       while ((match = classRegex.exec(xhtmlContent)) !== null) {
         found.push({ id: match[1] });
       }
       
-      // Also find header and cover placeholders by data attribute
-      const dataPlaceholderRegex = /<div[^>]*data-placeholder-type=["'](?:header|cover)["'][^>]*id=["']([^"']+)["'][^>]*>/gi;
-      while ((match = dataPlaceholderRegex.exec(xhtmlContent)) !== null) {
-        const id = match[1];
-        if (!found.find(p => p.id === id)) {
-          found.push({ id });
-        }
-      }
-      
       // Also find img tags with IDs matching placeholder pattern (these are placed images)
-      const imgRegex = /<img[^>]*id=["'](page\d+_(?:div|img)\d+)["'][^>]*>/gi;
+      // Look for both img tags and placeholder divs with 'img' or 'dropzone' in ID
+      const imgRegex = /<img[^>]*id=["'](page\d+_(?:img|dropzone)\d+)["'][^>]*>/gi;
       while ((match = imgRegex.exec(xhtmlContent)) !== null) {
         const id = match[1];
         if (!found.find(p => p.id === id)) {
@@ -1507,7 +1415,8 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
       }
       
       // Also find divs with title attributes that look like image placeholders
-      const titleRegex = /<div[^>]*id=["'](page\d+_(?:div|img)\d+)["'][^>]*title=["']([^"']+)["'][^>]*>/gi;
+      // Only look for 'img' and 'dropzone' IDs, not general 'div' IDs
+      const titleRegex = /<div[^>]*id=["'](page\d+_(?:img|dropzone)\d+)["'][^>]*title=["']([^"']+)["'][^>]*>/gi;
       while ((match = titleRegex.exec(xhtmlContent)) !== null) {
         const id = match[1];
         if (!found.find(p => p.id === id)) {
@@ -1533,8 +1442,9 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
     const imgElements = doc.querySelectorAll('img[id]');
     imgElements.forEach((img) => {
       const id = img.id;
-      // Check if ID matches placeholder pattern (pageX_divY or pageX_imgY)
-      if (id && /^page\d+_(?:div|img)\d+$/.test(id)) {
+      // Check if ID matches placeholder pattern (pageX_imgY or pageX_dropzoneY)
+      // Only consider 'img' and 'dropzone' IDs as placeholders
+      if (id && /^page\d+_(?:img|dropzone)\d+$/i.test(id)) {
         if (!found.find(p => p.id === id)) {
           found.push({ id, title: img.getAttribute('alt') || img.getAttribute('title') || '' });
         }
@@ -1549,8 +1459,9 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
       const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
       const hasText = div.textContent.trim().length > 0;
       
-      // If it has a title, no class, no text content, and ID matches pattern (pageX_divY or pageX_imgY)
-      if (!hasClass && !hasText && id && /^page\d+_(?:div|img)\d+$/.test(id)) {
+      // If it has a title, no class, no text content, and ID matches pattern (pageX_imgY or pageX_dropzoneY)
+      // Only consider 'img' and 'dropzone' IDs, not general 'div' IDs
+      if (!hasClass && !hasText && id && /^page\d+_(?:img|dropzone)\d+$/i.test(id)) {
         // This is likely an image placeholder - add it
         if (!found.find(p => p.id === id)) {
           found.push({ id, title });
@@ -1633,8 +1544,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
         placeholderId,
         fileName: image.fileName,
         relativePath,
-        absoluteUrl,
-        isFixedLayout
+        absoluteUrl
       });
       
       // CRITICAL FIX: Use functional update to get the latest xhtml state
@@ -1654,15 +1564,8 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
       
       // For browser preview, replace relative paths with absolute URLs
       // This allows images to display in the preview while keeping EPUB-compatible paths
-      // Handle both regular img tags and images inside cover placeholders
-      let previewXhtml = modifiedXhtml.replace(
+      const previewXhtml = modifiedXhtml.replace(
         new RegExp(`src=["']images/${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'g'),
-        `src="${absoluteUrl}"`
-      );
-      
-      // Also handle if the path is already absolute but needs updating
-      previewXhtml = previewXhtml.replace(
-        new RegExp(`src=["']${api.defaults.baseURL}/conversions/${jobId}/images/${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`, 'g'),
         `src="${absoluteUrl}"`
       );
       
@@ -1674,38 +1577,20 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
         Math.min(previewXhtml.length, previewXhtml.indexOf('page1_img2') + 200)
       ));
       
-      // Verify the img tag exists and placeholder was replaced or updated
-      // For cover placeholders, the img is inside the div, not replacing it
-      const isCoverPlaceholder = previewXhtml.includes(`id="${placeholderId}"`) && 
-                                  (previewXhtml.includes('cover-page-placeholder') || 
-                                   previewXhtml.includes('data-placeholder-type="cover"'));
-      
-      const imgTagPattern = new RegExp(`<img[^>]*src=["'][^"']*${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^"']*["'][^>]*>`, 'i');
+      // Verify the img tag exists and placeholder was replaced
+      const imgTagPattern = new RegExp(`<img[^>]*id=["']${placeholderId}["'][^>]*>`, 'i');
       const imgTagMatch = previewXhtml.match(imgTagPattern);
-      
-      // For cover placeholders, check if image is inside the div
-      // For regular placeholders, check if placeholder div was replaced
-      let verificationPassed = false;
-      if (isCoverPlaceholder) {
-        // Cover placeholder: check if div contains the image
-        const coverDivPattern = new RegExp(`<div[^>]*id=["']${placeholderId}["'][^>]*>.*?<img[^>]*src=["'][^"']*${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^"']*["'][^>]*>.*?</div>`, 'is');
-        verificationPassed = !!previewXhtml.match(coverDivPattern) || !!imgTagMatch;
-      } else {
-        // Regular placeholder: check if img tag exists and placeholder div was replaced
-        const placeholderDivPattern = new RegExp(`<div[^>]*id=["']${placeholderId}["'][^>]*class=["'][^"]*image-drop-zone[^"]*["']`, 'i');
-        const placeholderStillExists = previewXhtml.match(placeholderDivPattern);
-        verificationPassed = !!imgTagMatch && !placeholderStillExists;
-      }
+      const placeholderDivPattern = new RegExp(`<div[^>]*id=["']${placeholderId}["'][^>]*class=["'][^"]*image-drop-zone[^"]*["']`, 'i');
+      const placeholderStillExists = previewXhtml.match(placeholderDivPattern);
       
       console.log('[handleDrop] Verification:', {
-        isCoverPlaceholder,
         imgTagFound: !!imgTagMatch,
-        verificationPassed,
+        placeholderStillExists: !!placeholderStillExists,
         hasAbsoluteUrl: previewXhtml.includes(absoluteUrl),
         hasRelativePath: previewXhtml.includes(`images/${image.fileName}`)
       });
       
-        if (verificationPassed) {
+        if (imgTagMatch && !placeholderStillExists) {
           console.log('[handleDrop] ✓ Image successfully injected - updating XHTML state');
           setModified(true);
           
@@ -1771,7 +1656,6 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
                       img.scrollIntoView({ behavior: 'smooth', block: 'center', inline: 'center' });
                     }, 100);
                   }
-                  
                 } else {
                   // In GrapesJS mode, rendering is async so image might not be in DOM yet
                   if (useGrapesJS) {
@@ -1809,276 +1693,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
       console.error('Error handling drop:', err);
       setError('Failed to insert image: ' + err.message);
     }
-  }, [jobId, extractPlaceholdersFromXhtml, canvasRef, useGrapesJS, isFixedLayout]);
-
-  // Handle deleting a placeholder
-  const handleDeletePlaceholder = useCallback((placeholderId) => {
-    try {
-      if (!placeholderId) {
-        console.error('[handleDeletePlaceholder] No placeholder ID provided');
-        return;
-      }
-
-      // Confirm deletion
-      if (!window.confirm(`Are you sure you want to delete this placeholder?`)) {
-        return;
-      }
-
-      console.log('[handleDeletePlaceholder] Deleting placeholder:', placeholderId);
-
-      // Use functional update to get the latest xhtml state
-      setXhtml((currentXhtml) => {
-        // Parse the XHTML to find and remove the placeholder
-        const parser = new DOMParser();
-        const doc = parser.parseFromString(currentXhtml, 'text/html');
-        let parserError = doc.querySelector('parsererror');
-        
-        if (parserError) {
-          // Try XML parsing
-          const xmlDoc = parser.parseFromString(currentXhtml, 'application/xml');
-          parserError = xmlDoc.querySelector('parsererror');
-          if (!parserError) {
-            // Use regex-based removal as fallback
-            console.log('[handleDeletePlaceholder] Using regex fallback for placeholder removal');
-            // Remove the entire placeholder div (including its content)
-            const placeholderPattern = new RegExp(
-              `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>.*?</div>`,
-              'is'
-            );
-            let modifiedXhtml = currentXhtml.replace(placeholderPattern, '');
-            
-            // Also try removing self-closing divs
-            const selfClosingPattern = new RegExp(
-              `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*/>`,
-              'i'
-            );
-            modifiedXhtml = modifiedXhtml.replace(selfClosingPattern, '');
-            
-            setModified(true);
-            setTimeout(() => {
-              extractPlaceholdersFromXhtml(modifiedXhtml);
-            }, 100);
-            
-            return modifiedXhtml;
-          }
-        }
-
-        if (!parserError) {
-          // Find the placeholder element
-          const placeholder = doc.getElementById(placeholderId);
-          
-          if (placeholder) {
-            // Remove the placeholder element
-            placeholder.remove();
-            
-            // Serialize back to XHTML
-            const serializer = new XMLSerializer();
-            let modifiedXhtml = serializer.serializeToString(doc.documentElement);
-            
-            // If we have a body, extract just the body content
-            if (doc.body) {
-              const bodyContent = doc.body.innerHTML;
-              // Preserve styles from head
-              const headStyles = doc.head ? Array.from(doc.head.querySelectorAll('style')).map(s => s.innerHTML).join('\n') : '';
-              const headLinks = doc.head ? Array.from(doc.head.querySelectorAll('link[rel="stylesheet"]')).map(l => l.outerHTML).join('\n') : '';
-              
-              if (headStyles || headLinks) {
-                modifiedXhtml = `<div class="xhtml-content-wrapper">${headLinks ? headLinks : ''}${headStyles ? `<style>${headStyles}</style>` : ''}${bodyContent}</div>`;
-              } else {
-                modifiedXhtml = `<div class="xhtml-content-wrapper">${bodyContent}</div>`;
-              }
-            }
-            
-            console.log('[handleDeletePlaceholder] ✓ Placeholder removed from XHTML');
-            setModified(true);
-            
-            // Re-extract placeholders after deletion
-            setTimeout(() => {
-              extractPlaceholdersFromXhtml(modifiedXhtml);
-            }, 100);
-            
-            return modifiedXhtml;
-          } else {
-            // Fallback to regex-based removal
-            console.log('[handleDeletePlaceholder] Placeholder not found in DOM, using regex fallback');
-            const placeholderPattern = new RegExp(
-              `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>.*?</div>`,
-              'is'
-            );
-            let modifiedXhtml = currentXhtml.replace(placeholderPattern, '');
-            
-            const selfClosingPattern = new RegExp(
-              `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*/>`,
-              'i'
-            );
-            modifiedXhtml = modifiedXhtml.replace(selfClosingPattern, '');
-            
-            setModified(true);
-            setTimeout(() => {
-              extractPlaceholdersFromXhtml(modifiedXhtml);
-            }, 100);
-            
-            return modifiedXhtml;
-          }
-        } else {
-          // Parsing failed, use regex fallback
-          console.log('[handleDeletePlaceholder] XHTML parsing failed, using regex fallback');
-          const placeholderPattern = new RegExp(
-            `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>.*?</div>`,
-            'is'
-          );
-          let modifiedXhtml = currentXhtml.replace(placeholderPattern, '');
-          
-          const selfClosingPattern = new RegExp(
-            `<div[^>]*id=["']${placeholderId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*/>`,
-            'i'
-          );
-          modifiedXhtml = modifiedXhtml.replace(selfClosingPattern, '');
-          
-          setModified(true);
-          setTimeout(() => {
-            extractPlaceholdersFromXhtml(modifiedXhtml);
-          }, 100);
-          
-          return modifiedXhtml;
-        }
-      });
-    } catch (err) {
-      console.error('[handleDeletePlaceholder] Error deleting placeholder:', err);
-      setError('Failed to delete placeholder: ' + err.message);
-    }
-  }, [extractPlaceholdersFromXhtml]);
-
-  // Inject delete buttons into placeholders
-  useEffect(() => {
-    if (!editMode || !canvasRef.current) return;
-
-    const injectDeleteButtons = () => {
-      // Find the container where placeholders are rendered
-      let searchContainer = null;
-      if (canvasRef.current) {
-        if (useGrapesJS) {
-          // In GrapesJS mode, placeholders are in an iframe
-          const grapesContainer = canvasRef.current.querySelector('.grapesjs-canvas-container');
-          if (grapesContainer) {
-            const iframe = grapesContainer.querySelector('iframe');
-            if (iframe && iframe.contentDocument) {
-              searchContainer = iframe.contentDocument;
-            }
-          }
-        } else {
-          // In standard mode, placeholders are directly in canvasRef
-          searchContainer = canvasRef.current.querySelector('[data-draggable-canvas="true"]') || 
-                           canvasRef.current.querySelector('.draggable-canvas-container') ||
-                           canvasRef.current;
-        }
-      }
-
-      if (!searchContainer) return;
-
-      // Find all placeholders
-      const allPlaceholders = searchContainer.querySelectorAll(
-        '.image-placeholder, .image-drop-zone, .header-image-placeholder, .cover-page-placeholder, [data-placeholder-type]'
-      );
-
-      allPlaceholders.forEach((placeholder) => {
-        const placeholderId = placeholder.id;
-        if (!placeholderId) return;
-
-        // Check if delete button already exists
-        if (placeholder.querySelector('.placeholder-delete-btn')) return;
-
-        // Create delete button
-        const deleteBtn = document.createElement('button');
-        deleteBtn.className = 'placeholder-delete-btn';
-        deleteBtn.innerHTML = '×';
-        deleteBtn.title = 'Delete placeholder';
-        deleteBtn.style.cssText = `
-          position: absolute;
-          top: 5px;
-          right: 5px;
-          width: 24px;
-          height: 24px;
-          background: #f44336;
-          color: white;
-          border: none;
-          border-radius: 50%;
-          cursor: pointer;
-          font-size: 18px;
-          font-weight: bold;
-          line-height: 1;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          z-index: 10000;
-          box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-          transition: all 0.2s ease;
-        `;
-
-        // Hover effect
-        deleteBtn.addEventListener('mouseenter', () => {
-          deleteBtn.style.background = '#d32f2f';
-          deleteBtn.style.transform = 'scale(1.1)';
-        });
-        deleteBtn.addEventListener('mouseleave', () => {
-          deleteBtn.style.background = '#f44336';
-          deleteBtn.style.transform = 'scale(1)';
-        });
-
-        // Click handler
-        deleteBtn.addEventListener('click', (e) => {
-          e.stopPropagation();
-          e.preventDefault();
-          handleDeletePlaceholder(placeholderId);
-        });
-
-        // Ensure placeholder has position relative for absolute positioning of button
-        // Use the correct window object (iframe window if in GrapesJS mode)
-        const placeholderWindow = useGrapesJS && searchContainer.defaultView 
-          ? searchContainer.defaultView 
-          : window;
-        const computedStyle = placeholderWindow.getComputedStyle(placeholder);
-        if (computedStyle.position === 'static') {
-          placeholder.style.position = 'relative';
-        }
-
-        // Append delete button to placeholder
-        placeholder.appendChild(deleteBtn);
-      });
-    };
-
-    // Initial injection
-    const timeoutId = setTimeout(() => {
-      injectDeleteButtons();
-    }, 500);
-
-    // Use MutationObserver to watch for new placeholders
-    let observer = null;
-    if (canvasRef.current) {
-      const targetNode = useGrapesJS 
-        ? canvasRef.current.querySelector('.grapesjs-canvas-container')
-        : canvasRef.current;
-      
-      if (targetNode) {
-        observer = new MutationObserver(() => {
-          injectDeleteButtons();
-        });
-
-        observer.observe(targetNode, {
-          childList: true,
-          subtree: true,
-          attributes: false
-        });
-      }
-    }
-
-    return () => {
-      clearTimeout(timeoutId);
-      if (observer) {
-        observer.disconnect();
-      }
-    };
-  }, [xhtml, editMode, useGrapesJS, handleDeletePlaceholder]);
+  }, [jobId, extractPlaceholdersFromXhtml, canvasRef, useGrapesJS]);
 
   // CRITICAL: Add drop handler for GrapesJS mode (bypasses react-dnd)
   // Use document-level handler in capture phase to intercept before react-dnd
@@ -2574,6 +2189,38 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
           } else {
             // Try to find parent placeholder
             placeholder = elementAtPoint.closest('.image-placeholder, .image-drop-zone');
+          }
+          
+          // ENHANCED: If no placeholder found directly, check for overlapping placeholders
+          if (!placeholder) {
+            console.log('[EpubImageEditor] No direct placeholder found, checking for overlapping placeholders...');
+            
+            // Get all placeholders and check if drop point is within their bounds
+            const allPlaceholders = frameDoc.querySelectorAll('.image-placeholder, .image-drop-zone');
+            for (const potentialPlaceholder of allPlaceholders) {
+              const rect = potentialPlaceholder.getBoundingClientRect();
+              const iframeRect = iframe.getBoundingClientRect();
+              
+              // Convert placeholder rect to iframe coordinates
+              const placeholderRect = {
+                left: rect.left - iframeRect.left,
+                top: rect.top - iframeRect.top,
+                right: rect.right - iframeRect.left,
+                bottom: rect.bottom - iframeRect.top
+              };
+              
+              // Check if drop coordinates are within this placeholder's bounds
+              if (x >= placeholderRect.left && x <= placeholderRect.right && 
+                  y >= placeholderRect.top && y <= placeholderRect.bottom) {
+                placeholder = potentialPlaceholder;
+                console.log('[EpubImageEditor] ✓ Found overlapping placeholder:', potentialPlaceholder.id, {
+                  dropCoords: { x, y },
+                  placeholderRect,
+                  elementAtPoint: elementAtPoint.tagName + '#' + elementAtPoint.id
+                });
+                break;
+              }
+            }
           }
           
           if (!placeholder) {
@@ -3451,6 +3098,517 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
     }
   }, [originalXhtml, jobId]);
 
+  // Handle image upload
+  const handleImageUpload = useCallback(async (e) => {
+    const files = Array.from(e.target.files);
+    if (files.length === 0) return;
+
+    console.log('[EpubImageEditor] Uploading images locally:', files.map(f => f.name));
+
+    try {
+      // Show loading state
+      setLoading(true);
+      
+      // Try server upload first (if endpoint exists)
+      try {
+        const formData = new FormData();
+        files.forEach(file => {
+          formData.append('images', file);
+        });
+
+        await conversionService.uploadJobImages(jobId, formData);
+        console.log('[EpubImageEditor] Images uploaded to server successfully');
+        
+        // Refresh the images list to include newly uploaded images
+        await loadData();
+      } catch (serverError) {
+        console.log('[EpubImageEditor] Server upload failed, using local storage fallback:', serverError.message);
+        
+        // Fallback: Store images locally with persistence
+        const localImages = files.map((file, index) => {
+          const reader = new FileReader();
+          return new Promise((resolve) => {
+            reader.onload = (e) => {
+              const imageData = {
+                fileName: file.name,
+                url: e.target.result, // Base64 data URL
+                isLocal: true,
+                uploadedAt: Date.now(),
+                id: `local_${Date.now()}_${index}`
+              };
+              resolve(imageData);
+            };
+            reader.readAsDataURL(file);
+          });
+        });
+
+        const resolvedImages = await Promise.all(localImages);
+        
+        // Get existing local images from localStorage
+        const storageKey = `epub_local_images_${jobId}`;
+        const existingLocalImages = JSON.parse(localStorage.getItem(storageKey) || '[]');
+        
+        // Add new images
+        const updatedLocalImages = [...existingLocalImages, ...resolvedImages];
+        localStorage.setItem(storageKey, JSON.stringify(updatedLocalImages));
+        
+        console.log('[EpubImageEditor] Stored images locally:', resolvedImages.length);
+        
+        // Refresh the images list
+        await loadData();
+      }
+
+      // Clear the input
+      e.target.value = '';
+      
+      console.log('[EpubImageEditor] Image upload completed');
+    } catch (error) {
+      console.error('[EpubImageEditor] Error uploading images:', error);
+      setError(`Failed to upload images: ${error.message}`);
+      
+      // Clear the input
+      e.target.value = '';
+    } finally {
+      setLoading(false);
+    }
+  }, [jobId, loadData]);
+
+  // Delete placeholder function
+  const handleDeletePlaceholder = useCallback((placeholderId) => {
+    if (!editMode) {
+      setError('Enable Edit Mode to delete placeholders');
+      return;
+    }
+
+    const confirmDelete = window.confirm(`Are you sure you want to delete placeholder "${placeholderId}"?`);
+    if (!confirmDelete) return;
+
+    try {
+      // Create a new DOM parser to work with the XHTML
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xhtml, 'text/html');
+      
+      // Find the placeholder element
+      const placeholderElement = doc.getElementById(placeholderId);
+      if (!placeholderElement) {
+        setError(`Placeholder "${placeholderId}" not found`);
+        return;
+      }
+
+      // Remove the element
+      placeholderElement.remove();
+
+      // Serialize back to string
+      const serializer = new XMLSerializer();
+      let updatedXhtml = serializer.serializeToString(doc);
+      
+      // Clean up the serialized output
+      updatedXhtml = updatedXhtml.replace(/xmlns="http:\/\/www\.w3\.org\/1999\/xhtml"/g, '');
+      
+      // Update state
+      setXhtml(updatedXhtml);
+      setModified(true);
+      
+      // Update placeholders list
+      setPlaceholders(prev => prev.filter(p => p.id !== placeholderId));
+      
+      // Clear selection if this placeholder was selected
+      setSelectedPlaceholders(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(placeholderId);
+        return newSet;
+      });
+
+      console.log(`[EpubImageEditor] Deleted placeholder: ${placeholderId}`);
+    } catch (error) {
+      console.error('[EpubImageEditor] Error deleting placeholder:', error);
+      setError(`Failed to delete placeholder: ${error.message}`);
+    }
+  }, [xhtml, editMode]);
+
+  // Handle placeholder selection (single selection for targeted drops)
+  const handleSelectPlaceholder = useCallback((placeholderId) => {
+    console.log('[EpubImageEditor] handleSelectPlaceholder called with:', placeholderId);
+    setSelectedPlaceholder(prev => {
+      const newSelection = prev === placeholderId ? null : placeholderId;
+      console.log('[EpubImageEditor] Selected placeholder changed from', prev, 'to', newSelection);
+      return newSelection;
+    });
+  }, []);
+
+  // Handle keyboard shortcuts
+  const handleKeyDown = useCallback((e) => {
+    if (!editMode) return;
+
+    // Delete key - delete selected placeholder
+    if (e.key === 'Delete' && selectedPlaceholder) {
+      e.preventDefault();
+      handleDeletePlaceholder(selectedPlaceholder);
+    }
+
+    // Escape key - clear selection
+    if (e.key === 'Escape') {
+      setSelectedPlaceholder(null);
+    }
+  }, [editMode, selectedPlaceholder, handleDeletePlaceholder]);
+
+  // Add keyboard event listener
+  useEffect(() => {
+    document.addEventListener('keydown', handleKeyDown);
+    
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [handleKeyDown]);
+
+  // Add event listeners to placeholders for delete functionality
+  useEffect(() => {
+    if (!editMode || placeholders.length === 0) return;
+
+    const addPlaceholderEventListeners = () => {
+      // Handle both standard mode and GrapesJS mode
+      let targetDocument = document;
+      let searchContainer = canvasRef.current;
+
+      // Check if we're in GrapesJS mode
+      if (useGrapesJS && canvasRef.current) {
+        const grapesContainer = canvasRef.current.querySelector('.grapesjs-canvas-container');
+        if (grapesContainer) {
+          const iframe = grapesContainer.querySelector('iframe');
+          if (iframe && iframe.contentDocument) {
+            targetDocument = iframe.contentDocument;
+            searchContainer = iframe.contentDocument.body;
+          }
+        }
+      }
+
+      if (!searchContainer) {
+        console.log('[EpubImageEditor] No search container found, retrying...');
+        return;
+      }
+
+      // Find all placeholder elements by class first
+      let placeholderElements = searchContainer.querySelectorAll('.image-placeholder, .image-drop-zone');
+      
+      console.log(`[EpubImageEditor] Found ${placeholderElements.length} elements with placeholder classes`);
+      placeholderElements.forEach(el => {
+        console.log(`[EpubImageEditor] Placeholder with class: ${el.id}`, el);
+      });
+      
+      // Also find elements by ID pattern that might be placeholders but missing classes
+      const allDivs = searchContainer.querySelectorAll('div[id]');
+      const additionalPlaceholders = [];
+      
+      console.log(`[EpubImageEditor] Checking ${allDivs.length} divs for placeholder patterns`);
+      
+      allDivs.forEach(div => {
+        const id = div.id;
+        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
+        const hasText = div.textContent.trim().length > 0;
+        const hasImg = div.querySelector('img') !== null;
+        
+        console.log(`[EpubImageEditor] Checking div ${id}:`, {
+          hasClass,
+          hasText,
+          hasImg,
+          matchesPattern: /^page\d+_(?:img|dropzone)\d+$/i.test(id)
+        });
+        
+        // Check if it matches placeholder ID pattern and doesn't already have class
+        // Only consider divs with 'img' in the ID as potential placeholders, not 'div'
+        if (!hasClass && !hasText && !hasImg && id && /^page\d+_(?:img|dropzone)\d+$/i.test(id)) {
+          // This looks like a placeholder, add the class
+          div.classList.add('image-placeholder');
+          additionalPlaceholders.push(div);
+          console.log(`[EpubImageEditor] Added image-placeholder class to: ${id}`);
+        }
+      });
+      
+      // Combine both sets of placeholders
+      const allPlaceholders = [...Array.from(placeholderElements), ...additionalPlaceholders];
+      
+      console.log(`[EpubImageEditor] Found ${allPlaceholders.length} placeholder elements for event listeners`);
+      
+      // If we still don't have placeholders in GrapesJS mode, it means content isn't loaded yet
+      if (useGrapesJS && allPlaceholders.length === 0) {
+        console.log('[EpubImageEditor] No placeholders found in GrapesJS mode, content may not be loaded yet');
+        return false; // Indicate we should retry
+      }
+      
+      allPlaceholders.forEach(element => {
+        const placeholderId = element.id;
+        if (!placeholderId) return;
+
+        // Ensure the element has proper styling for placeholders
+        if (!element.classList.contains('image-placeholder') && !element.classList.contains('image-drop-zone')) {
+          element.classList.add('image-placeholder');
+        }
+
+        // Force placeholder styling to override any inline styles that might hide the placeholder
+        // Use multiple methods to ensure the styling takes effect
+        
+        // Method 1: Set inline styles with !important
+        element.style.setProperty('border', '2px dashed #ccc', 'important');
+        element.style.setProperty('background-color', '#f9f9f9', 'important');
+        element.style.setProperty('cursor', 'pointer', 'important');
+        element.style.setProperty('display', 'flex', 'important');
+        element.style.setProperty('align-items', 'center', 'important');
+        element.style.setProperty('justify-content', 'center', 'important');
+        element.style.setProperty('min-height', '100px', 'important');
+        
+        // Method 2: Add a specific class for forced styling
+        element.classList.add('force-placeholder-visible');
+        
+        // Method 3: Remove any conflicting inline styles
+        if (element.style.border === 'none' || element.style.border === '0') {
+          element.style.removeProperty('border');
+          element.style.setProperty('border', '2px dashed #ccc', 'important');
+        }
+        if (element.style.backgroundColor === 'transparent') {
+          element.style.removeProperty('background-color');
+          element.style.setProperty('background-color', '#f9f9f9', 'important');
+        }
+        
+        console.log(`[EpubImageEditor] Applied forced styling to placeholder: ${placeholderId}`, {
+          computedBorder: window.getComputedStyle ? window.getComputedStyle(element).border : 'N/A',
+          computedBackground: window.getComputedStyle ? window.getComputedStyle(element).backgroundColor : 'N/A',
+          inlineStyle: element.style.cssText
+        });
+
+        // Add click handler for selection
+        const handleClick = (e) => {
+          if (!editMode) return;
+          e.preventDefault();
+          e.stopPropagation();
+          
+          console.log(`[EpubImageEditor] Placeholder clicked: ${placeholderId}`);
+          
+          // Single select for targeted drops
+          handleSelectPlaceholder(placeholderId);
+        };
+
+        // Add visual feedback for selection
+        const updateVisualState = () => {
+          if (selectedPlaceholder === placeholderId) {
+            element.classList.add('selected');
+            // Force selected styling to override inline styles
+            element.style.setProperty('border', '3px solid #2196F3', 'important');
+            element.style.setProperty('background-color', 'rgba(33, 150, 243, 0.15)', 'important');
+            element.style.setProperty('box-shadow', '0 0 12px rgba(33, 150, 243, 0.4)', 'important');
+            console.log(`[EpubImageEditor] Added selected class to: ${placeholderId}`);
+          } else {
+            element.classList.remove('selected');
+            // Restore default placeholder styling
+            element.style.setProperty('border', '2px dashed #ccc', 'important');
+            element.style.setProperty('background-color', '#f9f9f9', 'important');
+            element.style.removeProperty('box-shadow');
+          }
+        };
+
+        // Add event listeners
+        element.addEventListener('click', handleClick);
+        
+        // Update visual state
+        updateVisualState();
+
+        // Store cleanup functions
+        element._placeholderCleanup = () => {
+          element.removeEventListener('click', handleClick);
+          element.classList.remove('selected');
+          // Restore original styling
+          element.style.setProperty('border', '2px dashed #ccc', 'important');
+          element.style.setProperty('background-color', '#f9f9f9', 'important');
+          element.style.removeProperty('box-shadow');
+        };
+      });
+      
+      return true; // Indicate success
+    };
+
+    // Add listeners after a short delay to ensure DOM is ready
+    // For GrapesJS mode, we need a longer delay to ensure iframe content is loaded
+    const delay = useGrapesJS ? 2000 : 100;
+    const timeoutId = setTimeout(() => {
+      const success = addPlaceholderEventListeners();
+      if (!success && useGrapesJS) {
+        console.log('[EpubImageEditor] First attempt failed, scheduling retries...');
+      }
+    }, delay);
+    
+    // Also add additional attempts for GrapesJS mode
+    let additionalTimeouts = [];
+    if (useGrapesJS) {
+      additionalTimeouts = [
+        setTimeout(() => {
+          console.log('[EpubImageEditor] Retry attempt 1...');
+          addPlaceholderEventListeners();
+        }, 3000),
+        setTimeout(() => {
+          console.log('[EpubImageEditor] Retry attempt 2...');
+          addPlaceholderEventListeners();
+        }, 5000),
+        setTimeout(() => {
+          console.log('[EpubImageEditor] Final retry attempt...');
+          addPlaceholderEventListeners();
+        }, 7000)
+      ];
+    }
+
+    return () => {
+      clearTimeout(timeoutId);
+      if (additionalTimeouts) {
+        additionalTimeouts.forEach(timeout => clearTimeout(timeout));
+      }
+      
+      // Cleanup existing listeners
+      const cleanupPlaceholders = (container) => {
+        if (!container) return;
+        const placeholderElements = container.querySelectorAll('.image-placeholder, .image-drop-zone');
+        placeholderElements.forEach(element => {
+          if (element._placeholderCleanup) {
+            element._placeholderCleanup();
+            delete element._placeholderCleanup;
+          }
+        });
+      };
+
+      // Cleanup in both standard and GrapesJS modes
+      if (canvasRef.current) {
+        cleanupPlaceholders(canvasRef.current);
+        
+        // Also cleanup in GrapesJS iframe if present
+        const grapesContainer = canvasRef.current.querySelector('.grapesjs-canvas-container');
+        if (grapesContainer) {
+          const iframe = grapesContainer.querySelector('iframe');
+          if (iframe && iframe.contentDocument) {
+            cleanupPlaceholders(iframe.contentDocument.body);
+          }
+        }
+      }
+    };
+  }, [editMode, placeholders, selectedPlaceholder, useGrapesJS, handleSelectPlaceholder, handleDeletePlaceholder]);
+
+  // Ensure all placeholders have proper CSS classes for highlighting
+  useEffect(() => {
+    if (!canvasRef.current) return;
+
+    const ensurePlaceholderClasses = () => {
+      // Handle both standard mode and GrapesJS mode
+      let searchContainer = canvasRef.current;
+      let targetDocument = document;
+
+      // Check if we're in GrapesJS mode
+      if (useGrapesJS && canvasRef.current) {
+        const grapesContainer = canvasRef.current.querySelector('.grapesjs-canvas-container');
+        if (grapesContainer) {
+          const iframe = grapesContainer.querySelector('iframe');
+          if (iframe && iframe.contentDocument) {
+            searchContainer = iframe.contentDocument.body;
+            targetDocument = iframe.contentDocument;
+          }
+        }
+      }
+
+      if (!searchContainer) return;
+
+      // Find all divs that match placeholder ID patterns but might be missing classes
+      const allDivs = searchContainer.querySelectorAll('div[id]');
+      let addedClasses = 0;
+      
+      allDivs.forEach(div => {
+        const id = div.id;
+        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
+        const hasText = div.textContent.trim().length > 0;
+        const hasImg = div.querySelector('img') !== null;
+        
+        // Check if it matches placeholder ID pattern and doesn't already have class
+        // Only consider divs with 'img' in the ID as potential placeholders, not 'div'
+        if (!hasClass && !hasText && !hasImg && id && /^page\d+_(?:img|dropzone)\d+$/i.test(id)) {
+          // This looks like a placeholder, add the class and basic styling
+          div.classList.add('image-placeholder');
+          
+          // Force placeholder styling even if inline styles override it
+          div.style.setProperty('border', '2px dashed #ccc', 'important');
+          div.style.setProperty('background-color', '#f9f9f9', 'important');
+          div.style.setProperty('min-height', '100px', 'important');
+          div.style.setProperty('cursor', 'pointer', 'important');
+          div.style.setProperty('display', 'flex', 'important');
+          div.style.setProperty('align-items', 'center', 'important');
+          div.style.setProperty('justify-content', 'center', 'important');
+          
+          addedClasses++;
+          console.log(`[EpubImageEditor] Enhanced placeholder styling for: ${id}`);
+        }
+      });
+      
+      // Also ensure existing placeholders have proper styling
+      const existingPlaceholders = searchContainer.querySelectorAll('.image-placeholder, .image-drop-zone');
+      existingPlaceholders.forEach(placeholder => {
+        const id = placeholder.id;
+        if (id && /^page\d+_(?:img|dropzone)\d+$/i.test(id)) {
+          // Force styling on existing placeholders too
+          placeholder.style.setProperty('border', '2px dashed #ccc', 'important');
+          placeholder.style.setProperty('background-color', '#f9f9f9', 'important');
+          placeholder.style.setProperty('min-height', '100px', 'important');
+          placeholder.style.setProperty('cursor', 'pointer', 'important');
+          placeholder.style.setProperty('display', 'flex', 'important');
+          placeholder.style.setProperty('align-items', 'center', 'important');
+          placeholder.style.setProperty('justify-content', 'center', 'important');
+          
+          console.log(`[EpubImageEditor] Forced styling on existing placeholder: ${id}`);
+        }
+      });
+      
+      // Add CSS to the document to override inline styles
+      if (targetDocument && !targetDocument.getElementById('placeholder-override-styles')) {
+        const style = targetDocument.createElement('style');
+        style.id = 'placeholder-override-styles';
+        style.textContent = `
+          .image-placeholder, .image-drop-zone {
+            border: 2px dashed #ccc !important;
+            background-color: #f9f9f9 !important;
+            min-height: 100px !important;
+            cursor: pointer !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            box-sizing: border-box !important;
+          }
+          
+          .image-placeholder.selected, .image-drop-zone.selected {
+            border: 3px solid #2196F3 !important;
+            background-color: rgba(33, 150, 243, 0.15) !important;
+            box-shadow: 0 0 12px rgba(33, 150, 243, 0.4) !important;
+          }
+          
+          #page11_img1, #page11_img2 {
+            border: 2px dashed #ccc !important;
+            background-color: #f9f9f9 !important;
+          }
+        `;
+        
+        if (targetDocument.head) {
+          targetDocument.head.appendChild(style);
+          console.log('[EpubImageEditor] Added override styles to document head');
+        }
+      }
+      
+      if (addedClasses > 0) {
+        console.log(`[EpubImageEditor] Added placeholder classes to ${addedClasses} elements`);
+      }
+    };
+
+    // Run immediately and after a delay to catch dynamically loaded content
+    ensurePlaceholderClasses();
+    const timeoutId = setTimeout(ensurePlaceholderClasses, 500);
+    const timeoutId2 = setTimeout(ensurePlaceholderClasses, 1000);
+    
+    return () => {
+      clearTimeout(timeoutId);
+      clearTimeout(timeoutId2);
+    };
+  }, [xhtml, useGrapesJS, placeholders]);
+
   // Determine which placeholders currently have images (by id)
   const placeholdersWithStatus = useMemo(() => {
     if (!xhtml || !placeholders) {
@@ -3523,13 +3681,11 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
         saving, 
         handleSave, 
         handleReset, 
-        setEditMode,
-        applyExternalXhtml,
-        currentXhtml: xhtml
+        setEditMode 
       });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editMode, modified, saving, xhtml]); // Functions are stable (useCallback), onStateChange should be stable in parent
+  }, [editMode, modified, saving]); // Functions are stable (useCallback), onStateChange should be stable in parent
 
   if (loading) {
     return (
@@ -3635,7 +3791,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
               }}
               title={regenerating ? 'Regenerating page...' : `Regenerate page ${pageNumber} XHTML using Gemini AI`}
             >
-              {regenerating ? '⟳ Regenerating...' : '⟳ Regenerate XHTML'}
+              {regenerating ? '🔄 Regenerating...' : '🔄 Regenerate XHTML'}
             </button>
             <button
               onClick={handleSave}
@@ -3660,161 +3816,149 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
             className="image-gallery"
             style={{ width: `${galleryWidth}%` }}
           >
-            <div style={{ padding: '0 1em', borderBottom: '1px solid #e0e0e0', paddingBottom: '10px', marginBottom: '10px' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
-                <h3 style={{ margin: 0 }}>Image Gallery ({images.length} images)</h3>
-                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    accept="image/*"
-                    multiple
-                    onChange={handleImageUpload}
-                    style={{ display: 'none' }}
-                  />
-                  <button
-                    onClick={triggerFileInput}
-                    disabled={uploadingImages}
-                    className="btn-upload"
-                    style={{
-                      padding: '8px 16px',
-                      backgroundColor: uploadingImages ? '#ccc' : '#4caf50',
-                      color: '#fff',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: uploadingImages ? 'not-allowed' : 'pointer',
-                      fontSize: '13px',
-                      fontWeight: '500',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '6px'
-                    }}
-                    title="Upload images from your computer"
-                  >
-                    {uploadingImages ? (
-                      <>
-                        <span>Uploading...</span>
-                      </>
-                    ) : (
-                      <>
-                        <span>↑</span>
-                        <span>Upload Images</span>
-                      </>
-                    )}
-                  </button>
-                </div>
+            <h3>Image Gallery ({images.length} images)</h3>
+            
+            {/* Local images info */}
+            {images.some(img => img.isLocal) && (
+              <div style={{ 
+                fontSize: '12px', 
+                color: '#666', 
+                marginBottom: '8px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center'
+              }}>
+                <span>💾 {images.filter(img => img.isLocal).length} local image(s)</span>
+                <button
+                  onClick={() => {
+                    if (window.confirm('Clear all local images? This cannot be undone.')) {
+                      const storageKey = `epub_local_images_${jobId}`;
+                      localStorage.removeItem(storageKey);
+                      loadData(); // Refresh gallery
+                    }
+                  }}
+                  style={{
+                    fontSize: '11px',
+                    padding: '2px 6px',
+                    background: '#dc3545',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '3px',
+                    cursor: 'pointer'
+                  }}
+                  title="Clear all local images"
+                >
+                  Clear All
+                </button>
               </div>
-              {/* Toggle Switch for Image Sections */}
-              <div style={{ display: 'flex', alignItems: 'center', gap: '10px', fontSize: '14px', marginTop: '8px' }}>
-                <span style={{ color: '#666', fontSize: '13px', fontWeight: '500' }}>View:</span>
-                <div style={{ 
-                  display: 'flex', 
-                  backgroundColor: '#f5f5f5', 
-                  borderRadius: '6px', 
-                  padding: '2px',
-                  border: '1px solid #e0e0e0'
-                }}>
-                  <button
-                    onClick={() => setActiveImageSection('uploaded')}
-                    style={{
-                      padding: '6px 16px',
-                      backgroundColor: activeImageSection === 'uploaded' ? '#4caf50' : 'transparent',
-                      color: activeImageSection === 'uploaded' ? '#fff' : '#666',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontSize: '13px',
-                      fontWeight: '500',
-                      transition: 'all 0.2s',
-                      whiteSpace: 'nowrap'
-                    }}
-                  >
-                    ↑ Uploaded
-                  </button>
-                  <button
-                    onClick={() => setActiveImageSection('extracted')}
-                    style={{
-                      padding: '6px 16px',
-                      backgroundColor: activeImageSection === 'extracted' ? '#2196f3' : 'transparent',
-                      color: activeImageSection === 'extracted' ? '#fff' : '#666',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontSize: '13px',
-                      fontWeight: '500',
-                      transition: 'all 0.2s',
-                      whiteSpace: 'nowrap'
-                    }}
-                  >
-                    AI Extracted
-                  </button>
-                </div>
-              </div>
+            )}
+            
+            {/* Upload Section */}
+            <div className="upload-section">
+              <input
+                type="file"
+                id="image-upload"
+                multiple
+                accept="image/*"
+                onChange={handleImageUpload}
+                style={{ display: 'none' }}
+              />
+              <button
+                onClick={() => document.getElementById('image-upload').click()}
+                className="btn-upload"
+              >
+                📁 Upload Images
+              </button>
             </div>
             {images.length === 0 ? (
               <div className="empty-gallery">
                 <p>No images available</p>
+                <button onClick={loadData} className="btn-refresh">
+                  Refresh
+                </button>
               </div>
             ) : (
-              <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', padding: '0 1em' }}>
-                {/* Separate images into uploaded and extracted */}
-                {(() => {
-                  const uploadedImages = images.filter(img => img.source === 'uploaded' || (!img.source && /^img_\d+_[a-z0-9]+_/i.test(img.fileName)));
-                  const extractedImages = images.filter(img => img.source === 'extracted' || (img.source !== 'uploaded' && !/^img_\d+_[a-z0-9]+_/i.test(img.fileName)));
-                  
-                  // Show only the active section
-                  if (activeImageSection === 'uploaded') {
-                    return (
-                      <div style={{ flex: 1, minHeight: 0 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', paddingTop: '10px' }}>
-                          <h4 style={{ margin: 0, color: '#4caf50', fontSize: '16px', fontWeight: '600' }}>
-                            ↑ Uploaded Images ({uploadedImages.length})
-                          </h4>
+              <div className="gallery-scrollable-container">
+                <div className="gallery-grid">
+                  {/* All Images (Server + Local) */}
+                  {images.map((image, index) => (
+                    <div key={`image_${index}`} className="image-container" style={{ position: 'relative' }}>
+                      <DraggableImage
+                        image={image}
+                        pageNumber={pageNumber}
+                      />
+                      {/* Local image indicator */}
+                      {image.isLocal && (
+                        <div className="local-indicator" style={{
+                          position: 'absolute',
+                          top: '4px',
+                          right: '4px',
+                          background: 'rgba(0, 123, 255, 0.8)',
+                          color: 'white',
+                          borderRadius: '50%',
+                          width: '20px',
+                          height: '20px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontSize: '12px',
+                          zIndex: 10,
+                          title: 'Local image (stored in browser)'
+                        }}>
+                          💾
                         </div>
-                        {uploadedImages.length === 0 ? (
-                          <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '14px' }}>
-                            No uploaded images yet
-                          </div>
-                        ) : (
-                          <div className="gallery-grid" style={{ maxHeight: 'none', overflow: 'visible' }}>
-                            {uploadedImages.map((image, index) => (
-                              <DraggableImage
-                                key={`uploaded-${index}`}
-                                image={image}
-                                pageNumber={pageNumber}
-                              />
-                            ))}
-                          </div>
-                        )}
+                      )}
+                      {/* Remove local image button */}
+                      {image.isLocal && (
+                        <button
+                          onClick={() => {
+                            const storageKey = `epub_local_images_${jobId}`;
+                            const localImages = JSON.parse(localStorage.getItem(storageKey) || '[]');
+                            const updatedImages = localImages.filter(img => img.id !== image.id);
+                            localStorage.setItem(storageKey, JSON.stringify(updatedImages));
+                            loadData(); // Refresh gallery
+                          }}
+                          className="remove-local-btn"
+                          style={{
+                            position: 'absolute',
+                            top: '4px',
+                            left: '4px',
+                            background: 'rgba(255, 0, 0, 0.8)',
+                            color: 'white',
+                            border: 'none',
+                            borderRadius: '50%',
+                            width: '20px',
+                            height: '20px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '14px',
+                            fontWeight: 'bold',
+                            cursor: 'pointer',
+                            zIndex: 10,
+                            transition: 'background 0.2s ease',
+                            title: 'Remove local image'
+                          }}
+                          onMouseOver={(e) => e.target.style.background = 'rgba(255, 0, 0, 1)'}
+                          onMouseOut={(e) => e.target.style.background = 'rgba(255, 0, 0, 0.8)'}
+                        >
+                          ×
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {/* Debug info - remove in production */}
+                {process.env.NODE_ENV === 'development' && (
+                  <div className="debug-info" style={{ padding: '1em', fontSize: '0.8em', color: '#666', borderTop: '1px solid #e0e0e0' }}>
+                    <strong>Debug:</strong>
+                    {images.slice(0, 2).map((img, idx) => (
+                      <div key={idx} style={{ marginTop: '0.5em', wordBreak: 'break-all' }}>
+                        {img.fileName}: {img.url}
                       </div>
-                    );
-                  } else {
-                    return (
-                      <div style={{ flex: 1, minHeight: 0 }}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px', paddingTop: '10px' }}>
-                          <h4 style={{ margin: 0, color: '#2196f3', fontSize: '16px', fontWeight: '600' }}>
-                            AI Extracted Images ({extractedImages.length})
-                          </h4>
-                        </div>
-                        {extractedImages.length === 0 ? (
-                          <div style={{ padding: '20px', textAlign: 'center', color: '#999', fontSize: '14px' }}>
-                            No extracted images available
-                          </div>
-                        ) : (
-                          <div className="gallery-grid" style={{ maxHeight: 'none', overflow: 'visible' }}>
-                            {extractedImages.map((image, index) => (
-                              <DraggableImage
-                                key={`extracted-${index}`}
-                                image={image}
-                                pageNumber={pageNumber}
-                              />
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  }
-                })()}
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -3847,7 +3991,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
             <div 
               className="canvas-wrapper" 
               ref={canvasRef} 
-              style={{ position: 'relative', flex: '1 1 auto', minHeight: '400px', display: 'flex', flexDirection: 'column' }}
+              style={{ position: 'relative', flex: '1 1 auto', minHeight: 0 }}
             >
               {useGrapesJS ? (
                 <>
@@ -3882,6 +4026,8 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
                       editor={grapesjsEditor}
                       editMode={editMode}
                       images={images}
+                      selectedPlaceholder={selectedPlaceholder}
+                      onPlaceholderSelect={handleSelectPlaceholder}
                       onImageReplace={(imageId, image) => {
                         // Handle image replacement
                         handleDrop(imageId, image);
@@ -3892,6 +4038,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
                         // The save function reads directly from the iframe
                         setModified(true);
                       }}
+                      onDeletePlaceholder={handleDeletePlaceholder}
                     />
                   )}
                 </>
@@ -3900,6 +4047,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
                   <DraggableCanvas
                     key={`canvas-${pageNumber}-${modified ? Date.now() : 'initial'}`} // Force re-render when XHTML changes
                     xhtml={xhtml}
+                    selectedPlaceholder={selectedPlaceholder}
                     onXhtmlChange={(updatedXhtml) => {
                       // Use functional update to ensure we're working with latest state
                       // This prevents overwriting changes when multiple edits happen quickly
@@ -3933,94 +4081,14 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
                         canvasRef={canvasRef}
                         editMode={editMode}
                         oneByOneMode={oneByOneMode}
+                        selectedPlaceholder={selectedPlaceholder}
+                        onSelectPlaceholder={handleSelectPlaceholder}
+                        onDeletePlaceholder={handleDeletePlaceholder}
                       />
                     </ErrorBoundary>
                   )}
                 </>
               )}
-              
-+              {/* Inline Image Editing Controls - Crop */}
-              {editMode && selectedImageId && (() => {
-                // Find the selected image in the canvas
-                const iframe = canvasRef.current?.querySelector('iframe');
-                const targetDoc = iframe?.contentDocument || document;
-                const selectedImg = targetDoc?.getElementById(selectedImageId) || targetDoc?.querySelector(`#${selectedImageId}`);
-                
-                if (!selectedImg || selectedImg.tagName?.toLowerCase() !== 'img') return null;
-                
-                const rect = selectedImg.getBoundingClientRect();
-                const canvasWrapperRect = canvasRef.current?.getBoundingClientRect() || { left: 0, top: 0 };
-                
-                // Calculate position relative to canvas wrapper
-                // If in iframe, account for iframe position and scroll
-                let imageLeft, imageTop;
-                if (iframe) {
-                  const iframeRect = iframe.getBoundingClientRect();
-                  const scrollX = iframe.contentWindow?.scrollX || 0;
-                  const scrollY = iframe.contentWindow?.scrollY || 0;
-                  imageLeft = rect.left - canvasWrapperRect.left + scrollX;
-                  imageTop = rect.top - canvasWrapperRect.top + scrollY;
-                } else {
-                  imageLeft = rect.left - canvasWrapperRect.left;
-                  imageTop = rect.top - canvasWrapperRect.top;
-                }
-                
-                const imageWidth = rect.width;
-                const imageHeight = rect.height;
-                
-                return (
-                  <div
-                    style={{
-                      position: 'absolute',
-                      left: `${imageLeft}px`,
-                      top: `${imageTop}px`,
-                      width: `${imageWidth}px`,
-                      height: `${imageHeight}px`,
-                      border: '2px solid #2196f3',
-                      pointerEvents: 'none',
-                      zIndex: 10000,
-                      boxSizing: 'border-box'
-                    }}
-                  >
-                        {/* Control Buttons */}
-                        <div
-                          style={{
-                            position: 'absolute',
-                            top: '-40px',
-                            left: '50%',
-                            transform: 'translateX(-50%)',
-                            display: 'flex',
-                            gap: '8px',
-                            backgroundColor: '#fff',
-                            padding: '4px 8px',
-                            borderRadius: '4px',
-                            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
-                            pointerEvents: 'auto',
-                            zIndex: 10002
-                          }}
-                        >
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedImageId(null);
-                            }}
-                            style={{
-                              padding: '4px 12px',
-                              border: '1px solid #ddd',
-                              borderRadius: '4px',
-                              backgroundColor: '#fff',
-                              cursor: 'pointer',
-                              fontSize: '12px',
-                              fontWeight: '500'
-                            }}
-                            title="Close"
-                          >
-                            ✕
-                          </button>
-                        </div>
-                  </div>
-                );
-              })()}
             </div>
           </div>
         </div>
@@ -4225,4 +4293,90 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, isFixedLayo
 };
 
 export default EpubImageEditor;
+
+// CSS Styles for Upload Button and Related Elements
+const uploadStyles = `
+.btn-upload {
+  background: linear-gradient(135deg, #4CAF50, #45a049);
+  color: white;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.btn-upload:hover {
+  background: linear-gradient(135deg, #45a049, #3d8b40);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+}
+
+.btn-upload:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.uploaded-image-container {
+  position: relative;
+  display: inline-block;
+}
+
+.upload-indicator {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  background: rgba(0, 0, 0, 0.7);
+  color: white;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  z-index: 10;
+}
+
+.remove-uploaded-btn {
+  position: absolute;
+  top: 4px;
+  left: 4px;
+  background: rgba(255, 0, 0, 0.8);
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  z-index: 10;
+  transition: background 0.2s ease;
+}
+
+.remove-uploaded-btn:hover {
+  background: rgba(255, 0, 0, 1);
+}
+`;
+
+// Inject styles into document head
+if (typeof document !== 'undefined') {
+  const styleId = 'epub-image-editor-upload-styles';
+  if (!document.getElementById(styleId)) {
+    const style = document.createElement('style');
+    style.id = styleId;
+    style.textContent = uploadStyles;
+    document.head.appendChild(style);
+  }
+}
 

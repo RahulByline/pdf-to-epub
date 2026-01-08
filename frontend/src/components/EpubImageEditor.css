@@ -207,6 +207,31 @@
   flex-direction: column;
 }
 
+.gallery-scrollable-container {
+  flex: 1;
+  overflow-y: auto;
+  padding: 1em;
+}
+
+/* Scrollbar styling for image gallery */
+.gallery-scrollable-container::-webkit-scrollbar {
+  width: 8px;
+}
+
+.gallery-scrollable-container::-webkit-scrollbar-track {
+  background: #f5f5f5;
+  border-radius: 4px;
+}
+
+.gallery-scrollable-container::-webkit-scrollbar-thumb {
+  background: #bdbdbd;
+  border-radius: 4px;
+}
+
+.gallery-scrollable-container::-webkit-scrollbar-thumb:hover {
+  background: #9e9e9e;
+}
+
 /* Panel Resizer */
 .panel-resizer {
   width: 4px;
@@ -377,8 +402,8 @@
 .image-placeholder,
 .image-drop-zone {
   min-height: 100px;
-  border: 2px dashed #ccc;
-  background-color: #f9f9f9;
+  border: 2px dashed #ccc !important;
+  background-color: #f9f9f9 !important;
   margin: 1em 0;
   padding: 1em;
   text-align: center;
@@ -386,19 +411,33 @@
   cursor: pointer;
   transition: all 0.2s;
   border-radius: 4px;
+  position: relative;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+}
+
+/* Ensure placeholders are visible even without content */
+.image-placeholder:empty::before,
+.image-drop-zone:empty::before {
+  content: "📷 Image Placeholder";
+  color: #999;
+  font-size: 14px;
+  pointer-events: none;
 }
 
 .image-placeholder:hover,
 .image-drop-zone:hover {
-  border-color: #4CAF50;
-  background-color: #f0f8f0;
+  border-color: #4CAF50 !important;
+  background-color: #f0f8f0 !important;
 }
 
 .image-placeholder.drag-over,
 .image-drop-zone.drag-over {
-  border-color: #2196F3;
-  background-color: #e3f2fd;
-  border-style: solid;
+  border-color: #2196F3 !important;
+  background-color: #e3f2fd !important;
+  border-style: solid !important;
 }
 
 /* One-by-one mode: Active placeholder (the one being hovered) */
@@ -420,6 +459,77 @@
   background-color: rgba(0, 0, 0, 0.05) !important;
   opacity: 0.4 !important;
   pointer-events: none !important;
+}
+
+/* Selected placeholder styles - Make this more prominent and override any inline styles */
+.image-placeholder.selected,
+.image-drop-zone.selected {
+  border-color: #2196F3 !important;
+  border-style: solid !important;
+  border-width: 3px !important;
+  background-color: rgba(33, 150, 243, 0.15) !important;
+  box-shadow: 0 0 12px rgba(33, 150, 243, 0.4) !important;
+  transform: scale(1.01);
+}
+
+/* Ensure selected state is visible even when hovering */
+.image-placeholder.selected:hover,
+.image-drop-zone.selected:hover {
+  border-color: #2196F3 !important;
+  background-color: rgba(33, 150, 243, 0.2) !important;
+}
+
+/* Override any inline styles that might hide placeholder styling */
+.image-placeholder[style*="border: none"],
+.image-drop-zone[style*="border: none"],
+.image-placeholder[style*="background-color: transparent"],
+.image-drop-zone[style*="background-color: transparent"] {
+  border: 2px dashed #ccc !important;
+  background-color: #f9f9f9 !important;
+}
+
+/* When selected, override even more aggressively */
+.image-placeholder.selected[style*="border: none"],
+.image-drop-zone.selected[style*="border: none"] {
+  border: 3px solid #2196F3 !important;
+}
+
+.image-placeholder.selected[style*="background-color: transparent"],
+.image-drop-zone.selected[style*="background-color: transparent"] {
+  background-color: rgba(33, 150, 243, 0.15) !important;
+}
+
+/* Force placeholder visibility - highest specificity */
+.force-placeholder-visible {
+  border: 2px dashed #ccc !important;
+  background-color: #f9f9f9 !important;
+  min-height: 100px !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  cursor: pointer !important;
+  box-sizing: border-box !important;
+}
+
+.force-placeholder-visible.selected {
+  border: 3px solid #2196F3 !important;
+  background-color: rgba(33, 150, 243, 0.15) !important;
+  box-shadow: 0 0 12px rgba(33, 150, 243, 0.4) !important;
+}
+
+/* Target specific problematic placeholders by ID */
+#page11_img1.image-drop-zone,
+#page11_img2.image-drop-zone {
+  border: 2px dashed #ccc !important;
+  background-color: #f9f9f9 !important;
+  min-height: 100px !important;
+}
+
+#page11_img1.image-drop-zone.selected,
+#page11_img2.image-drop-zone.selected {
+  border: 3px solid #2196F3 !important;
+  background-color: rgba(33, 150, 243, 0.15) !important;
+  box-shadow: 0 0 12px rgba(33, 150, 243, 0.4) !important;
 }
 
 .placeholder-content {
@@ -504,7 +614,77 @@
   .panel-resizer {
     display: none; /* Hide resizer on mobile */
   }
+}/* U
+pload Section Styles */
+.upload-section {
+  padding: 10px;
+  border-bottom: 1px solid #e0e0e0;
+  margin-bottom: 10px;
+  background-color: #f9f9f9;
 }
 
+.btn-upload {
+  width: 100%;
+  padding: 8px 12px;
+  background-color: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: background-color 0.2s ease;
+}
 
+.btn-upload:hover {
+  background-color: #45a049;
+}
 
+.btn-upload:active {
+  background-color: #3d8b40;
+}
+
+/* Uploaded image indicator styles */
+.uploaded-image-container {
+  position: relative;
+}
+
+.upload-indicator {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  background-color: #4CAF50;
+  color: white;
+  font-size: 10px;
+  padding: 2px 4px;
+  border-radius: 2px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.remove-uploaded-btn {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  background-color: #f44336;
+  color: white;
+  border: none;
+  border-radius: 50%;
+  width: 16px;
+  height: 16px;
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  z-index: 2;
+  transition: background-color 0.2s ease;
+}
+
+.remove-uploaded-btn:hover {
+  background-color: #d32f2f;
+}

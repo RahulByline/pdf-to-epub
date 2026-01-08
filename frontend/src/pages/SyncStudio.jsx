@@ -70,9 +70,7 @@ const SyncStudio = () => {
   const [duration, setDuration] = useState(0);
   const [isReady, setIsReady] = useState(false);
   const [zoom, setZoom] = useState(50);
-  const [playbackSpeed, setPlaybackSpeed] = useState(1.0); // Audio playback speed
-  const [isAudioModified, setIsAudioModified] = useState(false); // Track if audio settings have been modified
-  const [originalVoice, setOriginalVoice] = useState('standard'); // Track the original voice used for audio generation
+  const [playbackSpeed] = useState(1.0); // Audio playback speed (fixed at 1.0x)
 
   // State for sync data
   const [syncData, setSyncData] = useState({
@@ -203,12 +201,6 @@ const SyncStudio = () => {
           return; // Skip this element
         }
 
-        // Skip word-level elements
-        const isWordLevel = classList.includes('sync-word') || (tagName === 'span' && id.includes('_w'));
-        if (isWordLevel) {
-          return; // Skip individual words
-        }
-
         // CRITICAL FIX: Filter out unspoken content (TOC, nav, headers, etc.)
         // These patterns match common unspoken structural elements
         const unspokenPatterns = [
@@ -238,13 +230,27 @@ const SyncStudio = () => {
         
         // Skip unspoken content entirely (don't create elements for them)
         if (isUnspoken || isExplicitlyExcluded || !shouldSync) {
+          console.log(`[SyncStudio] Excluding unspoken content: ${id} (${text.substring(0, 30)}...)`);
           return; // Skip this element
         }
 
         // Determine element type
-        let type = 'sentence'; // Treat as sentence if not paragraph
-        if (classList.includes('sync-sentence') || id.includes('_s')) {
+        let type = 'paragraph';
+        if (classList.includes('sync-word') || tagName === 'span' && id.includes('_w')) {
+          type = 'word';
+        } else if (classList.includes('sync-sentence') || id.includes('_s')) {
           type = 'sentence';
+        }
+
+        // Extract parentId for word-level elements
+        let parentId = undefined;
+        if (type === 'word' && id.includes('_w')) {
+          const parentMatch = id.match(/^((?:page\d+_)?p\d+_s\d+)_w\d+$/);
+          if (parentMatch) {
+            parentId = parentMatch[1];
+          } else {
+            parentId = id.replace(/_w\d+$/, '');
+          }
         }
 
         // Add the parent element (sentence/paragraph)
@@ -255,7 +261,8 @@ const SyncStudio = () => {
           tagName,
           sectionId,
           sectionIndex: sectionId, // Store section index for page filtering
-          pageNumber: sectionId + 1
+          pageNumber: sectionId + 1,
+          parentId: parentId
         });
 
         // Also extract word elements nested inside this element (for word-level granularity)
@@ -269,6 +276,10 @@ const SyncStudio = () => {
             const wordText = wordEl.textContent?.trim() || '';
             if (!wordText) return; // Skip empty words
 
+            // Extract parentId for word elements
+            const wordParentMatch = wordId.match(/^((?:page\d+_)?p\d+_s\d+)_w\d+$/);
+            const wordParentId = wordParentMatch ? wordParentMatch[1] : wordId.replace(/_w\d+$/, '');
+
             elements.push({
               id: wordId,
               text: wordText,
@@ -276,7 +287,8 @@ const SyncStudio = () => {
               tagName: wordEl.tagName.toLowerCase(),
               sectionId,
               sectionIndex: sectionId,
-              pageNumber: sectionId + 1
+              pageNumber: sectionId + 1,
+              parentId: wordParentId
             });
           });
         }
@@ -808,7 +820,7 @@ const SyncStudio = () => {
           // Only enter this block if isProgrammaticPlayRef is TRUE
           // Normal playback mode: Stop playback if we've reached the end of the playing segment
           // CRITICAL: Only stop if BOTH isProgrammaticPlayRef AND playingSegmentIdRef are set
-          const currentPlayingSegmentId = playingSegmentIdRef.current;
+      const currentPlayingSegmentId = playingSegmentIdRef.current;
           if (currentPlayingSegmentId && wavesurferRef.current) {
             // Double-check: verify state matches ref (safety check)
             if (!playingSegmentId) {
@@ -820,60 +832,60 @@ const SyncStudio = () => {
               return;
             }
           
-          // Check both syncData and audioScriptData
-          const segmentData = syncDataRef.current.sentences[currentPlayingSegmentId] || 
-                             audioScriptDataRef.current.sentences[currentPlayingSegmentId];
+        // Check both syncData and audioScriptData
+        const segmentData = syncDataRef.current.sentences[currentPlayingSegmentId] || 
+                           audioScriptDataRef.current.sentences[currentPlayingSegmentId];
           if (segmentData && segmentData.start !== undefined && segmentData.end !== undefined) {
             // Stop when we reach or exceed the end time (with small buffer to account for timing precision)
             if (time >= segmentData.end - 0.01) {
               console.log(`[Play] audioprocess: Reached end time for segment ${currentPlayingSegmentId}: ${segmentData.end.toFixed(3)}s (current: ${time.toFixed(3)}s)`);
-              isProgrammaticPlayRef.current = false;
-              wavesurferRef.current.pause();
-              // Ensure we're exactly at the end time
-              wavesurferRef.current.setTime(segmentData.end);
-              setPlayingSegmentId(null);
-              setPlayingScriptSegmentId(null);
+            isProgrammaticPlayRef.current = false;
+            wavesurferRef.current.pause();
+            // Ensure we're exactly at the end time
+            wavesurferRef.current.setTime(segmentData.end);
+            setPlayingSegmentId(null);
+            setPlayingScriptSegmentId(null);
               playingSegmentIdRef.current = null;
-              playingScriptSegmentIdRef.current = null;
-              return; // Exit early to prevent other handlers from running
-            }
-            // Also prevent playback if we somehow went before the start
+            playingScriptSegmentIdRef.current = null;
+            return; // Exit early to prevent other handlers from running
+          }
+          // Also prevent playback if we somehow went before the start
             // BUT only if we're actually programmatically playing this specific segment
             // This prevents interference with full audio playback
             // CRITICAL: Only do this if we're explicitly playing this segment (not full audio)
             else if (time < segmentData.start && isProgrammaticPlayRef.current && playingSegmentId === currentPlayingSegmentId && playingSegmentIdRef.current === currentPlayingSegmentId) {
               // Only seek to start if we're actually playing this specific segment
-              wavesurferRef.current.setTime(segmentData.start);
-            }
+            wavesurferRef.current.setTime(segmentData.start);
+          }
           } else {
             console.warn(`[Play] Segment ${currentPlayingSegmentId} missing start/end data:`, segmentData);
-          }
-          }
-          
-          // Also check script segment playback - ensure we only play within the segment bounds
+        }
+      }
+      
+      // Also check script segment playback - ensure we only play within the segment bounds
           // Only check if we're still in programmatic play mode
-          const currentPlayingScriptSegmentId = playingScriptSegmentIdRef.current;
+      const currentPlayingScriptSegmentId = playingScriptSegmentIdRef.current;
           if (currentPlayingScriptSegmentId && wavesurferRef.current) {
-            const scriptSegmentData = audioScriptDataRef.current.sentences[currentPlayingScriptSegmentId];
-            if (scriptSegmentData && scriptSegmentData.start !== undefined && scriptSegmentData.end !== undefined) {
-              // Stop when we reach or exceed the end time
-              if (time >= scriptSegmentData.end) {
-                console.log('[Script Play] Reached end time, stopping at:', scriptSegmentData.end.toFixed(3), 'current time:', time.toFixed(3));
-                isProgrammaticPlayRef.current = false;
-                wavesurferRef.current.pause();
-                // Ensure we're exactly at the end time
-                wavesurferRef.current.setTime(scriptSegmentData.end);
-                setPlayingScriptSegmentId(null);
-                playingScriptSegmentIdRef.current = null;
-                return; // Exit early to prevent other handlers
-              }
-              // Prevent playback if we somehow went before the start
+        const scriptSegmentData = audioScriptDataRef.current.sentences[currentPlayingScriptSegmentId];
+        if (scriptSegmentData && scriptSegmentData.start !== undefined && scriptSegmentData.end !== undefined) {
+          // Stop when we reach or exceed the end time
+          if (time >= scriptSegmentData.end) {
+            console.log('[Script Play] Reached end time, stopping at:', scriptSegmentData.end.toFixed(3), 'current time:', time.toFixed(3));
+            isProgrammaticPlayRef.current = false;
+            wavesurferRef.current.pause();
+            // Ensure we're exactly at the end time
+            wavesurferRef.current.setTime(scriptSegmentData.end);
+            setPlayingScriptSegmentId(null);
+            playingScriptSegmentIdRef.current = null;
+            return; // Exit early to prevent other handlers
+          }
+          // Prevent playback if we somehow went before the start
               // BUT only if we're actually programmatically playing this specific segment
               // CRITICAL: Only do this if we're explicitly playing this segment (not full audio)
               else if (time < scriptSegmentData.start && isProgrammaticPlayRef.current && playingScriptSegmentId === currentPlayingScriptSegmentId && playingScriptSegmentIdRef.current === currentPlayingScriptSegmentId) {
                 // Only seek to start if we're actually playing this specific segment
-                console.log('[Script Play] Time before start, resetting to:', scriptSegmentData.start.toFixed(3), 'current time:', time.toFixed(3));
-                wavesurferRef.current.setTime(scriptSegmentData.start);
+            console.log('[Script Play] Time before start, resetting to:', scriptSegmentData.start.toFixed(3), 'current time:', time.toFixed(3));
+            wavesurferRef.current.setTime(scriptSegmentData.start);
               }
             }
           }
@@ -1108,7 +1120,7 @@ const SyncStudio = () => {
       if (e.code !== 'Space' || !isRecording) return;
       
       // Prevent default scrolling behavior
-      e.preventDefault();
+        e.preventDefault();
       
       // Check if a block is selected
       if (!selectedBlockForSync) {
@@ -1142,7 +1154,7 @@ const SyncStudio = () => {
         console.warn(`[TapSync] Duration too short (${(duration * 1000).toFixed(0)}ms). Minimum: 100ms. Resetting.`);
         tapSyncStartTimeRef.current = null;
         return;
-      }
+        }
 
       // Find the selected element
       const element = parsedElements.find(el => el.id === selectedBlockForSync);
@@ -1151,8 +1163,8 @@ const SyncStudio = () => {
         console.error(`[TapSync] ERROR: Selected block ${selectedBlockForSync} not found in parsedElements`);
         tapSyncStartTimeRef.current = null;
         return;
-      }
-
+          }
+          
       // Validate element has an ID
       if (!element.id) {
         console.error(`[TapSync] ERROR: Element has no ID!`, element);
@@ -1190,33 +1202,33 @@ const SyncStudio = () => {
         console.warn(`[TapSync] Selected block is not on current page. Selected: ${selectedBlockForSync}, Current page: ${currentSectionIndex + 1}`);
         tapSyncStartTimeRef.current = null;
         return;
-      }
+            }
 
-      // Apply snap to silence
-      const snappedStart = findNearestSilence(startTime);
-      const snappedEnd = findNearestSilence(endTime);
+            // Apply snap to silence
+            const snappedStart = findNearestSilence(startTime);
+            const snappedEnd = findNearestSilence(endTime);
 
       console.log(`[TapSync] Syncing selected element:`, {
-        id: element.id,
-        text: element.text?.substring(0, 50),
-        type: element.type,
-        startTime: snappedStart.toFixed(3),
+              id: element.id,
+              text: element.text?.substring(0, 50),
+              type: element.type,
+              startTime: snappedStart.toFixed(3),
         endTime: snappedEnd.toFixed(3),
         duration: (duration * 1000).toFixed(0) + 'ms'
-      });
+            });
 
-      // Create region
-      createRegion(element.id, snappedStart, snappedEnd, 'sentence');
+            // Create region
+            createRegion(element.id, snappedStart, snappedEnd, 'sentence');
       // For manual syncs, only create word timings if granularity is "word"
       // Pass false to prevent word creation for sentence-level manual syncs
       updateSentenceWithWords(element.id, snappedStart, snappedEnd, element.text, granularity === 'word');
 
       console.log(`[TapSync] ✓ Page ${currentSectionIndex + 1} - ${element.id}: ${snappedStart.toFixed(3)}s - ${snappedEnd.toFixed(3)}s`);
-      
+            
       // Reset for next sync
       tapSyncStartTimeRef.current = null;
       setSelectedBlockForSync(null);
-      lastSyncTimeRef.current = Date.now();
+            lastSyncTimeRef.current = Date.now();
     };
 
     window.addEventListener('keydown', handleKeyPress);
@@ -1893,14 +1905,14 @@ const SyncStudio = () => {
               };
             } else {
               // Add to sentences (sentence/paragraph level)
-              newSentences[skippedId] = {
-                id: skippedId,
-                start: undefined,
-                end: undefined,
-                text: element.text || '',
-                pageNumber: pageNum,
-                status: 'SKIPPED'
-              };
+            newSentences[skippedId] = {
+              id: skippedId,
+              start: undefined,
+              end: undefined,
+              text: element.text || '',
+              pageNumber: pageNum,
+              status: 'SKIPPED'
+            };
             }
           }
         });
@@ -3714,8 +3726,8 @@ const SyncStudio = () => {
                   // Clear all flags synchronously
                   playingSegmentIdRef.current = null;
                   playingScriptSegmentIdRef.current = null;
-                  isProgrammaticPlayRef.current = false;
-                  setPlayingSegmentId(null);
+                    isProgrammaticPlayRef.current = false;
+                    setPlayingSegmentId(null);
                   setPlayingScriptSegmentId(null);
                   
                   // Toggle playback immediately - flags are now cleared
@@ -4225,17 +4237,17 @@ const SyncStudio = () => {
                               borderRadius: '4px',
                               backgroundColor: '#ffebee',
                               color: '#c62828',
-                              cursor: 'pointer',
-                              fontSize: '11px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '4px'
-                            }}
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
                             title="Clear sync timing to allow resyncing"
-                          >
+                        >
                             <HiOutlineRefresh size={12} />
                             Clear Sync
-                          </button>
+                        </button>
                         )}
                       </div>
                       <div style={{ display: 'flex', gap: '6px' }}>
@@ -4300,28 +4312,28 @@ const SyncStudio = () => {
                     {!isSkipped && (
                       <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
                         {!isUnsynced && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
                               handleClearSync(id);
-                            }}
-                            style={{
-                              padding: '4px 8px',
+                          }}
+                          style={{
+                            padding: '4px 8px',
                               border: '1px solid #f44336',
-                              borderRadius: '4px',
+                            borderRadius: '4px',
                               backgroundColor: '#ffebee',
                               color: '#c62828',
-                              cursor: 'pointer',
-                              fontSize: '11px',
-                              display: 'flex',
-                              alignItems: 'center',
-                              gap: '4px'
-                            }}
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '4px'
+                          }}
                             title="Clear sync timing to allow resyncing"
-                          >
+                        >
                             <HiOutlineRefresh size={12} />
                             Clear Sync
-                          </button>
+                        </button>
                         )}
                       </div>
                     )}
