@@ -824,9 +824,10 @@ export class GeminiService {
    * @param {string} chapterTitle - Title for the chapter
    * @param {number} chapterNumber - Chapter number
    * @param {Object} extractedImagesMap - Map of pageNumber -> extracted images array
+   * @param {string} pageType - Page type: 'regular', 'cover', 'toc', or 'back'
    * @returns {Promise<{xhtml: string, css: string}|null>} XHTML and CSS or null if failed
    */
-  static async convertChapterPngsToXhtml(pageImages, chapterTitle, chapterNumber, extractedImagesMap = {}) {
+  static async convertChapterPngsToXhtml(pageImages, chapterTitle, chapterNumber, extractedImagesMap = {}, pageType = 'regular') {
     const client = this.getClient();
     if (!client) {
       return null;
@@ -941,48 +942,130 @@ export class GeminiService {
           `  ${idx + 1}. ${img.fileName} (from page ${img.pageNumber}, ${img.width}x${img.height}px)`
         ).join('\n');
 
+        // Build page type instructions
+        // Per requirement: treat TOC same as cover/back (single full-page placeholder, not structured extraction)
+        let pageTypeInstructions = '';
+        if (pageType === 'cover' || pageType === 'back' || pageType === 'toc') {
+          const isCover = pageType === 'cover';
+          const isBack = pageType === 'back';
+          const isToc = pageType === 'toc';
+          const specialLabel = isCover ? 'COVER PAGE' : isBack ? 'BACK COVER' : 'TABLE OF CONTENTS (TOC) PAGE';
+          const specialDesc = isCover ? 'cover' : isBack ? 'back cover' : 'TOC';
+          const placeholderIdSuffix = isCover ? 'cover_img' : isBack ? 'back_img' : 'toc_img';
+          const placeholderTitle = isCover
+            ? 'Front cover image'
+            : isBack
+              ? 'Back cover image'
+              : 'Table of Contents page image';
+
+          pageTypeInstructions = `
+**⭐ SPECIAL PAGE TYPE: ${specialLabel}**
+This is a ${specialDesc} page. Create a simple layout with:
+- ONE large full-page image placeholder that covers the entire page
+- Use: <div class="image-drop-zone" id="chapter${chapterNumber}_page{pageNum}_${placeholderIdSuffix}" title="${placeholderTitle}" style="width: 100%; min-height: 100vh; background: transparent; border: none;"></div>
+- Extract any text if present (title, author, etc.) and place below the image placeholder
+- Keep the layout simple and clean`;
+        } else {
+          pageTypeInstructions = `
+**PAGE TYPE: REGULAR CHAPTER**
+This is a regular chapter with standard content. Follow all standard conversion rules.`;
+        }
+
         const prompt = `You are converting a chapter from a PDF document to EPUB format. Analyze the provided ${pageImages.length} image(s) and generate a SINGLE, complete XHTML document.
+
+**🚫 CRITICAL RULE - READ FIRST:**
+**NEVER create <img> tags with src attributes. You MUST create ONLY empty <div> placeholders with class="image-drop-zone" for ALL images. NO <img src="..."> tags allowed!**
 
 **CHAPTER INFORMATION:**
 - Chapter Title: ${chapterTitle}
 - Chapter Number: ${chapterNumber}
 - Pages in this chapter: ${pageList}
 - Total pages: ${pageImages.length}
+${pageTypeInstructions}
 
 **CRITICAL OUTPUT REQUIREMENTS - MUST BE COMPLETE:**
 - You MUST return the ENTIRE XHTML document from <!DOCTYPE to </html> - DO NOT truncate mid-tag or mid-attribute
 - ALL attributes MUST have values - NEVER write incomplete attributes like id</p> (must be id="value" or id="")
+- If you cannot complete the entire document, prioritize completing all opening tags and attributes before closing tags
 - Create ONE unified XHTML document containing ALL content from ALL ${pageImages.length} page images
-- Every opening tag has a matching closing tag
+- Ensure every opening tag has a matching closing tag
 - Every attribute must have a value in quotes: id="value", class="value", NOT id or class
 - The output MUST be valid XHTML 1.0 Strict that can be parsed by an XML parser
+- **PRIORITY ORDER if output is limited:**
+  1. Complete all attribute values (id="", class="", etc.) - NEVER leave attributes incomplete
+  2. Close all opened tags properly
+  3. Ensure </body> and </html> closing tags are present
+  4. Then add content as space allows
 
 **EPUB 3 REFLOWABLE STRATEGY (CRITICAL):**
-1) This is a REFLOWABLE EPUB. DO NOT use position: absolute or fixed px units for layout.
-2) Recreate the visual "look and feel" (colors, typography, spacing) using semantic HTML5 and Flexbox.
-3) Use background colors on <div> wrappers to replicate banners and colored sections found in the PDF.
+1) This is a REFLOWABLE EPUB. Use semantic HTML5 and Flexbox for text flow.
+2) **EXCEPTION:** Use position: absolute/relative with % units for image placeholders to match PDF positioning exactly
+3) **Container Strategy:** Wrap content in a positioned container (position: relative) so images can be absolutely positioned within
+4) Recreate the visual "look and feel" (colors, typography, spacing) using CSS.
+5) Use background colors on <div> wrappers to replicate banners and colored sections found in the PDF.
 
 **IMAGE HANDLING & ASSET FITTING (CRITICAL - MANDATORY CLASSES):**
+
 1) **FOR EVERY illustration, icon, logo, photo, graphic, or visual element in the PDF, you MUST create an empty <div> with ONE of these classes:**
    - class="image-drop-zone" (preferred for main images)
    - class="image-placeholder" (alternative, also acceptable)
 
 2) **ID FORMAT:** id="chapter${chapterNumber}_page{pageNum}_img{N}"
+   - Use consistent naming: prefer chapter${chapterNumber}_page{pageNum}_img{N} for images
    - Example: id="chapter1_page1_img1", id="chapter1_page2_img1", etc.
 
 3) **TITLE ATTRIBUTE:** ALWAYS include a detailed description of the image for the user.
    - Example: title="A brown horse with its mouth wide open, showing its teeth, against a blue sky"
 
-4) **CSS FOR DROP ZONES:** Must use 'aspect-ratio' to reserve space and 'object-fit: contain' for future images.
+4) **PRECISE POSITIONING (CRITICAL - MATCH PDF EXACTLY):**
+   - **Observe the EXACT position** of each image in the PDF
+   - Use inline styles with position, top, left, width, height to match the PDF layout precisely
+   - Example: style="position: absolute; top: 10%; left: 5%; width: 40%; height: 30%;"
+   - **For overlapping images:** Use z-index to control stacking order
+   - **For images cut to each other:** Position them with precise coordinates
+   - **Multiple images stacked:** Each gets its own positioned placeholder with appropriate z-index
 
-5) **CRITICAL:** NEVER create a <div> for an image without adding class="image-drop-zone" or class="image-placeholder". 
+5) **PLACEHOLDER STYLING (CRITICAL - INVISIBLE PLACEHOLDERS):**
+   - **NO borders** - placeholders should be invisible/transparent
+   - **NO background color** - use background: transparent
+   - Use aspect-ratio or explicit height to reserve space
+   - Example: style="background: transparent; border: none; aspect-ratio: 16/9;"
 
-6) **ABSOLUTELY FORBIDDEN:** Do NOT create <img> tags with src attributes. You MUST ONLY create placeholder <div> elements with class="image-drop-zone" or class="image-placeholder". Even if you see images in the page, create ONLY placeholder divs, NEVER <img> tags.
+6) **IMAGE ROTATION & TRANSFORMATION (CRITICAL):**
+   - **CAREFULLY OBSERVE** if images in the PDF are rotated, tilted, or skewed
+   - Add CSS transform to the inline style
+   - Example: style="transform: rotate(-5deg); position: absolute; top: 10%; left: 5%;"
+   - Combine positioning and rotation in the same style attribute
+
+7) **CRITICAL:** NEVER create a <div> for an image without adding class="image-drop-zone" or class="image-placeholder". 
+   - If you create a div with a title describing an image, it MUST have one of these classes.
+   - Empty divs with image descriptions but no class will NOT work in the editor.
+
+8) **ABSOLUTELY FORBIDDEN - MOST CRITICAL RULE - NO <IMG> TAGS ALLOWED:**
+   - **NEVER create any <img> tag with src attribute under ANY circumstance**
+   - **DO NOT write <img src="images/..." /> or <img src="..." /> - THIS IS 100% FORBIDDEN**
+   - **You MUST create ONLY empty <div> elements with class="image-drop-zone" or class="image-placeholder"**
+   - **EVERY single image, photo, graphic, icon, logo MUST be an empty <div> placeholder, NOT an <img> tag**
+   - **NO EXCEPTIONS - Even if you detect images in the PNG, you MUST create ONLY <div> placeholders, NEVER <img> tags**
+   - **WRONG (FORBIDDEN):** <img src="images/horse.jpg" alt="Horse" />
+   - **CORRECT (REQUIRED):** <div class="image-drop-zone" id="page1_img1" title="Horse image" style="width: 80%; aspect-ratio: 16/9; background: transparent; border: none;"></div>
+
+**LAYOUT DECISION:**
+1) **TWO-COLUMN (Multi-Page Split):** Use ONLY if the image shows a visible divider line or two distinct page numbers. Use .container with two .page children.
+2) **SINGLE-COLUMN (Default):** Standard single worksheet. Use a single .page element.
 
 **AUDIO SYNC REQUIREMENTS (MANDATORY) - HIERARCHICAL NESTED STRUCTURE FOR ALL ELEMENTS:**
 - **CRITICAL: ALL text elements must use NESTED hierarchical structure to support word/sentence/paragraph granularity**
 - **STRUCTURE: Parent Element → Sentences → Words (nested hierarchy)**
 - **ID FORMAT: chapter${chapterNumber}_page{pageNum}_{type}{number}_{subtype}{number}...**
+
+**VISUAL STYLING & COLOR SAMPLING:**
+
+1) **Colors:** Identify the specific hex colors in the PDF (e.g., the red in the TIME logo, the tan/brown background of horse sections, the blue TOC border). Apply these to 'background-color' or 'color' in CSS.
+
+2) **Typography:** Identify if text is Serif or Sans-Serif and apply globally.
+
+3) **Borders:** Recreate decorative borders (like the TOC box on page 3) using CSS 'border' and 'border-radius'.
 
 **HIERARCHICAL STRUCTURE (MANDATORY FOR ALL TEXT ELEMENTS):**
 - **Paragraphs**: <p id="chapter${chapterNumber}_page{pageNum}_p1" class="paragraph-block" data-read-aloud="true">
@@ -994,10 +1077,20 @@ export class GeminiService {
   - Inside sentences, NEST words: <span class="sync-word" id="chapter${chapterNumber}_h1_s1_w1" data-read-aloud="true">word</span>
 
 - **List Items (li)**: <li id="chapter${chapterNumber}_page{pageNum}_li1" data-read-aloud="true">
-  - Inside list items, NEST sentences and words
+  - Inside list items, NEST sentences: <span class="sync-sentence" id="chapter${chapterNumber}_page{pageNum}_li1_s1" data-read-aloud="true">
+  - Inside sentences, NEST words: <span class="sync-word" id="chapter${chapterNumber}_page{pageNum}_li1_s1_w1" data-read-aloud="true">word</span>
 
 - **Table Cells (td, th)**: <td id="chapter${chapterNumber}_page{pageNum}_td1" data-read-aloud="true">
-  - Inside table cells, NEST sentences and words
+  - Inside table cells, NEST sentences: <span class="sync-sentence" id="chapter${chapterNumber}_page{pageNum}_td1_s1" data-read-aloud="true">
+  - Inside sentences, NEST words: <span class="sync-word" id="chapter${chapterNumber}_page{pageNum}_td1_s1_w1" data-read-aloud="true">word</span>
+
+- **Headers/Footers**: <header id="chapter${chapterNumber}_page{pageNum}_header1" data-read-aloud="true">
+  - Inside headers/footers, NEST sentences: <span class="sync-sentence" id="chapter${chapterNumber}_page{pageNum}_header1_s1" data-read-aloud="true">
+  - Inside sentences, NEST words: <span class="sync-word" id="chapter${chapterNumber}_page{pageNum}_header1_s1_w1" data-read-aloud="true">word</span>
+
+- **Divs, Sections, Articles**: <div id="chapter${chapterNumber}_page{pageNum}_div1" data-read-aloud="true">
+  - Inside divs/sections/articles, NEST sentences: <span class="sync-sentence" id="chapter${chapterNumber}_page{pageNum}_div1_s1" data-read-aloud="true">
+  - Inside sentences, NEST words: <span class="sync-word" id="chapter${chapterNumber}_page{pageNum}_div1_s1_w1" data-read-aloud="true">word</span>
 
 - **This nested structure allows CSS highlighting to work at element, sentence, or word level for ALL elements**
 
@@ -1010,81 +1103,208 @@ export class GeminiService {
     <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w4">a</span>
     <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w5">horse.</span>
   </span>
+  <span class="sync-sentence" id="chapter${chapterNumber}_page1_p1_s2" data-read-aloud="true">
+    <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s2_w1">You</span>
+    <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s2_w2">would</span>
+    <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s2_w3">gallop.</span>
+  </span>
 </p>
 
-**ID NUMBERING RULES:**
+**ID NUMBERING RULES (ALL ELEMENTS FOLLOW HIERARCHY):**
+  * Headers: chapter${chapterNumber}_h1, chapter${chapterNumber}_h2, chapter${chapterNumber}_h3 (sequential, regardless of h1-h6 level)
+    - Sentences in headers: chapter${chapterNumber}_h{N}_s{N} (e.g., chapter${chapterNumber}_h1_s1, chapter${chapterNumber}_h1_s2)
+    - Words in header sentences: chapter${chapterNumber}_h{N}_s{N}_w{N} (e.g., chapter${chapterNumber}_h1_s1_w1, chapter${chapterNumber}_h1_s1_w2)
+  * Paragraphs: chapter${chapterNumber}_page{pageNum}_p1, chapter${chapterNumber}_page{pageNum}_p2, etc.
+    - Sentences in paragraphs: chapter${chapterNumber}_page{pageNum}_p{N}_s{N} (e.g., chapter${chapterNumber}_page1_p1_s1, chapter${chapterNumber}_page1_p1_s2)
+    - Words in paragraph sentences: chapter${chapterNumber}_page{pageNum}_p{N}_s{N}_w{N}
+  * List Items: chapter${chapterNumber}_page{pageNum}_li1, chapter${chapterNumber}_page{pageNum}_li2, etc.
+    - Sentences in list items: chapter${chapterNumber}_page{pageNum}_li{N}_s{N}
+    - Words in list item sentences: chapter${chapterNumber}_page{pageNum}_li{N}_s{N}_w{N}
+  * Table Cells: chapter${chapterNumber}_page{pageNum}_td1, chapter${chapterNumber}_page{pageNum}_td2, etc.
+    - Sentences in table cells: chapter${chapterNumber}_page{pageNum}_td{N}_s{N}
+    - Words in table cell sentences: chapter${chapterNumber}_page{pageNum}_td{N}_s{N}_w{N}
+  * Headers/Footers: chapter${chapterNumber}_page{pageNum}_header1, chapter${chapterNumber}_page{pageNum}_footer1, etc.
+    - Sentences in headers/footers: chapter${chapterNumber}_page{pageNum}_header{N}_s{N}
+    - Words in header/footer sentences: chapter${chapterNumber}_page{pageNum}_header{N}_s{N}_w{N}
+  * Divs/Sections: chapter${chapterNumber}_page{pageNum}_div1, chapter${chapterNumber}_page{pageNum}_section1, etc.
+    - Sentences in divs/sections: chapter${chapterNumber}_page{pageNum}_div{N}_s{N}
+    - Words in div/section sentences: chapter${chapterNumber}_page{pageNum}_div{N}_s{N}_w{N}
+  * **ALWAYS nest: words inside sentences, sentences inside parent elements (p, h1-h6, li, td, th, header, footer, div, section, etc.)**
+  * Be consistent: same element types use same numbering pattern across all pages
 - **NO TEXT ELEMENT SHOULD BE WITHOUT AN ID** - Every piece of text must be wrapped in an element with a unique ID
 - **Even if text appears multiple times (duplicates), each occurrence must have a unique ID**
 - **Page numbers, headers, footers, titles, captions, labels - ALL must have unique IDs**
-- **ALWAYS nest: words inside sentences, sentences inside parent elements**
 
-**VISUAL STYLING & COLOR SAMPLING:**
-1) **Colors:** Identify the specific hex colors in the PDF. Apply these to 'background-color' or 'color' in CSS.
-2) **Typography:** Identify if text is Serif or Sans-Serif and apply globally.
+**BACKROUND & CANVAS LOGIC (CRITICAL):**
+1) **The Background:** For the primary visual, use a <div class="canvas-background" id="chapter${chapterNumber}_page{pageNum}_bg">. 
+2) **The Drop Zone:** Inside the background div, place the <div class="image-drop-zone" title="..."> representing the main horse photo.
+   - **MANDATORY:** This div MUST have class="image-drop-zone" or class="image-placeholder".
+3) **The Text Layer:** All text must be treated as "overlays." Wrap text blocks in:
+   <div class="draggable-text-block" style="top: [N]%; left: [N]%; width: [N]%;">
+     [Standard Nested Audio-Sync Structure: Parent > Sentence > Word]
+   </div>
 
+**REMINDER - ALL IMAGE PLACEHOLDERS MUST HAVE CLASSES:**
+- Every <div> that represents an image, illustration, icon, logo, or graphic MUST have either:
+  - class="image-drop-zone" OR
+  - class="image-placeholder"
+- Do NOT create image divs without these classes. They will not be detected by the editor.
+
+**VISUAL ACCURACY:**
+- Replicate the layout of the PDF exactly by using percentage-based positioning.
+- If text is inside a colored box (like the red "TIME" banner), apply that 'background-color' directly to the draggable-text-block.
+
+**CSS REQUIREMENTS (EMBEDDED):**
+- .page { position: relative; width: 100%; min-height: 100vh; display: block; }
+- .canvas-background { 
+    position: absolute; 
+    top: 0; left: 0; width: 100%; height: 100%; 
+    z-index: 1; 
+  }
+- .draggable-text-block { 
+    position: absolute; 
+    z-index: 10; 
+    cursor: move; 
+    padding: 0.5em;
+  }
+- .image-drop-zone { 
+    width: 100%; height: 100%; 
+    background: #f0f0f0; 
+    display: flex; align-items: center; justify-content: center; 
+  }
 
 **XHTML 1.0 STRICT REQUIREMENTS:**
 - DOCTYPE: <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 - All tags lowercase, properly nested, self-closing tags end with />
-- **CRITICAL: When using <img> tags, DO NOT include xmlns="" attribute**
-- **CRITICAL: ALL attributes MUST have values in quotes - id="value", class="value", style="value"**
+- Use relative units (em, rem, %, vw, vh) - NO px units for layout
+- Represent ALL graphics as <div> placeholders with class="image-drop-zone" or class="image-placeholder" - NEVER use <img> tags
+- **CRITICAL: ALL attributes MUST have values in quotes - id="value", class="value", style="value" - NEVER id, class, or style without quotes**
+- **CRITICAL: If an attribute value is empty, use empty quotes: id="" NOT id**
+- **CRITICAL: Complete ALL attributes before closing any tag - incomplete attributes cause XML parsing errors**
 
 **CSS REQUIREMENTS - CRITICAL:**
 - ALL CSS MUST be inside a <style type="text/css"> tag within <head>
 - Include: .-epub-media-overlay-active { background-color: #ffff00; }
-- .image-drop-zone { 
-    width: 100%; 
-    background: #f4f4f4; 
-    border: 2px dashed #007bff; 
-    margin: 1em 0; 
-    display: flex; 
-    align-items: center; 
-    justify-content: center;
-    aspect-ratio: 16/9;
+- Preserve text hierarchy (h1, h2, h3)
+- Use flexbox for layouts
+- CSS: Embedded in <head>. Include 
+
+ - .image-drop-zone, .image-placeholder { 
+    background: transparent;
+    border: none;
+    display: block;
+    position: relative;
   }
+
 - .image-drop-zone img, .image-placeholder img { 
     width: 100%; 
     height: 100%; 
     object-fit: contain; 
   }
-- Use relative units (em, rem, %) for all text and spacing
+
+**CRITICAL REMINDER:** When you create ANY div that represents an image (illustration, photo, icon, logo, graphic), you MUST add class="image-drop-zone" or class="image-placeholder" to it. Do not create image divs without these classes.
+
+- Use relative units (em, rem, %) for all text and spacing.
 
 **OUTPUT FORMAT - CRITICAL:**
 Return ONLY the raw XHTML content. 
 - Do NOT wrap in JSON
-- Do NOT use markdown code blocks
+- Do NOT use markdown code blocks (no triple backticks with xml/html/xhtml)
+- Do NOT use any markdown formatting
 - Start directly with <!DOCTYPE and end with </html>
 - Return pure XHTML only, nothing else
+- **MANDATORY: Complete ALL attributes with values before closing any tag**
+- **MANDATORY: If output is truncated, prioritize completing attributes and closing tags over adding new content**
+- **Example of CORRECT: <span class="sync-sentence" id="chapter1_page1_p1_s1"></span>**
+- **Example of WRONG: <span class="sync-sentence" id</span> (missing value)**
 
-**DOCUMENT STRUCTURE:**
+Example structure for CHAPTER ${chapterNumber} (showing HIERARCHICAL NESTED structure for ALL elements):
 <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head>
   <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
   <title>${chapterTitle}</title>
   <style type="text/css">
-    /* ALL CSS goes here */
-    body { margin: 0; padding: 1em; font-family: serif; }
+    /* ALL CSS goes here - do not put CSS anywhere else */
+    body { margin: 0; padding: 0; }
     .-epub-media-overlay-active { background-color: #ffff00; }
     .paragraph-block { margin: 1em 0; }
     .sync-sentence { display: inline; }
     .sync-word { display: inline; }
-    .image-drop-zone { /* as specified above */ }
   </style>
 </head>
 <body>
-  <section id="chapter_${chapterNumber}">
-    <h1 id="chapter_${chapterNumber}_title" data-read-aloud="true">
-      <span class="sync-sentence" id="chapter_${chapterNumber}_title_s1" data-read-aloud="true">
-        <span class="sync-word" id="chapter_${chapterNumber}_title_s1_w1">${chapterTitle}</span>
+  <div class="page">
+    <!-- Header with NESTED sentences and words -->
+    <header id="chapter${chapterNumber}_header1" data-read-aloud="true">
+      <h1 id="chapter${chapterNumber}_h1" data-read-aloud="true">
+        <span class="sync-sentence" id="chapter${chapterNumber}_h1_s1" data-read-aloud="true">
+          <span class="sync-word" id="chapter${chapterNumber}_h1_s1_w1">Chapter</span>
+          <span class="sync-word" id="chapter${chapterNumber}_h1_s1_w2">Title</span>
+        </span>
+      </h1>
+    </header>
+    <!-- Paragraphs with NESTED sentences and words -->
+    <p id="chapter${chapterNumber}_page1_p1" class="paragraph-block" data-read-aloud="true">
+      <span class="sync-sentence" id="chapter${chapterNumber}_page1_p1_s1" data-read-aloud="true">
+        <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w1">If</span>
+        <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w2">you</span>
+        <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w3">were</span>
+        <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w4">a</span>
+        <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w5">horse.</span>
       </span>
-    </h1>
-    
-    <!-- Content from all ${pageImages.length} pages goes here -->
-    <!-- Maintain reading order across all pages -->
-    <!-- Use <h2> or <h3> to separate different pages/sections if needed -->
-    
-  </section>
+      <span class="sync-sentence" id="chapter${chapterNumber}_page1_p1_s2" data-read-aloud="true">
+        <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s2_w1">You</span>
+        <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s2_w2">would</span>
+        <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s2_w3">gallop.</span>
+      </span>
+    </p>
+    <!-- List items with NESTED sentences and words -->
+    <ul>
+      <li id="chapter${chapterNumber}_page1_li1" data-read-aloud="true">
+        <span class="sync-sentence" id="chapter${chapterNumber}_page1_li1_s1" data-read-aloud="true">
+          <span class="sync-word" id="chapter${chapterNumber}_page1_li1_s1_w1">First</span>
+          <span class="sync-word" id="chapter${chapterNumber}_page1_li1_s1_w2">item.</span>
+        </span>
+      </li>
+      <li id="chapter${chapterNumber}_page1_li2" data-read-aloud="true">
+        <span class="sync-sentence" id="chapter${chapterNumber}_page1_li2_s1" data-read-aloud="true">
+          <span class="sync-word" id="chapter${chapterNumber}_page1_li2_s1_w1">Second</span>
+          <span class="sync-word" id="chapter${chapterNumber}_page1_li2_s1_w2">item.</span>
+        </span>
+      </li>
+    </ul>
+    <!-- Table cells with NESTED sentences and words -->
+    <table>
+      <tr>
+        <td id="chapter${chapterNumber}_page1_td1" data-read-aloud="true">
+          <span class="sync-sentence" id="chapter${chapterNumber}_page1_td1_s1" data-read-aloud="true">
+            <span class="sync-word" id="chapter${chapterNumber}_page1_td1_s1_w1">Cell</span>
+            <span class="sync-word" id="chapter${chapterNumber}_page1_td1_s1_w2">content.</span>
+          </span>
+        </td>
+      </tr>
+    </table>
+    <!-- Image placeholders - positioned to match PDF layout -->
+    <!-- Example: Overlapping images with precise positioning -->
+    <div style="position: relative; width: 100%; height: 500px;">
+      <!-- Background image -->
+      <div id="chapter${chapterNumber}_page1_img1" class="image-drop-zone" 
+           title="Background landscape" 
+           style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; background: transparent; border: none;"></div>
+      <!-- Foreground image overlapping -->
+      <div id="chapter${chapterNumber}_page1_img2" class="image-placeholder" 
+           title="Horse in foreground, slightly tilted" 
+           style="position: absolute; top: 20%; left: 30%; width: 40%; height: 60%; z-index: 2; background: transparent; border: none; transform: rotate(-5deg);"></div>
+    </div>
+    <!-- Footer with NESTED sentences and words -->
+    <footer id="chapter${chapterNumber}_page1_footer1" data-read-aloud="true">
+      <span class="sync-sentence" id="chapter${chapterNumber}_page1_footer1_s1" data-read-aloud="true">
+        <span class="sync-word" id="chapter${chapterNumber}_page1_footer1_s1_w1">Page</span>
+        <span class="sync-word" id="chapter${chapterNumber}_page1_footer1_s1_w2">1</span>
+      </span>
+    </footer>
+  </div>
 </body>
 </html>
 
@@ -1092,7 +1312,9 @@ Return ONLY the raw XHTML content.
 - Create a cohesive flow - this is one continuous chapter combining ${pageImages.length} pages
 - Every text element MUST have the nested word/sentence structure with unique IDs
 - Every image MUST have class="image-drop-zone" or class="image-placeholder"
-- This is REFLOWABLE - no position: absolute or fixed pixel widths
+- Use position: absolute with % units for image placeholders to match PDF positioning
+- Image placeholders should be transparent with no borders (background: transparent; border: none;)
+- For overlapping images, use z-index to control stacking
 - Preserve colors, fonts, and visual hierarchy from the original pages`;
 
         console.log(`[Chapter ${chapterNumber}] Calling Gemini API with ${imageParts.length} images and detailed prompt...`);
@@ -1292,7 +1514,8 @@ Return ONLY the raw XHTML content.
 
         const prompt = `Analyze the provided image(s) of the worksheet page(s) and generate complete, valid XHTML with ALL CSS embedded inside.
 
-
+**🚫 CRITICAL RULE - READ FIRST:**
+**NEVER create <img> tags with src attributes. You MUST create ONLY empty <div> placeholders with class="image-drop-zone" for ALL images. NO <img src="..."> tags allowed!**
 
 **CRITICAL OUTPUT REQUIREMENTS - MUST BE COMPLETE:**
 - You MUST return the ENTIRE XHTML document from <!DOCTYPE to </html> - DO NOT truncate mid-tag or mid-attribute
@@ -1312,11 +1535,15 @@ Return ONLY the raw XHTML content.
         
  **EPUB 3 REFLOWABLE STRATEGY (CRITICAL):**
 
-        1) This is a REFLOWABLE EPUB. DO NOT use position: absolute or fixed px units for layout.
+        1) This is a REFLOWABLE EPUB. Use semantic HTML5 and Flexbox for text flow.
 
-        2) Recreate the visual "look and feel" (colors, typography, spacing) using semantic HTML5 and Flexbox.
+        2) **EXCEPTION:** Use position: absolute/relative with % units for image placeholders to match PDF positioning exactly
 
-        3) Use background colors on <div> wrappers to replicate banners and colored sections found in the PDF.
+        3) **Container Strategy:** Wrap content in a positioned container (position: relative) so images can be absolutely positioned within
+
+        4) Recreate the visual "look and feel" (colors, typography, spacing) using CSS.
+
+        5) Use background colors on <div> wrappers to replicate banners and colored sections found in the PDF.
 
 
 
@@ -1334,13 +1561,38 @@ Return ONLY the raw XHTML content.
 3) **TITLE ATTRIBUTE:** ALWAYS include a detailed description of the image for the user.
    - Example: title="A brown horse with its mouth wide open, showing its teeth, against a blue sky"
 
-4) **CSS FOR DROP ZONES:** Must use 'aspect-ratio' to reserve space and 'object-fit: contain' for future images to ensure they fit the container without distortion.
+4) **PRECISE POSITIONING (CRITICAL - MATCH PDF EXACTLY):**
+   - **Observe the EXACT position** of each image in the PDF
+   - Use inline styles with position, top, left, width, height to match the PDF layout precisely
+   - Example: style="position: absolute; top: 10%; left: 5%; width: 40%; height: 30%;"
+   - **For overlapping images:** Use z-index to control stacking order
+   - **For images cut to each other:** Position them with precise coordinates
+   - **Multiple images stacked:** Each gets its own positioned placeholder with appropriate z-index
 
-5) **CRITICAL:** NEVER create a <div> for an image without adding class="image-drop-zone" or class="image-placeholder". 
+5) **PLACEHOLDER STYLING (CRITICAL - INVISIBLE PLACEHOLDERS):**
+   - **NO borders** - placeholders should be invisible/transparent
+   - **NO background color** - use background: transparent
+   - Use aspect-ratio or explicit height to reserve space
+   - Example: style="background: transparent; border: none; aspect-ratio: 16/9;"
+
+6) **IMAGE ROTATION & TRANSFORMATION (CRITICAL):**
+   - **CAREFULLY OBSERVE** if images in the PDF are rotated, tilted, or skewed
+   - Add CSS transform to the inline style
+   - Example: style="transform: rotate(-5deg); position: absolute; top: 10%; left: 5%;"
+   - Combine positioning and rotation in the same style attribute
+
+7) **CRITICAL:** NEVER create a <div> for an image without adding class="image-drop-zone" or class="image-placeholder". 
    - If you create a div with a title describing an image, it MUST have one of these classes.
    - Empty divs with image descriptions but no class will NOT work in the editor.
 
-6) **ABSOLUTELY FORBIDDEN:** Do NOT create <img> tags with src attributes. You MUST ONLY create placeholder <div> elements with class="image-drop-zone" or class="image-placeholder". Even if you see images in the page, create ONLY placeholder divs, NEVER <img> tags.
+8) **ABSOLUTELY FORBIDDEN - MOST CRITICAL RULE - NO <IMG> TAGS ALLOWED:**
+   - **NEVER create any <img> tag with src attribute under ANY circumstance**
+   - **DO NOT write <img src="images/..." /> or <img src="..." /> - THIS IS 100% FORBIDDEN**
+   - **You MUST create ONLY empty <div> elements with class="image-drop-zone" or class="image-placeholder"**
+   - **EVERY single image, photo, graphic, icon, logo MUST be an empty <div> placeholder, NOT an <img> tag**
+   - **NO EXCEPTIONS - Even if you detect images in the PNG, you MUST create ONLY <div> placeholders, NEVER <img> tags**
+   - **WRONG (FORBIDDEN):** <img src="images/horse.jpg" alt="Horse" />
+   - **CORRECT (REQUIRED):** <div class="image-drop-zone" id="page1_img1" title="Horse image" style="width: 80%; aspect-ratio: 16/9; background: transparent; border: none;"></div>
 
 
 
@@ -1480,8 +1732,7 @@ Return ONLY the raw XHTML content.
         - DOCTYPE: <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
         - All tags lowercase, properly nested, self-closing tags end with />
         - Use relative units (em, rem, %, vw, vh) - NO px units for layout
-        - Represent graphics as <div> placeholders with title attributes
-        - **CRITICAL: When using <img> tags, DO NOT include xmlns="" attribute. Use: <img src="..." alt="..." /> NOT <img xmlns="" src="..." />**
+        - Represent ALL graphics as <div> placeholders with class="image-drop-zone" or class="image-placeholder" - NEVER use <img> tags
         - **CRITICAL: ALL attributes MUST have values in quotes - id="value", class="value", style="value" - NEVER id, class, or style without quotes**
         - **CRITICAL: If an attribute value is empty, use empty quotes: id="" NOT id**
         - **CRITICAL: Complete ALL attributes before closing any tag - incomplete attributes cause XML parsing errors**
@@ -1493,24 +1744,11 @@ Return ONLY the raw XHTML content.
         - Use flexbox for layouts
         - CSS: Embedded in <head>. Include 
 
-         - .image-drop-zone { 
-
-            width: 100%; 
-
-            background: #f4f4f4; 
-
-            border: 2px dashed #007bff; 
-
-            margin: 1em 0; 
-
-            display: flex; 
-
-            align-items: center; 
-
-            justify-content: center;
-
-            aspect-ratio: 16/9; /* Or appropriate ratio based on image shape */
-
+         - .image-drop-zone, .image-placeholder { 
+            background: transparent;
+            border: none;
+            display: block;
+            position: relative;
           }
 
         - .image-drop-zone img, .image-placeholder img { 
@@ -1606,10 +1844,18 @@ Return ONLY the raw XHTML content.
                 </td>
               </tr>
             </table>
-            <!-- Image placeholder - MUST have class="image-drop-zone" or class="image-placeholder" -->
-            <div id="page${pageNumber}_img1" class="image-drop-zone" title="Description of the image for accessibility"></div>
-            <!-- Another image placeholder example -->
-            <div id="page${pageNumber}_img2" class="image-placeholder" title="Another image description"></div>
+            <!-- Image placeholders - positioned to match PDF layout -->
+            <!-- Example: Overlapping images with precise positioning -->
+            <div style="position: relative; width: 100%; height: 500px;">
+              <!-- Background image -->
+              <div id="page${pageNumber}_img1" class="image-drop-zone" 
+                   title="Background landscape" 
+                   style="position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; background: transparent; border: none;"></div>
+              <!-- Foreground image overlapping -->
+              <div id="page${pageNumber}_img2" class="image-placeholder" 
+                   title="Horse in foreground, slightly tilted" 
+                   style="position: absolute; top: 20%; left: 30%; width: 40%; height: 60%; z-index: 2; background: transparent; border: none; transform: rotate(-5deg);"></div>
+            </div>
             <!-- Footer with NESTED sentences and words -->
             <footer id="page${pageNumber}_footer1" data-read-aloud="true">
               <span class="sync-sentence" id="page${pageNumber}_footer1_s1" data-read-aloud="true">
