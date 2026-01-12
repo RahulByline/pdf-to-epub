@@ -199,6 +199,14 @@ export class GeminiService {
     xhtml = xhtml.replace(/\s+>/g, '>');
     xhtml = xhtml.replace(/<(\w+)\s+/g, '<$1 ');
     
+    // Remove epub:type attributes if xmlns:epub is not declared (prevents XML namespace errors)
+    // Check if xmlns:epub is declared in the document
+    const hasEpubNamespace = xhtml.includes('xmlns:epub=');
+    if (!hasEpubNamespace) {
+      // Remove all epub:type attributes
+      xhtml = xhtml.replace(/\s+epub:type="[^"]*"/gi, '');
+    }
+    
     return xhtml;
   }
   
@@ -417,6 +425,44 @@ export class GeminiService {
       this._client = new GoogleGenerativeAI(apiKey);
     }
     return this._client;
+  }
+
+  /**
+   * Generate content using Gemini with built-in rate limits and retries
+   * @param {string} prompt - Prompt text
+   * @param {Object} options - Optional settings (modelName, priority)
+   * @returns {Promise<string>} - Response text
+   */
+  static async generateContent(prompt, options = {}) {
+    try {
+      const client = this.getClient();
+      if (!client) {
+        console.warn('[GeminiService] Client not configured (missing GEMINI_API_KEY)');
+        return '';
+      }
+
+      const modelName = options.modelName || process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+      const model = client.getGenerativeModel({ model: modelName });
+      const response = await this.generateWithBackoff(model, prompt, options.priority);
+      if (!response) return '';
+
+      if (response?.response?.text) {
+        return await response.response.text();
+      }
+
+      if (typeof response === 'string') {
+        return response;
+      }
+
+      if (response?.candidates && response.candidates.length > 0) {
+        return response.candidates[0]?.content?.text || '';
+      }
+
+      return '';
+    } catch (error) {
+      console.warn('[GeminiService] generateContent error:', error.message);
+      return '';
+    }
   }
 
   // Cache for late responses (responses that arrive after timeout)
@@ -773,12 +819,358 @@ export class GeminiService {
   }
 
   /**
-   * Convert a PNG image of a PDF page to XHTML 1.0 Strict markup and CSS
-   * @param {string} imagePath - Path to the PNG image file
-   * @param {number} pageNumber - Page number
+   * Convert multiple PNG images (chapter pages) to a single XHTML document
+   * @param {Array} pageImages - Array of page image objects [{path, pageNumber}, ...]
+   * @param {string} chapterTitle - Title for the chapter
+   * @param {number} chapterNumber - Chapter number
+   * @param {Object} extractedImagesMap - Map of pageNumber -> extracted images array
+   * @returns {Promise<{xhtml: string, css: string}|null>} XHTML and CSS or null if failed
+   */
+  static async convertChapterPngsToXhtml(pageImages, chapterTitle, chapterNumber, extractedImagesMap = {}) {
+    const client = this.getClient();
+    if (!client) {
+      return null;
+    }
+
+    // Check circuit breaker
+    if (!CircuitBreakerService.canMakeRequest('Gemini')) {
+      console.warn(`[Chapter ${chapterNumber}] Circuit breaker is OPEN, skipping XHTML conversion`);
+      return null;
+    }
+
+    // Wrap entire operation in a timeout
+    // Increased timeout for chapter processing (multiple pages = more processing time)
+    const overallTimeout = 420000; // 420 seconds (7 minutes) for chapter processing
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error(`Overall timeout after ${overallTimeout/1000}s`)), overallTimeout)
+    );
+
+    const operationPromise = RequestQueueService.enqueue('Gemini', async () => {
+      // Rate limiting - more generous for chapter processing
+      let retries = 0;
+      const maxRetries = 8;
+      const maxTotalWait = 60000; // 60 seconds max wait for rate limiting (chapters need more time)
+      let totalWaitTime = 0;
+      
+      let acquired = false;
+      while (!acquired && retries < maxRetries && totalWaitTime < maxTotalWait) {
+        acquired = RateLimiterService.acquire('Gemini');
+        if (!acquired) {
+          const waitTime = RateLimiterService.getTimeUntilNextToken('Gemini');
+          if (waitTime > 0 && waitTime < 10000 && (totalWaitTime + waitTime) < maxTotalWait) {
+            const actualWait = Math.min(waitTime + 200, maxTotalWait - totalWaitTime);
+            console.log(`[Chapter ${chapterNumber}] Waiting ${Math.round(actualWait/1000)}s for rate limit...`);
+            await new Promise(resolve => setTimeout(resolve, actualWait));
+            totalWaitTime += actualWait;
+            retries++;
+          } else {
+            console.warn(`[Chapter ${chapterNumber}] Rate limit wait time too long, skipping`);
+            return null;
+          }
+        }
+      }
+      
+      if (!acquired) {
+        console.warn(`[Chapter ${chapterNumber}] Rate limit retries exhausted, skipping XHTML conversion`);
+        return null;
+      }
+
+      try {
+        console.log(`[Chapter ${chapterNumber}] Processing ${pageImages.length} pages: ${pageImages.map(p => p.pageNumber).join(', ')}`);
+        console.log(`[Chapter ${chapterNumber}] Timeout set to ${overallTimeout/1000}s, max output tokens: 65536`);
+        
+        // Read all page images
+        const imageParts = [];
+        for (const pageImg of pageImages) {
+          const imageBuffer = await fs.readFile(pageImg.path);
+          imageParts.push({
+            inlineData: {
+              data: imageBuffer.toString('base64'),
+              mimeType: 'image/png'
+            }
+          });
+        }
+        console.log(`[Chapter ${chapterNumber}] Loaded ${imageParts.length} page images for processing`);
+
+
+        // Collect all extracted images for all pages in this chapter
+        const allExtractedImages = [];
+        for (const pageImg of pageImages) {
+          const extractedImages = extractedImagesMap[pageImg.pageNumber] || [];
+          for (const img of extractedImages) {
+            try {
+              if (img.path && await fs.access(img.path).then(() => true).catch(() => false)) {
+                const imgBuffer = await fs.readFile(img.path);
+                allExtractedImages.push({
+                  buffer: imgBuffer,
+                  mimeType: img.mimeType || `image/${img.format || 'png'}`,
+                  fileName: img.fileName || `image_${img.index || 'unknown'}.${img.format || 'png'}`,
+                  width: img.width,
+                  height: img.height,
+                  pageNumber: pageImg.pageNumber
+                });
+              }
+            } catch (imgError) {
+              console.warn(`[Chapter ${chapterNumber}] Could not load extracted image:`, imgError.message);
+            }
+          }
+        }
+
+        // Add extracted images to imageParts
+        for (const img of allExtractedImages) {
+          imageParts.push({
+            inlineData: {
+              data: img.buffer.toString('base64'),
+              mimeType: img.mimeType
+            }
+          });
+        }
+
+        const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+        const generationConfig = {
+          maxOutputTokens: 65536, // Very high limit for multi-page chapter processing (max for gemini-2.5-flash)
+          temperature: 0.1,
+        };
+        const model = client.getGenerativeModel({ 
+          model: modelName,
+          generationConfig: generationConfig
+        });
+
+        const pageList = pageImages.map(p => `Page ${p.pageNumber}`).join(', ');
+        const imageFileList = allExtractedImages.map((img, idx) => 
+          `  ${idx + 1}. ${img.fileName} (from page ${img.pageNumber}, ${img.width}x${img.height}px)`
+        ).join('\n');
+
+        const prompt = `You are converting a chapter from a PDF document to EPUB format. Analyze the provided ${pageImages.length} image(s) and generate a SINGLE, complete XHTML document.
+
+**CHAPTER INFORMATION:**
+- Chapter Title: ${chapterTitle}
+- Chapter Number: ${chapterNumber}
+- Pages in this chapter: ${pageList}
+- Total pages: ${pageImages.length}
+
+**CRITICAL OUTPUT REQUIREMENTS - MUST BE COMPLETE:**
+- You MUST return the ENTIRE XHTML document from <!DOCTYPE to </html> - DO NOT truncate mid-tag or mid-attribute
+- ALL attributes MUST have values - NEVER write incomplete attributes like id</p> (must be id="value" or id="")
+- Create ONE unified XHTML document containing ALL content from ALL ${pageImages.length} page images
+- Every opening tag has a matching closing tag
+- Every attribute must have a value in quotes: id="value", class="value", NOT id or class
+- The output MUST be valid XHTML 1.0 Strict that can be parsed by an XML parser
+
+**EPUB 3 REFLOWABLE STRATEGY (CRITICAL):**
+1) This is a REFLOWABLE EPUB. DO NOT use position: absolute or fixed px units for layout.
+2) Recreate the visual "look and feel" (colors, typography, spacing) using semantic HTML5 and Flexbox.
+3) Use background colors on <div> wrappers to replicate banners and colored sections found in the PDF.
+
+**IMAGE HANDLING & ASSET FITTING (CRITICAL - MANDATORY CLASSES):**
+1) **FOR EVERY illustration, icon, logo, photo, graphic, or visual element in the PDF, you MUST create an empty <div> with ONE of these classes:**
+   - class="image-drop-zone" (preferred for main images)
+   - class="image-placeholder" (alternative, also acceptable)
+
+2) **ID FORMAT:** id="chapter${chapterNumber}_page{pageNum}_img{N}"
+   - Example: id="chapter1_page1_img1", id="chapter1_page2_img1", etc.
+
+3) **TITLE ATTRIBUTE:** ALWAYS include a detailed description of the image for the user.
+   - Example: title="A brown horse with its mouth wide open, showing its teeth, against a blue sky"
+
+4) **CSS FOR DROP ZONES:** Must use 'aspect-ratio' to reserve space and 'object-fit: contain' for future images.
+
+5) **CRITICAL:** NEVER create a <div> for an image without adding class="image-drop-zone" or class="image-placeholder". 
+
+6) **ABSOLUTELY FORBIDDEN:** Do NOT create <img> tags with src attributes. You MUST ONLY create placeholder <div> elements with class="image-drop-zone" or class="image-placeholder". Even if you see images in the page, create ONLY placeholder divs, NEVER <img> tags.
+
+**AUDIO SYNC REQUIREMENTS (MANDATORY) - HIERARCHICAL NESTED STRUCTURE FOR ALL ELEMENTS:**
+- **CRITICAL: ALL text elements must use NESTED hierarchical structure to support word/sentence/paragraph granularity**
+- **STRUCTURE: Parent Element → Sentences → Words (nested hierarchy)**
+- **ID FORMAT: chapter${chapterNumber}_page{pageNum}_{type}{number}_{subtype}{number}...**
+
+**HIERARCHICAL STRUCTURE (MANDATORY FOR ALL TEXT ELEMENTS):**
+- **Paragraphs**: <p id="chapter${chapterNumber}_page{pageNum}_p1" class="paragraph-block" data-read-aloud="true">
+  - Inside paragraphs, NEST sentences: <span class="sync-sentence" id="chapter${chapterNumber}_page{pageNum}_p1_s1" data-read-aloud="true">
+  - Inside sentences, NEST words: <span class="sync-word" id="chapter${chapterNumber}_page{pageNum}_p1_s1_w1" data-read-aloud="true">word</span>
+
+- **Headers (h1-h6)**: <h1 id="chapter${chapterNumber}_h1" data-read-aloud="true">
+  - Inside headers, NEST sentences: <span class="sync-sentence" id="chapter${chapterNumber}_h1_s1" data-read-aloud="true">
+  - Inside sentences, NEST words: <span class="sync-word" id="chapter${chapterNumber}_h1_s1_w1" data-read-aloud="true">word</span>
+
+- **List Items (li)**: <li id="chapter${chapterNumber}_page{pageNum}_li1" data-read-aloud="true">
+  - Inside list items, NEST sentences and words
+
+- **Table Cells (td, th)**: <td id="chapter${chapterNumber}_page{pageNum}_td1" data-read-aloud="true">
+  - Inside table cells, NEST sentences and words
+
+- **This nested structure allows CSS highlighting to work at element, sentence, or word level for ALL elements**
+
+**EXAMPLE STRUCTURE (REQUIRED FORMAT):**
+<p id="chapter${chapterNumber}_page1_p1" class="paragraph-block" data-read-aloud="true">
+  <span class="sync-sentence" id="chapter${chapterNumber}_page1_p1_s1" data-read-aloud="true">
+    <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w1">If</span>
+    <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w2">you</span>
+    <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w3">were</span>
+    <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w4">a</span>
+    <span class="sync-word" id="chapter${chapterNumber}_page1_p1_s1_w5">horse.</span>
+  </span>
+</p>
+
+**ID NUMBERING RULES:**
+- **NO TEXT ELEMENT SHOULD BE WITHOUT AN ID** - Every piece of text must be wrapped in an element with a unique ID
+- **Even if text appears multiple times (duplicates), each occurrence must have a unique ID**
+- **Page numbers, headers, footers, titles, captions, labels - ALL must have unique IDs**
+- **ALWAYS nest: words inside sentences, sentences inside parent elements**
+
+**VISUAL STYLING & COLOR SAMPLING:**
+1) **Colors:** Identify the specific hex colors in the PDF. Apply these to 'background-color' or 'color' in CSS.
+2) **Typography:** Identify if text is Serif or Sans-Serif and apply globally.
+
+
+**XHTML 1.0 STRICT REQUIREMENTS:**
+- DOCTYPE: <!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+- All tags lowercase, properly nested, self-closing tags end with />
+- **CRITICAL: When using <img> tags, DO NOT include xmlns="" attribute**
+- **CRITICAL: ALL attributes MUST have values in quotes - id="value", class="value", style="value"**
+
+**CSS REQUIREMENTS - CRITICAL:**
+- ALL CSS MUST be inside a <style type="text/css"> tag within <head>
+- Include: .-epub-media-overlay-active { background-color: #ffff00; }
+- .image-drop-zone { 
+    width: 100%; 
+    background: #f4f4f4; 
+    border: 2px dashed #007bff; 
+    margin: 1em 0; 
+    display: flex; 
+    align-items: center; 
+    justify-content: center;
+    aspect-ratio: 16/9;
+  }
+- .image-drop-zone img, .image-placeholder img { 
+    width: 100%; 
+    height: 100%; 
+    object-fit: contain; 
+  }
+- Use relative units (em, rem, %) for all text and spacing
+
+**OUTPUT FORMAT - CRITICAL:**
+Return ONLY the raw XHTML content. 
+- Do NOT wrap in JSON
+- Do NOT use markdown code blocks
+- Start directly with <!DOCTYPE and end with </html>
+- Return pure XHTML only, nothing else
+
+**DOCUMENT STRUCTURE:**
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+  <title>${chapterTitle}</title>
+  <style type="text/css">
+    /* ALL CSS goes here */
+    body { margin: 0; padding: 1em; font-family: serif; }
+    .-epub-media-overlay-active { background-color: #ffff00; }
+    .paragraph-block { margin: 1em 0; }
+    .sync-sentence { display: inline; }
+    .sync-word { display: inline; }
+    .image-drop-zone { /* as specified above */ }
+  </style>
+</head>
+<body>
+  <section id="chapter_${chapterNumber}">
+    <h1 id="chapter_${chapterNumber}_title" data-read-aloud="true">
+      <span class="sync-sentence" id="chapter_${chapterNumber}_title_s1" data-read-aloud="true">
+        <span class="sync-word" id="chapter_${chapterNumber}_title_s1_w1">${chapterTitle}</span>
+      </span>
+    </h1>
+    
+    <!-- Content from all ${pageImages.length} pages goes here -->
+    <!-- Maintain reading order across all pages -->
+    <!-- Use <h2> or <h3> to separate different pages/sections if needed -->
+    
+  </section>
+</body>
+</html>
+
+**IMPORTANT REMINDERS:**
+- Create a cohesive flow - this is one continuous chapter combining ${pageImages.length} pages
+- Every text element MUST have the nested word/sentence structure with unique IDs
+- Every image MUST have class="image-drop-zone" or class="image-placeholder"
+- This is REFLOWABLE - no position: absolute or fixed pixel widths
+- Preserve colors, fonts, and visual hierarchy from the original pages`;
+
+        console.log(`[Chapter ${chapterNumber}] Calling Gemini API with ${imageParts.length} images and detailed prompt...`);
+        console.log(`[Chapter ${chapterNumber}] This may take several minutes for ${pageImages.length} pages. Please wait...`);
+        
+        const result = await model.generateContent([
+          { text: prompt },
+          ...imageParts
+        ]);
+
+        console.log(`[Chapter ${chapterNumber}] Received response from Gemini API, processing...`);
+        const response = result.response;
+        let text = response.text();
+
+        if (!text || text.trim().length === 0) {
+          console.error(`[Chapter ${chapterNumber}] Empty response from Gemini API`);
+          CircuitBreakerService.recordFailure('Gemini');
+          return null;
+        }
+
+        // Clean up the response
+        text = text.trim();
+        text = text.replace(/^```x?html\s*/i, '').replace(/```\s*$/,  '');
+        text = text.trim();
+
+        // Sanitize XHTML
+        text = this.sanitizeXhtml(text);
+
+        // Split xhtml and css (css is embedded in xhtml already)
+        const xhtml = text;
+        const css = ''; // CSS is embedded in the XHTML
+
+        console.log(`[Chapter ${chapterNumber}] Successfully generated XHTML (${xhtml.length} chars) for ${pageImages.length} pages`);
+        CircuitBreakerService.recordSuccess('Gemini');
+
+        return { xhtml, css };
+
+      } catch (error) {
+        console.error(`[Chapter ${chapterNumber}] Error during XHTML conversion:`, error.message);
+        CircuitBreakerService.recordFailure('Gemini');
+        return null;
+      }
+    });
+
+    try {
+      const result = await Promise.race([operationPromise, timeoutPromise]);
+      return result;
+    } catch (error) {
+      if (error.message.includes('timeout')) {
+        console.error(`[Chapter ${chapterNumber}] Operation timed out after ${overallTimeout/1000}s processing ${pageImages.length} pages`);
+        console.error(`[Chapter ${chapterNumber}] Consider: 1) Processing fewer pages per chapter, or 2) API may be experiencing high load`);
+      } else {
+        console.error(`[Chapter ${chapterNumber}] Error:`, error.message);
+      }
+      CircuitBreakerService.recordFailure('Gemini');
+      return null;
+    }
+  }
+
+  /**
+   * Convert PNG image(s) of PDF page(s) to XHTML 1.0 Strict markup and CSS
+   * @param {string|Array} imagePath - Path to PNG image file OR array of {path, pageNumber} objects for multiple pages
+   * @param {number|string} pageNumber - Page number OR chapter title if multiple pages
+   * @param {Array|Object} extractedImages - Extracted images array (single page) OR map of {pageNumber: images[]} (multiple pages)
    * @returns {Promise<{xhtml: string, css: string}|null>} XHTML and CSS or null if failed
    */
   static async convertPngToXhtml(imagePath, pageNumber, extractedImages = []) {
+    // Handle multiple pages (chapter-based processing)
+    if (Array.isArray(imagePath)) {
+      const pageImages = imagePath;
+      const chapterTitle = typeof pageNumber === 'string' ? pageNumber : `Chapter ${pageNumber}`;
+      const chapterNumber = typeof pageNumber === 'number' ? pageNumber : 1;
+      const extractedImagesMap = extractedImages;
+      
+      return this.convertChapterPngsToXhtml(pageImages, chapterTitle, chapterNumber, extractedImagesMap);
+    }
+    
+    // Single page processing (original behavior)
     const client = this.getClient();
     if (!client) {
       return null;
@@ -898,7 +1290,9 @@ export class GeminiService {
         
         
 
-        const prompt = `Analyze the provided image of the worksheet page(s) and generate complete, valid XHTML with ALL CSS embedded inside.
+        const prompt = `Analyze the provided image(s) of the worksheet page(s) and generate complete, valid XHTML with ALL CSS embedded inside.
+
+
 
 **CRITICAL OUTPUT REQUIREMENTS - MUST BE COMPLETE:**
 - You MUST return the ENTIRE XHTML document from <!DOCTYPE to </html> - DO NOT truncate mid-tag or mid-attribute
@@ -945,6 +1339,8 @@ export class GeminiService {
 5) **CRITICAL:** NEVER create a <div> for an image without adding class="image-drop-zone" or class="image-placeholder". 
    - If you create a div with a title describing an image, it MUST have one of these classes.
    - Empty divs with image descriptions but no class will NOT work in the editor.
+
+6) **ABSOLUTELY FORBIDDEN:** Do NOT create <img> tags with src attributes. You MUST ONLY create placeholder <div> elements with class="image-drop-zone" or class="image-placeholder". Even if you see images in the page, create ONLY placeholder divs, NEVER <img> tags.
 
 
 
@@ -1581,6 +1977,136 @@ IMPORTANT: Do NOT include page numbers (like "Page 1", "Page 2") as part of the 
         return null;
       }
       console.error('Gemini PDF text extraction failed:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Extract Table of Contents from a page image using Gemini AI
+   * @param {string} imagePath - Path to the PNG image file
+   * @param {number} pageNumber - Page number for logging
+   * @returns {Promise<Object|null>} - TOC mapping {chapterTitle: startPage} or null
+   */
+  static async extractTableOfContents(imagePath, pageNumber) {
+    const client = this.getClient();
+    if (!client) {
+      console.warn('Gemini API not available for TOC extraction');
+      return null;
+    }
+
+    // Pre-request rate limit check
+    if (!RateLimiterService.acquire('Gemini')) {
+      console.debug(`[Page ${pageNumber}] Rate limit exceeded for TOC extraction, skipping`);
+      return null;
+    }
+
+    try {
+      console.log(`[Page ${pageNumber}] Analyzing page for Table of Contents...`);
+      
+      const imageBuffer = await fs.readFile(imagePath);
+      const modelName = process.env.GEMINI_API_MODEL || 'gemini-2.5-flash';
+      const model = client.getGenerativeModel({ model: modelName });
+
+      const prompt = `Analyze this image to determine if it contains a Table of Contents (TOC).
+
+**CRITICAL INSTRUCTIONS:**
+1. Look for typical TOC indicators:
+   - Title like "Table of Contents", "Contents", "Index"
+   - List of chapter/section titles with page numbers
+   - Dotted lines connecting titles to page numbers
+   - Sequential page numbering
+
+2. If this IS a Table of Contents page:
+   - Extract ONLY the chapter/section titles and their corresponding START page numbers
+   - Return a JSON object mapping chapter titles to page numbers
+   - Use the EXACT chapter titles as they appear
+   - Use the page numbers where each chapter STARTS
+
+3. If this is NOT a Table of Contents page:
+   - Return exactly: null
+
+**EXAMPLES:**
+
+Example TOC content:
+"Introduction ........................ 3
+Chapter 1: Getting Started .......... 7
+Chapter 2: Advanced Topics .......... 15
+Conclusion .......................... 25"
+
+Correct response:
+{
+  "Introduction": 3,
+  "Chapter 1: Getting Started": 7,
+  "Chapter 2: Advanced Topics": 15,
+  "Conclusion": 25
+}
+
+**OUTPUT REQUIREMENTS:**
+- Return ONLY valid JSON or the word "null"
+- Do NOT include any explanations, markdown, or other text
+- Do NOT use code blocks (no \`\`\`)
+- Chapter titles should be clean (remove dots, extra spaces)
+- Page numbers must be integers
+
+If this page does not contain a clear Table of Contents, return: null`;
+
+      const response = await this.generateWithBackoff(model, [
+        {
+          inlineData: {
+            data: imageBuffer.toString('base64'),
+            mimeType: 'image/png'
+          }
+        },
+        { text: prompt }
+      ], 2);
+
+      if (!response) {
+        console.log(`[Page ${pageNumber}] No response from Gemini for TOC extraction`);
+        return null;
+      }
+
+      const responseText = response.trim();
+      console.log(`[Page ${pageNumber}] TOC extraction response:`, responseText);
+
+      // Handle null response
+      if (responseText.toLowerCase() === 'null') {
+        console.log(`[Page ${pageNumber}] Page does not contain a Table of Contents`);
+        return null;
+      }
+
+      // Try to parse JSON response
+      try {
+        const tocMapping = JSON.parse(responseText);
+        
+        // Validate the response structure
+        if (typeof tocMapping === 'object' && tocMapping !== null) {
+          const validMapping = {};
+          let hasValidEntries = false;
+          
+          for (const [title, pageNum] of Object.entries(tocMapping)) {
+            if (typeof title === 'string' && title.trim() && 
+                (typeof pageNum === 'number' || !isNaN(parseInt(pageNum)))) {
+              validMapping[title.trim()] = parseInt(pageNum);
+              hasValidEntries = true;
+            }
+          }
+          
+          if (hasValidEntries) {
+            console.log(`[Page ${pageNumber}] Successfully extracted TOC with ${Object.keys(validMapping).length} entries`);
+            return validMapping;
+          }
+        }
+        
+        console.log(`[Page ${pageNumber}] Invalid TOC structure in response`);
+        return null;
+        
+      } catch (parseError) {
+        console.log(`[Page ${pageNumber}] Failed to parse TOC JSON response:`, parseError.message);
+        return null;
+      }
+
+    } catch (error) {
+      console.error(`[Page ${pageNumber}] TOC extraction failed:`, error.message);
       return null;
     }
   }

@@ -12,6 +12,7 @@ import AudioScript from './pages/AudioScript';
 import AiConfig from './pages/AiConfig';
 import TtsManagement from './pages/TtsManagement';
 import EpubImageEditorPage from './pages/EpubImageEditorPage';
+import ChapterSelector from './pages/ChapterSelector';
 
 function App() {
   return (
@@ -21,6 +22,7 @@ function App() {
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="pdfs" element={<PdfList />} />
+          <Route path="chapter-plan/:pdfId" element={<ChapterSelector />} />
           <Route path="pdfs/upload" element={<PdfUpload />} />
           <Route path="conversions" element={<Conversions />} />
           <Route path="sync-studio/:jobId" element={<SyncStudio />} />

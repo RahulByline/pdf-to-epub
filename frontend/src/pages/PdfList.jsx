@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { pdfService } from '../services/pdfService';
-import { conversionService } from '../services/conversionService';
 import { HiOutlineDocument, HiOutlineCloudUpload, HiOutlineTrash, HiOutlinePlay } from 'react-icons/hi';
 
 const PdfList = () => {
@@ -42,18 +41,6 @@ const PdfList = () => {
       setError(errorMessage);
       // Auto-hide error after 5 seconds
       setTimeout(() => setError(''), 5000);
-    }
-  };
-
-  const handleStartConversion = async (pdfId) => {
-    try {
-      setError('');
-      const job = await conversionService.startConversion(pdfId);
-      
-      // Redirect to conversions page to track progress
-      navigate('/conversions');
-    } catch (err) {
-      setError(err.message || 'Failed to start conversion');
     }
   };
 
@@ -249,7 +236,7 @@ const PdfList = () => {
                     <td style={{ padding: '16px 24px', textAlign: 'center' }}>
                       <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
                         <button
-                          onClick={() => handleStartConversion(pdf.id)}
+                          onClick={() => navigate(`/chapter-plan/${pdf.id}`)}
                           className="btn btn-success"
                           style={{
                             padding: '8px 16px',
@@ -259,7 +246,7 @@ const PdfList = () => {
                             gap: '6px',
                             borderRadius: '6px'
                           }}
-                          title="Start Conversion"
+                          title="Plan chapters and convert"
                         >
                           <HiOutlinePlay size={16} />
                           Convert
