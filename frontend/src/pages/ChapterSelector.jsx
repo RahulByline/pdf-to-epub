@@ -27,7 +27,7 @@ const ChapterSelector = () => {
 
   const buildDefaultPlan = (totalPages, count) => {
     if (totalPages < 1) {
-      return [{ title: 'Chapter 1', startPage: 1, endPage: 1 }];
+      return [{ title: 'Chapter 1', startPage: 1, endPage: 1, pageType: 'regular' }];
     }
     const plan = [];
     const perChapter = Math.max(1, Math.floor(totalPages / count));
@@ -38,7 +38,8 @@ const ChapterSelector = () => {
       plan.push({
         title: `Chapter ${i + 1}`,
         startPage,
-        endPage: Math.max(endPage, startPage)
+        endPage: Math.max(endPage, startPage),
+        pageType: 'regular' // Options: 'regular', 'cover', 'toc', 'back'
       });
       cursor = endPage + 1;
     }
@@ -46,18 +47,26 @@ const ChapterSelector = () => {
       plan.push({
         title: 'Chapter 1',
         startPage: 1,
-        endPage: totalPages
+        endPage: totalPages,
+        pageType: 'regular'
       });
     }
     return plan;
   };
 
   const handleChapterChange = (index, field, value) => {
-    setChapters(prev => prev.map((chapter, idx) => (
-      idx === index
-        ? { ...chapter, [field]: field === 'title' ? value : Number(value) || 0 }
-        : chapter
-    )));
+    setChapters(prev => prev.map((chapter, idx) => {
+      if (idx !== index) return chapter;
+      
+      // Determine the correct value type based on field
+      let processedValue = value;
+      if (field === 'startPage' || field === 'endPage') {
+        processedValue = Number(value) || 0;
+      }
+      // 'title' and 'pageType' remain as strings
+      
+      return { ...chapter, [field]: processedValue };
+    }));
   };
 
   const addChapter = () => {
@@ -74,7 +83,8 @@ const ChapterSelector = () => {
       {
         title: `Chapter ${prev.length + 1}`,
         startPage: nextStart,
-        endPage: Math.min(totalPages, nextStart + Math.max(Math.floor((totalPages - nextStart + 1) / 2), 4) - 1)
+        endPage: Math.min(totalPages, nextStart + Math.max(Math.floor((totalPages - nextStart + 1) / 2), 4) - 1),
+        pageType: 'regular'
       }
     ]);
   };
@@ -115,7 +125,8 @@ const ChapterSelector = () => {
         chapterPlan: chapters.map(chapter => ({
           title: chapter.title,
           startPage: chapter.startPage,
-          endPage: chapter.endPage
+          endPage: chapter.endPage,
+          pageType: chapter.pageType || 'regular'
         }))
       });
       navigate('/conversions');
@@ -196,6 +207,18 @@ const ChapterSelector = () => {
                     value={chapter.endPage}
                     onChange={e => handleChapterChange(index, 'endPage', e.target.value)}
                   />
+                </label>
+                <label>
+                  Page Type
+                  <select
+                    value={chapter.pageType || 'regular'}
+                    onChange={e => handleChapterChange(index, 'pageType', e.target.value)}
+                  >
+                    <option value="regular">Regular Chapter</option>
+                    <option value="cover">Cover Page</option>
+                    <option value="toc">Table of Contents (TOC)</option>
+                    <option value="back">Back Cover</option>
+                  </select>
                 </label>
               </div>
             ))}

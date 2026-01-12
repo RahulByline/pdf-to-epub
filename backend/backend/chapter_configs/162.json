@@ -1,0 +1,17 @@
+{
+  "documentId": 162,
+  "chapters": [
+    {
+      "title": "Chapter 1",
+      "startPage": 1,
+      "endPage": 9
+    },
+    {
+      "title": "Chapter 2",
+      "startPage": 10,
+      "endPage": 19
+    }
+  ],
+  "createdAt": "2026-01-12T07:11:36.368Z",
+  "updatedAt": "2026-01-12T07:11:36.368Z"
+}

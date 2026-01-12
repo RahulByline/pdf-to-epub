@@ -139,6 +139,7 @@ export class ConversionService {
         const chapterTitle = chapter.title || `Chapter ${chapterNumber}`;
         const startPage = chapter.startPage;
         const endPage = chapter.endPage;
+        const pageType = chapter.pageType || 'regular'; // 'regular', 'cover', 'toc', 'back'
         
         // Check if job was cancelled
         const currentJob = await ConversionJobModel.findById(jobId);
@@ -153,7 +154,7 @@ export class ConversionService {
           progressPercentage: progress
         });
         
-        console.log(`[Job ${jobId}] Processing ${chapterTitle}: pages ${startPage}-${endPage}`);
+        console.log(`[Job ${jobId}] Processing ${chapterTitle}: pages ${startPage}-${endPage}, type: ${pageType}`);
         
         // Get all page images for this chapter
         const chapterPageImages = pageImages.filter(img => 
@@ -173,7 +174,8 @@ export class ConversionService {
           chapterPageImages,
           chapterTitle,
           chapterNumber,
-          {} // Empty map - AI creates placeholders, images inserted manually via editor
+          {}, // Empty map - AI creates placeholders, images inserted manually via editor
+          pageType
         );
         
         if (!xhtmlResult || !xhtmlResult.xhtml) {
