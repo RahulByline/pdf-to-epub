@@ -143,10 +143,20 @@ export class TextBasedConversionPipeline {
         language: textData.metadata?.language || 'en'
       });
       
+      // Pass chapter detection options to the generator
+      const chapterOptions = {
+        documentId: jobId,
+        useAI: options.useAI !== false,
+        respectPageNumbers: options.respectPageNumbers !== false,
+        minChapterLength: options.minChapterLength || 1,
+        maxChapters: options.maxChapters || 50
+      };
+      
       const epubPath = await epubGenerator.generate(
         structure.pages,
         audioFilePath,
-        audioMappings
+        audioMappings,
+        chapterOptions
       );
       
       console.log(`[Pipeline ${jobId}] EPUB3 generated successfully: ${epubPath}`);

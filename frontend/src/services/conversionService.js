@@ -1,8 +1,8 @@
 import api from './api';
 
 export const conversionService = {
-  startConversion: (pdfDocumentId) => 
-    api.post(`/conversions/start/${pdfDocumentId}`).then(res => res.data.data),
+  startConversion: (pdfDocumentId, options = {}) =>
+    api.post(`/conversions/start/${pdfDocumentId}`, options).then(res => res.data.data),
   
   startBulkConversion: (pdfIds) => 
     api.post('/conversions/start/bulk', { pdfIds }).then(res => res.data.data),

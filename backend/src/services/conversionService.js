@@ -10,6 +10,7 @@ import { PdfExtractionService } from './pdfExtractionService.js';
 import { GeminiService } from './geminiService.js';
 import { JobConcurrencyService } from './jobConcurrencyService.js';
 import { TextBasedConversionPipeline } from './textBasedConversionPipeline.js';
+import { ChapterConfigService } from './chapterConfigService.js';
 // TtsService and mapTimingsToBlocks removed - using player's built-in TTS instead of generating audio files
 
 export class ConversionService {
@@ -46,12 +47,47 @@ export class ConversionService {
 
     console.log(`[Job ${jobId}] Converted ${pageImages.length} pages to PNG`);
 
-    // Extract images per page from PDF
+    // NEW: Load user-defined chapter configuration first (highest priority)
+    let userChapterConfig = null;
+    try {
+      userChapterConfig = await ChapterConfigService.loadChapterConfig(jobId);
+      if (userChapterConfig && userChapterConfig.chapters && userChapterConfig.chapters.length > 0) {
+        console.log(`[Job ${jobId}] Found user-defined chapter configuration with ${userChapterConfig.chapters.length} chapters`);
+      }
+    } catch (error) {
+      console.log(`[Job ${jobId}] No user chapter configuration found, will use automatic detection`);
+    }
+
+    // TOC extraction disabled by default (can be enabled with USE_TOC_EXTRACTION=true)
+    let tocMapping = null;
+    const useTocExtraction = (process.env.USE_TOC_EXTRACTION || 'false').toLowerCase() === 'true';
+    
+    if (useTocExtraction) {
+      await ConversionJobModel.update(jobId, {
+        currentStep: 'Extracting Table of Contents',
+        progressPercentage: steps[1].progress + 2
+      });
+      
+      console.log(`[Job ${jobId}] Extracting Table of Contents for intelligent chapter detection...`);
+      tocMapping = await this.extractTableOfContents(pageImages, jobId);
+      
+      if (tocMapping && Object.keys(tocMapping).length > 0) {
+        console.log(`[Job ${jobId}] TOC extracted successfully: ${Object.keys(tocMapping).length} chapters detected`);
+        console.log(`[Job ${jobId}] Chapter mapping:`, tocMapping);
+      } else {
+        console.log(`[Job ${jobId}] No TOC found or extraction failed, will use fallback detection`);
+      }
+    }
+
+    // Extract images per page from PDF (saved for manual insertion via editor)
     const jobImagesDir = path.join(htmlIntermediateDir, `job_${jobId}_images`);
     await fs.mkdir(jobImagesDir, { recursive: true }).catch(() => {});
     
-    console.log(`[Job ${jobId}] Extracting embedded images from PDF per page...`);
+    // Extract images for editor use, but DON'T pass them to AI
+    // AI will create placeholders, and user can manually replace them with these extracted images
+    console.log(`[Job ${jobId}] Extracting embedded images from PDF for editor use (not passed to AI)...`);
     let extractedImagesPerPage = {};
+    
     try {
       const extractedImagesResult = await PdfExtractionService.extractImagesPerPage(pdfFilePath, jobImagesDir, {
         saveToDisk: true,
@@ -68,12 +104,15 @@ export class ConversionService {
         });
       }
       console.log(`[Job ${jobId}] Total images extracted: ${extractedImagesResult.totalImages} across ${extractedImagesResult.totalPages} pages`);
+      console.log(`[Job ${jobId}] Images saved to: ${jobImagesDir}`);
     } catch (extractError) {
       console.warn(`[Job ${jobId}] Could not extract images per page:`, extractError.message);
-      // Continue without extracted images
+      // Continue without extracted images - AI will still create placeholders
     }
 
-    // Step 2: Process each PNG through Gemini to get XHTML and CSS
+    // Step 2: Process PNGs through Gemini to get XHTML
+    // NEW APPROACH: If user chapter config exists, process by chapters (all pages at once per chapter)
+    // Otherwise, fall back to page-by-page processing
     await ConversionJobModel.update(jobId, {
       currentStep: steps[2].step,
       progressPercentage: steps[2].progress
@@ -90,7 +129,122 @@ export class ConversionService {
     
     const xhtmlPages = [];
     
-    for (let i = 0; i < pageImages.length; i++) {
+    // CHAPTER-BASED PROCESSING: If user has defined chapters, process all pages of each chapter at once
+    if (userChapterConfig && userChapterConfig.chapters && userChapterConfig.chapters.length > 0) {
+      console.log(`[Job ${jobId}] Using CHAPTER-BASED processing for ${userChapterConfig.chapters.length} chapters`);
+      
+      for (let chapterIdx = 0; chapterIdx < userChapterConfig.chapters.length; chapterIdx++) {
+        const chapter = userChapterConfig.chapters[chapterIdx];
+        const chapterNumber = chapterIdx + 1;
+        const chapterTitle = chapter.title || `Chapter ${chapterNumber}`;
+        const startPage = chapter.startPage;
+        const endPage = chapter.endPage;
+        
+        // Check if job was cancelled
+        const currentJob = await ConversionJobModel.findById(jobId);
+        if (currentJob && currentJob.status === 'CANCELLED') {
+          console.log(`[Job ${jobId}] Job was cancelled during chapter processing, aborting`);
+          throw new Error('Conversion cancelled by user');
+        }
+        
+        const progress = steps[2].progress + Math.floor((steps[3].progress - steps[2].progress) * (chapterIdx + 1) / userChapterConfig.chapters.length);
+        await ConversionJobModel.update(jobId, {
+          currentStep: `Processing ${chapterTitle} (pages ${startPage}-${endPage})`,
+          progressPercentage: progress
+        });
+        
+        console.log(`[Job ${jobId}] Processing ${chapterTitle}: pages ${startPage}-${endPage}`);
+        
+        // Get all page images for this chapter
+        const chapterPageImages = pageImages.filter(img => 
+          img.pageNumber >= startPage && img.pageNumber <= endPage
+        );
+        
+        if (chapterPageImages.length === 0) {
+          console.warn(`[Job ${jobId}] No pages found for ${chapterTitle} (${startPage}-${endPage}), skipping`);
+          continue;
+        }
+        
+        console.log(`[Job ${jobId}] ${chapterTitle}: Processing ${chapterPageImages.length} pages together via AI`);
+        
+        // Call AI to process all pages of this chapter at once
+        // Note: Not passing extracted images - AI will create placeholders instead
+        const xhtmlResult = await GeminiService.convertChapterPngsToXhtml(
+          chapterPageImages,
+          chapterTitle,
+          chapterNumber,
+          {} // Empty map - AI creates placeholders, images inserted manually via editor
+        );
+        
+        if (!xhtmlResult || !xhtmlResult.xhtml) {
+          console.error(`[Job ${jobId}] ${chapterTitle}: Failed to convert chapter to XHTML`);
+          // Create a fallback chapter with page-by-page processing
+          console.log(`[Job ${jobId}] ${chapterTitle}: Falling back to page-by-page processing...`);
+          for (const pageImg of chapterPageImages) {
+            const pageResult = await GeminiService.convertPngToXhtml(
+              pageImg.path,
+              pageImg.pageNumber,
+              [] // No extracted images - AI creates placeholders
+            );
+            if (pageResult && pageResult.xhtml) {
+              const xhtmlFileName = `page_${pageImg.pageNumber}.xhtml`;
+              const xhtmlFilePath = path.join(jobHtmlDir, xhtmlFileName);
+              let xhtmlContent = pageResult.xhtml;
+              xhtmlContent = this.ensureAllTextElementsHaveIds(xhtmlContent, pageImg.pageNumber);
+              await fs.writeFile(xhtmlFilePath, xhtmlContent, 'utf8');
+              xhtmlPages.push({
+                pageNumber: pageImg.pageNumber,
+                xhtmlPath: xhtmlFilePath,
+                xhtmlFileName: xhtmlFileName,
+                css: pageResult.css,
+                pageWidth: pageImg.pageWidth || pageWidthPoints,
+                pageHeight: pageImg.pageHeight || pageHeightPoints,
+                renderedWidth: pageImg.width || renderedWidth,
+                renderedHeight: pageImg.height || renderedHeight,
+                chapterNumber: chapterNumber,
+                chapterTitle: chapterTitle
+              });
+            }
+          }
+          continue;
+        }
+        
+        // Save the chapter XHTML as page_N.xhtml (using first page number of chapter)
+        const firstPageNum = chapterPageImages[0].pageNumber;
+        const chapterFileName = `page_${firstPageNum}.xhtml`;
+        const chapterFilePath = path.join(jobHtmlDir, chapterFileName);
+        let xhtmlContent = xhtmlResult.xhtml;
+        
+        // Ensure all text elements have IDs
+        xhtmlContent = this.ensureAllTextElementsHaveIds(xhtmlContent, firstPageNum);
+        
+        await fs.writeFile(chapterFilePath, xhtmlContent, 'utf8');
+        
+        // Create a single XHTML page object for this chapter
+        xhtmlPages.push({
+          pageNumber: firstPageNum,  // Use first page number of chapter
+          xhtmlPath: chapterFilePath,
+          xhtmlFileName: chapterFileName,
+          css: xhtmlResult.css,
+          pageWidth: pageWidthPoints,
+          pageHeight: pageHeightPoints,
+          renderedWidth: renderedWidth,
+          renderedHeight: renderedHeight,
+          chapterTitle: chapterTitle,
+          originalPages: chapterPageImages.map(p => p.pageNumber),
+          isChapter: true
+        });
+        
+        console.log(`[Job ${jobId}] ${chapterTitle}: Successfully created chapter XHTML with ${chapterPageImages.length} pages`);
+      }
+      
+      console.log(`[Job ${jobId}] Chapter-based processing complete: ${xhtmlPages.length} chapters generated`);
+      
+    } else {
+      // FALLBACK: Original page-by-page processing
+      console.log(`[Job ${jobId}] Using PAGE-BY-PAGE processing for ${pageImages.length} pages`);
+      
+      for (let i = 0; i < pageImages.length; i++) {
       // Check if job was cancelled before processing each page
       const currentJob = await ConversionJobModel.findById(jobId);
       if (currentJob && currentJob.status === 'CANCELLED') {
@@ -108,16 +262,11 @@ export class ConversionService {
 
       console.log(`[Job ${jobId}] Processing page ${pageImage.pageNumber}/${pageImages.length} through Gemini...`);
       
-      // Get extracted images for this page
-      const pageExtractedImages = extractedImagesPerPage[pageImage.pageNumber] || [];
-      if (pageExtractedImages.length > 0) {
-        console.log(`[Job ${jobId}] Including ${pageExtractedImages.length} extracted image(s) for page ${pageImage.pageNumber}`);
-      }
-      
+      // Note: Not passing extracted images - AI will create placeholders instead
       const xhtmlResult = await GeminiService.convertPngToXhtml(
         pageImage.path, 
         pageImage.pageNumber,
-        pageExtractedImages
+        [] // Empty array - AI creates placeholders, images inserted manually via editor
       );
       
       if (!xhtmlResult) {
@@ -364,12 +513,82 @@ body { margin: 0; padding: 0; }
         console.warn(`[Job ${jobId}] Failed to convert page ${pageImage.pageNumber} to XHTML, skipping`);
       }
     }
+    } // End of else block for page-by-page processing
 
     if (xhtmlPages.length === 0) {
       throw new Error('Failed to convert any pages to XHTML');
     }
 
-    // Step 3: Generate EPUB from XHTML pages
+    // NEW: Chapter Detection and Grouping (TOC-first approach)
+    // Skip if we already did chapter-based processing with user config
+    const alreadyChapterBased = xhtmlPages.length > 0 && xhtmlPages[0].isChapter === true;
+    
+    if (!alreadyChapterBased) {
+      let manualChapters = null;
+      try {
+        // If the user provided chapter config for this job, load it and force chapter-based output
+        manualChapters = await ChapterConfigService.applyManualConfiguration(
+          xhtmlPages.map(p => ({ pageNumber: p.pageNumber })),
+          jobId
+        );
+      } catch (manualError) {
+        console.warn(`[Job ${jobId}] Manual chapter lookup failed:`, manualError.message);
+      }
+      const hasManualChapters = Array.isArray(manualChapters) && manualChapters.length > 0;
+
+      // Force chapter segregation when manual chapters exist, otherwise use env flag
+      const useChapterSegregation = hasManualChapters ||
+        (process.env.USE_CHAPTER_SEGREGATION || 'false').toLowerCase() === 'true';
+      
+      if (useChapterSegregation) {
+        console.log(`[Job ${jobId}] Chapter segregation enabled - using TOC-first approach for ${xhtmlPages.length} pages...`);
+        
+        // Step 2.5: Use TOC mapping for intelligent chapter grouping
+        await ConversionJobModel.update(jobId, {
+          currentStep: 'Organizing Chapters',
+          progressPercentage: steps[6].progress
+        });
+        
+        let chapterPages = null;
+        
+        // Priority 0: User-provided chapter plan (manual configuration)
+        if (hasManualChapters) {
+          console.log(`[Job ${jobId}] Using user-provided chapter configuration (${manualChapters.length} chapters)`);
+          chapterPages = this.mapChaptersToXhtmlPages(manualChapters, xhtmlPages);
+        }
+        
+        // Priority 1: Use TOC mapping if available
+        if ((!chapterPages || chapterPages.length === 0) && tocMapping && Object.keys(tocMapping).length > 0) {
+          console.log(`[Job ${jobId}] Using TOC mapping for chapter organization...`);
+          chapterPages = await this.groupPagesUsingTocMapping(xhtmlPages, tocMapping, jobId);
+        }
+        
+        // Priority 2: Fallback to other detection methods
+        if (!chapterPages || chapterPages.length === 0) {
+          console.log(`[Job ${jobId}] TOC mapping not available, using fallback detection...`);
+          chapterPages = await this.detectChaptersFromXhtmlPages(xhtmlPages, jobId);
+        }
+        
+        if (chapterPages && chapterPages.length > 0) {
+          console.log(`[Job ${jobId}] Detected ${chapterPages.length} chapters, combining XHTML files...`);
+          
+          // Replace individual pages with chapter-based pages
+          const combinedChapterPages = await this.combineXhtmlPagesIntoChapters(chapterPages, jobHtmlDir, jobId);
+          
+          // Use chapter pages for EPUB generation
+          xhtmlPages.length = 0; // Clear original pages
+          xhtmlPages.push(...combinedChapterPages);
+          
+          console.log(`[Job ${jobId}] Successfully created ${xhtmlPages.length} chapter-based XHTML files`);
+        } else {
+          console.log(`[Job ${jobId}] No chapters detected, using original page-based structure`);
+        }
+      }
+    } else {
+      console.log(`[Job ${jobId}] Skipping chapter combination - already processed as chapters via user configuration`);
+    }
+
+    // Step 3: Generate EPUB from XHTML pages (now potentially chapter-based)
     await ConversionJobModel.update(jobId, {
       currentStep: steps[7].step,
       progressPercentage: steps[7].progress
@@ -1203,18 +1422,33 @@ ${xhtmlPages.map((p, i) => `    <li><a href="${p.xhtmlFileName}">Page ${p.pageNu
     }
   }
 
-  static async startConversion(pdfDocumentId) {
+  static async startConversion(pdfDocumentId, options = {}) {
     const pdf = await PdfDocumentModel.findById(pdfDocumentId);
     if (!pdf) {
       throw new Error('PDF document not found with id: ' + pdfDocumentId);
     }
 
+    const intermediateData = options.chapterPlan
+      ? JSON.stringify({ chapterPlan: options.chapterPlan })
+      : null;
+
     const job = await ConversionJobModel.create({
       pdfDocumentId,
       status: 'PENDING',
       currentStep: 'STEP_0_CLASSIFICATION',
-      progressPercentage: 0
+      progressPercentage: 0,
+      intermediateData
     });
+
+    // Save chapter configuration if provided
+    if (options.chapterPlan && Array.isArray(options.chapterPlan) && options.chapterPlan.length > 0) {
+      try {
+        console.log(`[Job ${job.id}] Saving user-defined chapter configuration (${options.chapterPlan.length} chapters)`);
+        await ChapterConfigService.saveChapterConfig(job.id, options.chapterPlan);
+      } catch (error) {
+        console.error(`[Job ${job.id}] Failed to save chapter configuration:`, error.message);
+      }
+    }
 
     this.processConversion(job.id).catch(error => {
       console.error('Conversion error:', error);
@@ -5708,68 +5942,8 @@ ${bodyContent}
         throw new Error(`PNG image for page ${pageNumber} not found at ${pngImagePath}`);
       }
       
-      // Get extracted images for this page
-      let pageExtractedImages = [];
-      try {
-        // Read all extracted images and filter by page number
-        const extractedImagesFiles = await fs.readdir(jobImagesDir, { withFileTypes: true });
-        const pageImageFiles = extractedImagesFiles.filter(entry => {
-          if (!entry.isFile()) return false;
-          
-          // Pattern 1: page_<pageNumber>_image_<index>.<ext>
-          const pattern1 = entry.name.match(/^page_(\d+)_image_\d+\./i);
-          if (pattern1) {
-            const imagePageNum = parseInt(pattern1[1]);
-            return imagePageNum === pageNumber;
-          }
-          
-          // Pattern 2: img_<timestamp>_<pageNum>_<index>.<ext> (with negative page numbers like -018)
-          const pattern2 = entry.name.match(/img_\d+_(-?\d+)_(\d+)/);
-          if (pattern2) {
-            const imagePageNum = parseInt(pattern2[1]);
-            return imagePageNum === pageNumber;
-          }
-          
-          return false;
-        });
-        
-        // Build extracted images array with metadata
-        for (const entry of pageImageFiles) {
-          const imagePath = path.join(jobImagesDir, entry.name);
-          const ext = path.extname(entry.name).toLowerCase();
-          const mimeType = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 
-                          ext === '.png' ? 'image/png' : 
-                          ext === '.gif' ? 'image/gif' : 'image/png';
-          
-          // Try to get image dimensions (optional, won't fail if unavailable)
-          let width, height;
-          try {
-            const { Image } = await import('canvas');
-            const img = await Image.load(await fs.readFile(imagePath));
-            width = img.width;
-            height = img.height;
-          } catch (dimError) {
-            // Dimensions not critical, continue without them
-            console.warn(`[Regenerate Page ${pageNumber}] Could not get dimensions for ${entry.name}:`, dimError.message);
-          }
-          
-          pageExtractedImages.push({
-            path: imagePath,
-            fileName: entry.name,
-            mimeType: mimeType,
-            format: ext.substring(1),
-            width: width,
-            height: height
-          });
-        }
-        
-        if (pageExtractedImages.length > 0) {
-          console.log(`[Regenerate Page ${pageNumber}] Found ${pageExtractedImages.length} extracted image(s) for page ${pageNumber}`);
-        }
-      } catch (extractError) {
-        console.warn(`[Regenerate Page ${pageNumber}] Could not load extracted images:`, extractError.message);
-        // Continue without extracted images
-      }
+      // Image extraction disabled - AI creates placeholders instead
+      // Images can be manually inserted via the editor
       
       // Get page dimensions - EXACT SAME LOGIC AS INITIAL CONVERSION
       // Read PNG image dimensions to match how pageImage object is structured
@@ -5821,11 +5995,12 @@ ${bodyContent}
       }
       
       // Call Gemini to regenerate XHTML
+      // Note: Not passing extracted images - AI will create placeholders instead
       console.log(`[Regenerate Page ${pageNumber}] Calling Gemini API to regenerate XHTML...`);
       const xhtmlResult = await GeminiService.convertPngToXhtml(
         pngImagePath,
         pageNumber,
-        pageExtractedImages
+        [] // Empty array - AI creates placeholders, images inserted manually via editor
       );
       
       if (!xhtmlResult || !xhtmlResult.xhtml) {
@@ -5995,6 +6170,544 @@ body { margin: 0; padding: 0; }
     } catch (error) {
       console.error(`[Regenerate Page ${pageNumber}] Error:`, error);
       throw error;
+    }
+  }
+
+  /**
+   * Extract Table of Contents from PDF pages using Gemini AI
+   * @param {Array} pageImages - Array of page image objects
+   * @param {string} jobId - Job ID for logging
+   * @returns {Promise<Object|null>} - TOC mapping {chapterTitle: startPage} or null
+   */
+  static async extractTableOfContents(pageImages, jobId) {
+    try {
+      // Look for TOC in the first few pages (typically pages 1-5)
+      const tocCandidatePages = pageImages.slice(0, Math.min(5, pageImages.length));
+      
+      for (const pageImage of tocCandidatePages) {
+        console.log(`[Job ${jobId}] Checking page ${pageImage.pageNumber} for Table of Contents...`);
+        
+        try {
+          const tocResult = await GeminiService.extractTableOfContents(
+            pageImage.path,
+            pageImage.pageNumber
+          );
+          
+          if (tocResult && Object.keys(tocResult).length > 0) {
+            console.log(`[Job ${jobId}] TOC found on page ${pageImage.pageNumber}:`, tocResult);
+            return tocResult;
+          }
+        } catch (pageError) {
+          console.warn(`[Job ${jobId}] Error checking page ${pageImage.pageNumber} for TOC:`, pageError.message);
+          continue;
+        }
+      }
+      
+      console.log(`[Job ${jobId}] No Table of Contents found in first ${tocCandidatePages.length} pages`);
+      return null;
+      
+    } catch (error) {
+      console.error(`[Job ${jobId}] TOC extraction failed:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Group pages using TOC mapping
+   * @param {Array} xhtmlPages - Array of XHTML page objects
+   * @param {Object} tocMapping - TOC mapping {chapterTitle: startPage}
+   * @param {string} jobId - Job ID for logging
+   * @returns {Promise<Array>} - Array of chapter objects with pages
+   */
+  static async groupPagesUsingTocMapping(xhtmlPages, tocMapping, jobId) {
+    try {
+      const chapters = [];
+      const chapterEntries = Object.entries(tocMapping).sort((a, b) => a[1] - b[1]); // Sort by page number
+      
+      console.log(`[Job ${jobId}] Grouping pages using TOC mapping:`, chapterEntries);
+      
+      for (let i = 0; i < chapterEntries.length; i++) {
+        const [chapterTitle, startPage] = chapterEntries[i];
+        const nextEntry = chapterEntries[i + 1];
+        const endPage = nextEntry ? nextEntry[1] - 1 : Math.max(...xhtmlPages.map(p => p.pageNumber));
+        
+        // Find pages that belong to this chapter
+        const chapterPages = xhtmlPages.filter(page => 
+          page.pageNumber >= startPage && page.pageNumber <= endPage
+        );
+        
+        if (chapterPages.length > 0) {
+          chapters.push({
+            title: chapterTitle,
+            startPage: startPage,
+            endPage: endPage,
+            pages: chapterPages,
+            confidence: 1.0, // High confidence since it's from TOC
+            reason: 'TOC-based detection'
+          });
+          
+          console.log(`[Job ${jobId}] Chapter "${chapterTitle}": pages ${startPage}-${endPage} (${chapterPages.length} pages)`);
+        }
+      }
+      
+      // Handle any remaining pages that weren't covered by TOC
+      const coveredPageNumbers = new Set();
+      chapters.forEach(chapter => {
+        chapter.pages.forEach(page => coveredPageNumbers.add(page.pageNumber));
+      });
+      
+      const uncoveredPages = xhtmlPages.filter(page => !coveredPageNumbers.has(page.pageNumber));
+      if (uncoveredPages.length > 0) {
+        console.log(`[Job ${jobId}] Found ${uncoveredPages.length} uncovered pages, adding to last chapter or creating new chapter`);
+        
+        if (chapters.length > 0) {
+          // Add to last chapter
+          const lastChapter = chapters[chapters.length - 1];
+          lastChapter.pages.push(...uncoveredPages);
+          lastChapter.endPage = Math.max(...uncoveredPages.map(p => p.pageNumber));
+        } else {
+          // Create a new chapter for uncovered pages
+          chapters.push({
+            title: 'Additional Content',
+            startPage: Math.min(...uncoveredPages.map(p => p.pageNumber)),
+            endPage: Math.max(...uncoveredPages.map(p => p.pageNumber)),
+            pages: uncoveredPages,
+            confidence: 0.8,
+            reason: 'Uncovered pages from TOC'
+          });
+        }
+      }
+      
+      console.log(`[Job ${jobId}] TOC-based grouping created ${chapters.length} chapters`);
+      return chapters;
+      
+    } catch (error) {
+      console.error(`[Job ${jobId}] Error grouping pages using TOC:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Detect chapters from generated XHTML pages (fallback method)
+   * @param {Array} xhtmlPages - Array of generated XHTML page objects
+   * @param {string} jobId - Job ID for configuration lookup
+   * @returns {Promise<Array>} - Array of chapter objects with page assignments
+   */
+  static async detectChaptersFromXhtmlPages(xhtmlPages, jobId) {
+    try {
+      // 1. Try manual configuration first (highest priority)
+      const manualChapters = await ChapterConfigService.applyManualConfiguration(
+        xhtmlPages.map(page => ({ pageNumber: page.pageNumber })), 
+        jobId
+      );
+      
+      if (manualChapters && manualChapters.length > 0) {
+        console.log(`[Job ${jobId}] Using manual chapter configuration: ${manualChapters.length} chapters`);
+        return this.mapChaptersToXhtmlPages(manualChapters, xhtmlPages);
+      }
+
+      // 2. Try AI-powered detection by analyzing XHTML content
+      const useAI = (process.env.USE_AI_CHAPTER_DETECTION || 'true').toLowerCase() === 'true';
+      if (useAI) {
+        try {
+          const aiChapters = await this.detectChaptersFromXhtmlContent(xhtmlPages, jobId);
+          if (aiChapters && aiChapters.length > 0) {
+            console.log(`[Job ${jobId}] Using AI chapter detection: ${aiChapters.length} chapters`);
+            return aiChapters;
+          }
+        } catch (aiError) {
+          console.warn(`[Job ${jobId}] AI chapter detection failed:`, aiError.message);
+        }
+      }
+
+      // 3. Fallback to heuristic detection
+      console.log(`[Job ${jobId}] Using heuristic chapter detection`);
+      return this.detectChaptersHeuristic(xhtmlPages, jobId);
+
+    } catch (error) {
+      console.error(`[Job ${jobId}] Chapter detection failed:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Detect chapters using AI analysis of XHTML content
+   * @param {Array} xhtmlPages - Array of XHTML page objects
+   * @param {string} jobId - Job ID
+   * @returns {Promise<Array>} - Array of chapter objects
+   */
+  static async detectChaptersFromXhtmlContent(xhtmlPages, jobId) {
+    // Extract text content from XHTML files for analysis
+    const pagesForAnalysis = [];
+    
+    for (const page of xhtmlPages) {
+      try {
+        const xhtmlContent = await fs.readFile(page.xhtmlPath, 'utf-8');
+        const dom = new JSDOM(xhtmlContent, { contentType: 'application/xhtml+xml' });
+        const doc = dom.window.document;
+        
+        // Extract text blocks with structure information
+        const textBlocks = [];
+        const headings = doc.querySelectorAll('h1, h2, h3, h4, h5, h6');
+        const paragraphs = doc.querySelectorAll('p');
+        
+        // Process headings
+        headings.forEach((heading, index) => {
+          const text = heading.textContent?.trim();
+          if (text) {
+            textBlocks.push({
+              text: text,
+              type: `heading${heading.tagName.charAt(1)}`, // h1 -> heading1
+              fontSize: this.extractFontSize(heading),
+              x: 0, y: index * 50, // Approximate positioning
+              element: heading.tagName.toLowerCase()
+            });
+          }
+        });
+
+        // Process paragraphs (first few only for performance)
+        Array.from(paragraphs).slice(0, 3).forEach((p, index) => {
+          const text = p.textContent?.trim();
+          if (text && text.length > 10) {
+            textBlocks.push({
+              text: text.substring(0, 200), // First 200 chars
+              type: 'paragraph',
+              fontSize: this.extractFontSize(p),
+              x: 0, y: (headings.length + index) * 50
+            });
+          }
+        });
+
+        pagesForAnalysis.push({
+          pageNumber: page.pageNumber,
+          textBlocks: textBlocks,
+          width: 612,
+          height: 792
+        });
+
+      } catch (error) {
+        console.warn(`[Job ${jobId}] Could not analyze page ${page.pageNumber}:`, error.message);
+      }
+    }
+
+    // Use existing chapter detection service
+    if (pagesForAnalysis.length > 0) {
+      const detectedChapters = await ChapterDetectionService.detectChapters(pagesForAnalysis, {
+        useAI: true,
+        respectPageNumbers: true,
+        minChapterLength: 1,
+        maxChapters: 50
+      });
+
+      // Map detected chapters back to XHTML pages
+      return this.mapChaptersToXhtmlPages(detectedChapters, xhtmlPages);
+    }
+
+    return null;
+  }
+
+  /**
+   * Heuristic chapter detection from XHTML pages
+   * @param {Array} xhtmlPages - Array of XHTML page objects
+   * @param {string} jobId - Job ID
+   * @returns {Array} - Array of chapter objects
+   */
+  static detectChaptersHeuristic(xhtmlPages, jobId) {
+    const chapters = [];
+    let currentChapter = null;
+    let chapterCounter = 0;
+
+    for (const page of xhtmlPages) {
+      const isNewChapter = this.isChapterBoundaryFromXhtml(page, currentChapter);
+      
+      if (isNewChapter) {
+        if (currentChapter) {
+          chapters.push(currentChapter);
+        }
+        
+        chapterCounter++;
+        const chapterTitle = this.extractChapterTitleFromXhtml(page) || `Chapter ${chapterCounter}`;
+        
+        currentChapter = {
+          title: chapterTitle,
+          startPage: page.pageNumber,
+          endPage: page.pageNumber,
+          pages: [page],
+          confidence: 0.8,
+          reason: 'Heuristic detection from XHTML content'
+        };
+      } else if (currentChapter) {
+        currentChapter.endPage = page.pageNumber;
+        currentChapter.pages.push(page);
+      }
+    }
+
+    if (currentChapter) {
+      chapters.push(currentChapter);
+    }
+
+    // Ensure we have at least one chapter
+    if (chapters.length === 0) {
+      chapters.push({
+        title: 'Content',
+        startPage: 1,
+        endPage: xhtmlPages.length,
+        pages: xhtmlPages,
+        confidence: 0.6,
+        reason: 'Single chapter fallback'
+      });
+    }
+
+    console.log(`[Job ${jobId}] Heuristic detected ${chapters.length} chapters`);
+    return chapters;
+  }
+
+  /**
+   * Check if an XHTML page represents a chapter boundary
+   * @param {Object} page - XHTML page object
+   * @param {Object} currentChapter - Current chapter object
+   * @returns {boolean} - True if this page starts a new chapter
+   */
+  static isChapterBoundaryFromXhtml(page, currentChapter) {
+    // First page is always a chapter start
+    if (!currentChapter && page.pageNumber === 1) {
+      return true;
+    }
+
+    // Check for chapter indicators in filename or page number patterns
+    // New chapters often start on odd pages
+    if (page.pageNumber % 2 === 1 && currentChapter && currentChapter.pages.length > 3) {
+      return true;
+    }
+
+    // Simple heuristic: every 10 pages is a new chapter (configurable)
+    const pagesPerChapter = parseInt(process.env.DEFAULT_PAGES_PER_CHAPTER || '10');
+    if (page.pageNumber % pagesPerChapter === 1 && page.pageNumber > 1) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
+   * Extract chapter title from XHTML page
+   * @param {Object} page - XHTML page object
+   * @returns {string|null} - Extracted title or null
+   */
+  static extractChapterTitleFromXhtml(page) {
+    try {
+      // Try to extract from filename or page structure
+      // This is a simple implementation - could be enhanced
+      if (page.pageNumber === 1) return 'Introduction';
+      if (page.pageNumber <= 5) return `Chapter ${Math.ceil(page.pageNumber / 5)}`;
+      
+      return `Chapter ${Math.ceil(page.pageNumber / 10)}`;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  /**
+   * Map detected chapters to XHTML pages
+   * @param {Array} chapters - Detected chapter objects
+   * @param {Array} xhtmlPages - XHTML page objects
+   * @returns {Array} - Chapters with mapped XHTML pages
+   */
+  static mapChaptersToXhtmlPages(chapters, xhtmlPages) {
+    const pageMap = new Map(xhtmlPages.map(p => [p.pageNumber, p]));
+    
+    return chapters.map(chapter => ({
+      ...chapter,
+      pages: chapter.pages?.length > 0 
+        ? chapter.pages.filter(p => pageMap.has(p.pageNumber)).map(p => pageMap.get(p.pageNumber))
+        : xhtmlPages.filter(p => p.pageNumber >= chapter.startPage && p.pageNumber <= chapter.endPage)
+    })).filter(chapter => chapter.pages.length > 0);
+  }
+
+  /**
+   * Combine individual XHTML pages into chapter-based XHTML files
+   * @param {Array} chapters - Array of chapter objects with pages
+   * @param {string} outputDir - Output directory for combined files
+   * @param {string} jobId - Job ID
+   * @returns {Promise<Array>} - Array of combined chapter page objects
+   */
+  static async combineXhtmlPagesIntoChapters(chapters, outputDir, jobId) {
+    const combinedPages = [];
+
+    for (let chapterIdx = 0; chapterIdx < chapters.length; chapterIdx++) {
+      const chapter = chapters[chapterIdx];
+      // Use first page number of chapter for filename instead of chapter number
+      const firstPageNum = chapter.startPage || chapter.pages[0]?.pageNumber || (chapterIdx + 1);
+      const chapterFileName = `page_${firstPageNum}.xhtml`;
+      const chapterFilePath = path.join(outputDir, chapterFileName);
+
+      try {
+        console.log(`[Job ${jobId}] Combining ${chapter.pages.length} pages into ${chapterFileName}...`);
+
+        // Read and combine XHTML content from all pages in this chapter
+        const combinedXhtml = await this.combineXhtmlContent(chapter.pages, chapter.title, chapterIdx + 1);
+
+        // Write combined XHTML file
+        await fs.writeFile(chapterFilePath, combinedXhtml, 'utf-8');
+
+        // Create combined page object
+        combinedPages.push({
+          pageNumber: firstPageNum, // Use first page number instead of chapter number
+          xhtmlPath: chapterFilePath,
+          xhtmlFileName: chapterFileName,
+          css: '', // CSS is embedded in XHTML
+          pageWidth: chapter.pages[0]?.pageWidth || 612,
+          pageHeight: chapter.pages[0]?.pageHeight || 792,
+          renderedWidth: chapter.pages[0]?.renderedWidth || 612,
+          renderedHeight: chapter.pages[0]?.renderedHeight || 792,
+          // Chapter-specific properties
+          chapterTitle: chapter.title,
+          originalPages: chapter.pages.map(p => p.pageNumber),
+          isChapter: true
+        });
+
+        console.log(`[Job ${jobId}] Created ${chapterFileName} with pages ${chapter.pages.map(p => p.pageNumber).join(', ')}`);
+
+      } catch (error) {
+        console.error(`[Job ${jobId}] Error combining chapter ${chapterIdx + 1}:`, error.message);
+        // Continue with other chapters
+      }
+    }
+
+    return combinedPages;
+  }
+
+  /**
+   * Combine XHTML content from multiple pages into a single chapter XHTML
+   * @param {Array} pages - Array of page objects to combine
+   * @param {string} chapterTitle - Title for the chapter
+   * @param {number} chapterNumber - Chapter number
+   * @returns {Promise<string>} - Combined XHTML content
+   */
+  static async combineXhtmlContent(pages, chapterTitle, chapterNumber) {
+    const combinedContent = [];
+    let chapterCss = '';
+    
+    // Read content from each page
+    for (const page of pages) {
+      try {
+        const xhtmlContent = await fs.readFile(page.xhtmlPath, 'utf-8');
+        const dom = new JSDOM(xhtmlContent, { contentType: 'application/xhtml+xml' });
+        const doc = dom.window.document;
+
+        // Extract CSS from this page
+        const styleTag = doc.querySelector('style');
+        if (styleTag && styleTag.textContent) {
+          chapterCss += `\n/* From Page ${page.pageNumber} */\n${styleTag.textContent}\n`;
+        }
+
+        // Extract body content
+        const body = doc.querySelector('body');
+        if (body) {
+          // Update IDs to be chapter-specific and avoid conflicts
+          this.updateIdsForChapter(body, chapterNumber, page.pageNumber);
+          combinedContent.push(`\n<!-- Content from Page ${page.pageNumber} -->\n${body.innerHTML}\n`);
+        }
+
+      } catch (error) {
+        console.warn(`Error reading page ${page.pageNumber}:`, error.message);
+      }
+    }
+
+    // Create combined XHTML document
+    const combinedXhtml = `<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>${this.escapeXml(chapterTitle)}</title>
+  <style type="text/css">
+    /* Chapter-specific styles */
+    body { margin: 0; padding: 1em; font-family: serif; line-height: 1.6; }
+    .chapter-title { font-size: 2em; font-weight: bold; margin-bottom: 1em; text-align: center; }
+    .page-break { margin: 2em 0; border-top: 1px solid #ccc; padding-top: 1em; }
+    
+    /* EPUB Media Overlay Support */
+    .-epub-media-overlay-active,
+    .epub-media-overlay-active {
+      background-color: rgba(255, 255, 0, 0.5) !important;
+      transition: background-color 0.2s ease;
+    }
+    
+    /* Combined page styles */
+    ${chapterCss}
+  </style>
+</head>
+<body>
+  <section epub:type="bodymatter chapter" id="chapter_${chapterNumber}">
+    <h1 class="chapter-title" id="chapter_${chapterNumber}_title">${this.escapeXml(chapterTitle)}</h1>
+    ${combinedContent.join('\n<div class="page-break"></div>\n')}
+  </section>
+</body>
+</html>`;
+
+    return combinedXhtml;
+  }
+
+  /**
+   * Update element IDs to be chapter-specific and avoid conflicts
+   * @param {Element} element - DOM element to update
+   * @param {number} chapterNumber - Chapter number
+   * @param {number} pageNumber - Original page number
+   */
+  static updateIdsForChapter(element, chapterNumber, pageNumber) {
+    // Update IDs to include chapter and page information
+    const elementsWithIds = element.querySelectorAll('[id]');
+    
+    elementsWithIds.forEach(el => {
+      const currentId = el.getAttribute('id');
+      if (currentId) {
+        // Convert page-based ID to chapter-based ID
+        // page1_p1 -> chapter1_page1_p1
+        const newId = `chapter${chapterNumber}_page${pageNumber}_${currentId}`;
+        el.setAttribute('id', newId);
+      }
+    });
+
+    // Also update any href references to these IDs
+    const elementsWithHrefs = element.querySelectorAll('[href^="#"]');
+    elementsWithHrefs.forEach(el => {
+      const href = el.getAttribute('href');
+      if (href && href.startsWith('#')) {
+        const targetId = href.substring(1);
+        const newHref = `#chapter${chapterNumber}_page${pageNumber}_${targetId}`;
+        el.setAttribute('href', newHref);
+      }
+    });
+  }
+
+  /**
+   * Extract font size from element styles
+   * @param {Element} element - DOM element
+   * @returns {number} - Font size in pixels (estimated)
+   */
+  static extractFontSize(element) {
+    try {
+      const style = element.getAttribute('style') || '';
+      const fontSizeMatch = style.match(/font-size:\s*(\d+(?:\.\d+)?)(px|pt|em|rem)/i);
+      
+      if (fontSizeMatch) {
+        const size = parseFloat(fontSizeMatch[1]);
+        const unit = fontSizeMatch[2].toLowerCase();
+        
+        // Convert to pixels (approximate)
+        switch (unit) {
+          case 'pt': return size * 1.33;
+          case 'em': return size * 16;
+          case 'rem': return size * 16;
+          default: return size;
+        }
+      }
+      
+      // Default font size
+      return 12;
+    } catch (error) {
+      return 12;
     }
   }
 }

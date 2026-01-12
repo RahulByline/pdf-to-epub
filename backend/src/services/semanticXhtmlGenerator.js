@@ -3,6 +3,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { AiConfigService } from './aiConfigService.js';
 import { GeminiService } from './geminiService.js';
+import { ChapterDetectionService } from './chapterDetectionService.js';
+import { ChapterConfigService } from './chapterConfigService.js';
 
 /**
  * Semantic XHTML Generator
@@ -42,8 +44,8 @@ export class SemanticXhtmlGenerator {
       structuredPages = await this.enhanceStructureWithAI(structuredPages, aiConfig);
     }
     
-    // Group pages into chapters (split by major headings)
-    const chapters = this.groupIntoChapters(structuredPages);
+    // Detect chapters using enhanced detection methods
+    const chapters = await this.detectChapters(structuredPages, options);
     
     for (let chapterIdx = 0; chapterIdx < chapters.length; chapterIdx++) {
       const chapter = chapters[chapterIdx];
@@ -62,11 +64,55 @@ export class SemanticXhtmlGenerator {
         id: chapterId,
         href: fileName,
         title: chapter.title || `Chapter ${this.chapterCounter}`,
-        pageNumbers: chapter.pages.map(p => p.pageNumber)
+        pageNumbers: chapter.pages.map(p => p.pageNumber),
+        confidence: chapter.confidence || 0.8,
+        detectionMethod: chapter.reason || 'automatic'
       });
     }
     
+    console.log(`[XHTML Generator] Generated ${pages.length} chapters from ${structuredPages.length} pages`);
     return pages;
+  }
+  
+  /**
+   * Enhanced chapter detection using multiple methods
+   * @param {Array} pages - Document pages
+   * @param {Object} options - Detection options
+   * @returns {Promise<Array>} - Detected chapters
+   */
+  async detectChapters(pages, options = {}) {
+    const documentId = options.documentId || options.jobId;
+    
+    // 1. Try manual configuration first (highest priority)
+    if (documentId) {
+      const manualChapters = await ChapterConfigService.applyManualConfiguration(pages, documentId);
+      if (manualChapters && manualChapters.length > 0) {
+        console.log(`[XHTML Generator] Using manual chapter configuration: ${manualChapters.length} chapters`);
+        return manualChapters;
+      }
+    }
+    
+    // 2. Try AI-powered detection (if enabled)
+    if (options.useAI !== false) {
+      try {
+        const aiChapters = await ChapterDetectionService.detectChapters(pages, {
+          respectPageNumbers: options.respectPageNumbers !== false,
+          minChapterLength: options.minChapterLength || 1,
+          maxChapters: options.maxChapters || 50
+        });
+        
+        if (aiChapters && aiChapters.length > 0) {
+          console.log(`[XHTML Generator] Using AI chapter detection: ${aiChapters.length} chapters`);
+          return aiChapters;
+        }
+      } catch (error) {
+        console.warn('[XHTML Generator] AI chapter detection failed:', error.message);
+      }
+    }
+    
+    // 3. Fallback to original heuristic method
+    console.log('[XHTML Generator] Using fallback heuristic chapter detection');
+    return this.groupIntoChapters(pages);
   }
   
   /**

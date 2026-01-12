@@ -26,7 +26,11 @@ router.get('/', async (req, res) => {
 // POST /api/conversions/start/:pdfDocumentId - Start conversion
 router.post('/start/:pdfDocumentId', async (req, res) => {
   try {
-    const job = await ConversionService.startConversion(parseInt(req.params.pdfDocumentId));
+    const chapterPlan = Array.isArray(req.body.chapterPlan) ? req.body.chapterPlan : null;
+    const job = await ConversionService.startConversion(
+      parseInt(req.params.pdfDocumentId),
+      { chapterPlan }
+    );
     return successResponse(res, job, 201);
   } catch (error) {
     if (error.message.includes('not found')) {

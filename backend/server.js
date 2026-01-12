@@ -13,6 +13,7 @@ import audioSyncRoutes from './src/routes/audioSyncRoutes.js';
 import jobPagesRoutes from './src/routes/jobPagesRoutes.js';
 import transcriptRoutes from './src/routes/transcriptRoutes.js';
 import ttsConfigRoutes from './src/routes/ttsConfigRoutes.js';
+import chapterRoutes from './src/routes/chapters.js';
 
 // Import middleware
 import { errorHandler } from './src/middlewares/errorHandler.js';
@@ -71,6 +72,7 @@ app.use('/api/audio-sync', audioSyncRoutes);
 app.use('/api/jobs', jobPagesRoutes);
 app.use('/api/transcripts', transcriptRoutes);
 app.use('/api/tts', ttsConfigRoutes);
+app.use('/api/chapters', chapterRoutes);
 
 // Error handling middleware (must be last)
 app.use(errorHandler);
