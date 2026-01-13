@@ -28,26 +28,56 @@ const Dashboard = () => {
   }, []);
 
   const loadDashboardData = async () => {
+    console.log('Starting dashboard data load...');
     try {
+      console.log('Fetching PDFs and conversions...');
       const [pdfs, allConversions] = await Promise.all([
         pdfService.getAllPdfs(),
         conversionService.getConversionsByStatus('COMPLETED')
       ]);
 
+      console.log('Fetching in-progress and failed conversions...');
       const inProgressJobs = await conversionService.getConversionsByStatus('IN_PROGRESS');
       const failedJobs = await conversionService.getConversionsByStatus('FAILED');
 
-      const totalConversions = allConversions.length + inProgressJobs.length + failedJobs.length;
+      console.log('API responses:', { pdfs, allConversions, inProgressJobs, failedJobs });
 
-      setStats({
-        totalPdfs: pdfs.length,
-        totalConversions: totalConversions,
-        inProgress: inProgressJobs.length,
-        completed: allConversions.length,
-        failed: failedJobs.length
+      // Ensure we have arrays before accessing length
+      const pdfsArray = Array.isArray(pdfs) ? pdfs : [];
+      const completedArray = Array.isArray(allConversions) ? allConversions : [];
+      const inProgressArray = Array.isArray(inProgressJobs) ? inProgressJobs : [];
+      const failedArray = Array.isArray(failedJobs) ? failedJobs : [];
+
+      console.log('Array lengths:', {
+        pdfs: pdfsArray.length,
+        completed: completedArray.length,
+        inProgress: inProgressArray.length,
+        failed: failedArray.length
       });
+
+      const totalConversions = completedArray.length + inProgressArray.length + failedArray.length;
+
+      const newStats = {
+        totalPdfs: pdfsArray.length,
+        totalConversions: totalConversions,
+        inProgress: inProgressArray.length,
+        completed: completedArray.length,
+        failed: failedArray.length
+      };
+
+      console.log('Setting stats:', newStats);
+      setStats(newStats);
     } catch (error) {
       console.error('Error loading dashboard data:', error);
+      console.error('Error details:', error.response || error.message);
+      // Set default values on error
+      setStats({
+        totalPdfs: 0,
+        totalConversions: 0,
+        inProgress: 0,
+        completed: 0,
+        failed: 0
+      });
     } finally {
       setLoading(false);
     }

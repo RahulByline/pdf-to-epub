@@ -54,19 +54,28 @@ export class TextBasedConversionPipeline {
         pdfFilePath: pdfFilePath
       }));
       
-      // Step 3.5: Detect pages to exclude using AI (if exclusion prompt is configured)
+      // Step 3.5: Detect pages to exclude using AI (if exclusion prompt is configured) and automatic TOC detection
       let detectedExcludedPages = [];
+
+      // First, automatically detect table of contents pages
+      const tocPages = this.detectTableOfContentsPages(structure.pages);
+      if (tocPages.length > 0) {
+        console.log(`[Pipeline ${jobId}] Automatically detected ${tocPages.length} table of contents page(s): ${tocPages.join(', ')}`);
+        detectedExcludedPages.push(...tocPages);
+      }
+
       try {
         const { TtsConfigService } = await import('./ttsConfigService.js');
         const ttsConfig = await TtsConfigService.getActiveConfiguration();
         if (ttsConfig && ttsConfig.exclusionPrompt && ttsConfig.exclusionPrompt.trim()) {
-          console.log(`[Pipeline ${jobId}] Detecting pages to exclude based on AI prompt...`);
+          console.log(`[Pipeline ${jobId}] Detecting additional pages to exclude based on AI prompt...`);
           const detectionResult = await TtsConfigService.detectExcludedPages(
             structure.pages,
             ttsConfig.exclusionPrompt,
             await import('./aiConfigService.js').then(m => m.AiConfigService.getActiveConfiguration())
           );
-          detectedExcludedPages = detectionResult.excludedPages || [];
+          const aiExcludedPages = detectionResult.excludedPages || [];
+          detectedExcludedPages.push(...aiExcludedPages);
           
           if (detectedExcludedPages.length > 0) {
             console.log(`[Pipeline ${jobId}] AI detected ${detectedExcludedPages.length} page(s) to exclude: ${detectedExcludedPages.join(', ')}`);
@@ -325,6 +334,82 @@ export class TextBasedConversionPipeline {
       await fs.writeFile(outputPath, combined);
       return outputPath;
     }
+  }
+
+  /**
+   * Automatically detect table of contents pages based on common patterns
+   * @param {Array} pages - Array of page objects with text content
+   * @returns {Array<number>} Array of page numbers that appear to be table of contents
+   */
+  static detectTableOfContentsPages(pages) {
+    const tocPages = [];
+    const tocPatterns = [
+      // Common TOC indicators (case insensitive)
+      /table\s+of\s+contents/i,
+      /contents\s+page/i,
+      /chapter\s+\d+/i,
+      /section\s+\d+/i,
+      // Look for numbered lists like "1. Introduction", "2. Chapter 1", etc.
+      // Multiple chapter references in a page
+      /(chapter|section)\s+\d+.*(\n.*){2,}(chapter|section)\s+\d+/is,
+      // Page numbers and titles pattern
+      /\d+\s+[\w\s]+\.{3,}\d+$/m,
+      // Typical TOC structure with dots and page numbers
+      /[\w\s]+\.{3,}\d+/,
+      // Multiple entries with consistent formatting
+      /\d+\.\s+[\w\s]+(\n\d+\.\s+[\w\s]+){2,}/
+    ];
+
+    for (const page of pages) {
+      const pageNumber = page.pageNumber || 0;
+      let pageText = '';
+
+      // Extract text from the page
+      if (page.text) {
+        pageText = page.text;
+      } else if (page.textBlocks && Array.isArray(page.textBlocks)) {
+        pageText = page.textBlocks.map(block => block.text || '').join(' ');
+      }
+
+      if (!pageText || pageText.trim().length < 50) {
+        continue; // Skip pages with too little text
+      }
+
+      // Normalize text for pattern matching
+      const normalizedText = pageText.toLowerCase().replace(/\s+/g, ' ');
+
+      // Check if page matches TOC patterns
+      let isTocPage = false;
+      let matchCount = 0;
+
+      for (const pattern of tocPatterns) {
+        if (pattern.test(normalizedText)) {
+          matchCount++;
+        }
+      }
+
+      // If multiple patterns match, or specific strong patterns match, consider it TOC
+      if (matchCount >= 2 ||
+          /table\s+of\s+contents/i.test(normalizedText) ||
+          /(chapter|section)\s+\d+.*(\n.*){3,}(chapter|section)\s+\d+/is.test(pageText)) {
+        isTocPage = true;
+      }
+
+      // Additional heuristic: Check for high density of numbered entries
+      const numberedLines = (pageText.match(/^\s*\d+\.?\s+/gm) || []).length;
+      const totalLines = pageText.split('\n').length;
+
+      if (totalLines > 5 && numberedLines / totalLines > 0.3) {
+        isTocPage = true;
+      }
+
+      if (isTocPage) {
+        tocPages.push(pageNumber);
+        console.log(`[TOC Detection] Detected page ${pageNumber} as table of contents`);
+      }
+    }
+
+    return tocPages;
   }
 }
 

@@ -13,8 +13,15 @@ export const conversionService = {
   getConversionsByPdf: (pdfDocumentId) => 
     api.get(`/conversions/pdf/${pdfDocumentId}`).then(res => res.data.data),
   
-  getConversionsByStatus: (status) => 
-    api.get(`/conversions/status/${status}`).then(res => res.data.data),
+  getConversionsByStatus: (status) =>
+    api.get(`/conversions/status/${status}`).then(res => {
+      console.log(`Conversion API response for ${status}:`, res.data);
+      return res.data.data || [];
+    }).catch(error => {
+      console.error(`Error fetching conversions by status ${status}:`, error);
+      // Return empty array instead of throwing
+      return [];
+    }),
   
   getReviewRequired: () => 
     api.get('/conversions/review-required').then(res => res.data.data),

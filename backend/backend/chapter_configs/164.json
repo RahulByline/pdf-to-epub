@@ -1,0 +1,37 @@
+{
+  "documentId": 164,
+  "chapters": [
+    {
+      "title": "Chapter 1",
+      "startPage": 1,
+      "endPage": 1,
+      "pageType": "regular"
+    },
+    {
+      "title": "Chapter 2",
+      "startPage": 2,
+      "endPage": 3,
+      "pageType": "regular"
+    },
+    {
+      "title": "Chapter 3",
+      "startPage": 4,
+      "endPage": 5,
+      "pageType": "regular"
+    },
+    {
+      "title": "Chapter 4",
+      "startPage": 5,
+      "endPage": 6,
+      "pageType": "regular"
+    },
+    {
+      "title": "Chapter 5",
+      "startPage": 1,
+      "endPage": 1,
+      "pageType": "regular"
+    }
+  ],
+  "createdAt": "2026-01-12T10:24:15.620Z",
+  "updatedAt": "2026-01-12T10:24:15.620Z"
+}
