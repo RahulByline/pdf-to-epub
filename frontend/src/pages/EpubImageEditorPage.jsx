@@ -192,6 +192,7 @@ const EpubImageEditorPage = () => {
             pageNumber={selectedPage}
             onSave={handleSave}
             onStateChange={handleEditorStateChange}
+            onRequestPageChange={(nextPage) => setSelectedPage(nextPage)}
           />
         </div>
       )}

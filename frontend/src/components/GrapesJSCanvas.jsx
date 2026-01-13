@@ -506,7 +506,7 @@ const GrapesJSCanvas = ({
           
           // Get index from sorted placeholders
           const allPlaceholders = Array.from(
-            this.el.closest('.gjs-cv-canvas')?.querySelectorAll('.image-placeholder') || []
+            this.el.closest('.gjs-cv-canvas')?.querySelectorAll('.image-placeholder, .has-image') || []
           );
           const sorted = Array.from(allPlaceholders).sort((a, b) => {
             const rectA = a.getBoundingClientRect();
@@ -521,7 +521,19 @@ const GrapesJSCanvas = ({
         },
         events: {
           'dragover': 'handleDragOver',
+          'dragleave': 'handleDragLeave',
           'drop': 'handleDrop',
+        },
+        handleDragLeave(e) {
+          // Ensure we don't leave the placeholder in a dimmed/disabled state
+          try {
+            e.preventDefault();
+            e.stopPropagation();
+          } catch (_) {}
+          if (!this.el) return;
+          this.el.classList.remove('drag-over-active');
+          this.el.classList.remove('drag-over-disabled');
+          this.el.classList.remove('drag-over');
         },
         handleDragOver(e) {
           e.preventDefault();
@@ -534,7 +546,7 @@ const GrapesJSCanvas = ({
           // Check if this is the next empty placeholder (sequential mode)
           if (oneByOneMode) {
             const allPlaceholders = Array.from(
-              this.el.closest('.gjs-cv-canvas')?.querySelectorAll('.image-placeholder') || []
+              this.el.closest('.gjs-cv-canvas')?.querySelectorAll('.image-placeholder, .has-image') || []
             );
             const sorted = Array.from(allPlaceholders).sort((a, b) => {
               const rectA = a.getBoundingClientRect();
@@ -559,6 +571,7 @@ const GrapesJSCanvas = ({
             
             const currentIndex = sorted.indexOf(this.el);
             if (currentIndex === nextEmptyIndex && !hasImage) {
+              this.el.classList.remove('drag-over-disabled');
               this.el.classList.add('drag-over-active');
             } else {
               this.el.classList.remove('drag-over-active');
@@ -566,6 +579,7 @@ const GrapesJSCanvas = ({
             }
           } else {
             if (!hasImage) {
+              this.el.classList.remove('drag-over-disabled');
               this.el.classList.add('drag-over-active');
             } else {
               this.el.classList.remove('drag-over-active');
@@ -575,6 +589,13 @@ const GrapesJSCanvas = ({
         handleDrop(e) {
           e.preventDefault();
           e.stopPropagation();
+
+          // Always clear drag-over state on drop
+          if (this.el) {
+            this.el.classList.remove('drag-over-active');
+            this.el.classList.remove('drag-over-disabled');
+            this.el.classList.remove('drag-over');
+          }
           
           const component = this.model;
           const hasImage = component.get('components').length > 0 && 
@@ -588,7 +609,7 @@ const GrapesJSCanvas = ({
           // Check sequential mode
           if (oneByOneMode) {
             const allPlaceholders = Array.from(
-              this.el.closest('.gjs-cv-canvas')?.querySelectorAll('.image-placeholder') || []
+              this.el.closest('.gjs-cv-canvas')?.querySelectorAll('.image-placeholder, .has-image') || []
             );
             const sorted = Array.from(allPlaceholders).sort((a, b) => {
               const rectA = a.getBoundingClientRect();
@@ -819,7 +840,7 @@ const GrapesJSCanvas = ({
         return;
       }
       
-      const placeholder = elementAtPoint.closest('.image-placeholder');
+      const placeholder = elementAtPoint.closest('.image-placeholder, .has-image');
       if (!placeholder) {
         console.warn('[GrapesJSCanvas] No placeholder found at drop point');
         return;
@@ -1298,7 +1319,7 @@ const GrapesJSCanvas = ({
         if (canvas) {
           const doc = canvas.getDocument();
           if (doc) {
-            const domPlaceholders = doc.querySelectorAll('.image-placeholder');
+            const domPlaceholders = doc.querySelectorAll('.image-placeholder, .has-image');
             console.log(`[GrapesJSCanvas] Found ${domPlaceholders.length} placeholders inside GrapesJS iframe`);
           }
         }
@@ -1455,11 +1476,11 @@ const GrapesJSCanvas = ({
       
       console.log('[GrapesJSCanvas] Element at point:', elementAtPoint.tagName, elementAtPoint.className, elementAtPoint.id);
       
-      const placeholder = elementAtPoint.closest('.image-placeholder');
+      const placeholder = elementAtPoint.closest('.image-placeholder, .has-image');
       if (!placeholder) {
         console.warn('[GrapesJSCanvas] No placeholder found (container), element:', elementAtPoint.tagName, elementAtPoint.className);
         // Try to find all placeholders and log them
-        const allPlaceholders = frameDoc.querySelectorAll('.image-placeholder');
+        const allPlaceholders = frameDoc.querySelectorAll('.image-placeholder, .has-image');
         console.log('[GrapesJSCanvas] Available placeholders in iframe:', allPlaceholders.length);
         allPlaceholders.forEach((p, i) => {
           const rect = p.getBoundingClientRect();

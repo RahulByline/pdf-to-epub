@@ -1,5 +1,5 @@
 {
-  "documentId": 166,
+  "documentId": 171,
   "chapters": [
     {
       "title": "Chapter 1",
@@ -18,14 +18,8 @@
       "startPage": 6,
       "endPage": 9,
       "pageType": "regular"
-    },
-    {
-      "title": "Chapter 4",
-      "startPage": 10,
-      "endPage": 11,
-      "pageType": "regular"
     }
   ],
-  "createdAt": "2026-01-12T09:52:26.135Z",
-  "updatedAt": "2026-01-12T09:52:26.135Z"
+  "createdAt": "2026-01-12T13:40:14.210Z",
+  "updatedAt": "2026-01-12T13:40:14.210Z"
 }
