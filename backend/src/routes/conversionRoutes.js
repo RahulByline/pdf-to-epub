@@ -613,6 +613,40 @@ router.post('/:jobId/regenerate-page/:pageNumber', async (req, res) => {
   }
 });
 
+// POST /api/conversions/:jobId/regenerate-chapter/:pageNumber - Regenerate XHTML for the chapter that contains this page
+router.post('/:jobId/regenerate-chapter/:pageNumber', async (req, res) => {
+  try {
+    const jobId = parseInt(req.params.jobId);
+    const pageNumber = parseInt(req.params.pageNumber);
+
+    const job = await ConversionService.getConversionJob(jobId);
+    if (!job) {
+      return notFoundResponse(res, 'Conversion job not found');
+    }
+
+    if (job.status !== 'COMPLETED' && job.status !== 'IN_PROGRESS') {
+      return badRequestResponse(res, `Can only regenerate chapters for completed or in-progress conversions. Current status: ${job.status}`);
+    }
+
+    console.log(`[API] Regenerating CHAPTER XHTML for job ${jobId}, containing page ${pageNumber}...`);
+
+    const result = await ConversionService.regenerateChapterXhtmlByPage(jobId, pageNumber);
+
+    res.setHeader('Content-Type', 'application/json');
+    return successResponse(res, {
+      message: `Chapter XHTML regenerated successfully (pages ${result.startPage}-${result.endPage})`,
+      chapterNumber: result.chapterNumber,
+      startPage: result.startPage,
+      endPage: result.endPage,
+      xhtml: result.xhtml,
+      xhtmlFilePageNumber: result.xhtmlFilePageNumber
+    });
+  } catch (error) {
+    console.error(`[API] Error regenerating chapter XHTML:`, error);
+    return errorResponse(res, error.message, 500);
+  }
+});
+
 // GET /api/conversions/:jobId/xhtml/:pageNumber - Get XHTML file for a specific page
 router.get('/:jobId/xhtml/:pageNumber', async (req, res) => {
   try {

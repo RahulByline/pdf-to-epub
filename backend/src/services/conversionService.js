@@ -6176,6 +6176,96 @@ body { margin: 0; padding: 0; }
   }
 
   /**
+   * Regenerate XHTML for the chapter that contains a given page number.
+   * This uses the saved chapter plan (ChapterConfigService) and regenerates the whole chapter in one AI call,
+   * saving output to page_{startPage}.xhtml (same convention as chapter conversion).
+   *
+   * @param {number} jobId
+   * @param {number} pageNumber
+   * @returns {Promise<{xhtml: string, chapterNumber: number, startPage: number, endPage: number, xhtmlFilePageNumber: number}>}
+   */
+  static async regenerateChapterXhtmlByPage(jobId, pageNumber) {
+    const { GeminiService } = await import('./geminiService.js');
+    const { getHtmlIntermediateDir } = await import('../config/fileStorage.js');
+    const htmlIntermediateDir = getHtmlIntermediateDir();
+
+    // Load saved chapter configuration
+    const chapterConfig = await ChapterConfigService.loadChapterConfig(jobId);
+    if (!chapterConfig || !Array.isArray(chapterConfig.chapters) || chapterConfig.chapters.length === 0) {
+      throw new Error('No chapter plan found for this job. Please configure chapters before regenerating a chapter.');
+    }
+
+    const chapterIdx = chapterConfig.chapters.findIndex(ch => {
+      const start = Number(ch.startPage);
+      const end = Number(ch.endPage);
+      return Number.isFinite(start) && Number.isFinite(end) && pageNumber >= start && pageNumber <= end;
+    });
+
+    if (chapterIdx === -1) {
+      throw new Error(`No chapter range contains page ${pageNumber}.`);
+    }
+
+    const chapter = chapterConfig.chapters[chapterIdx];
+    const startPage = Number(chapter.startPage);
+    const endPage = Number(chapter.endPage);
+    const chapterNumber = chapterIdx + 1;
+    const chapterTitle = chapter.title || `Chapter ${chapterNumber}`;
+    const pageType = chapter.pageType || 'regular';
+
+    const jobPngDir = path.join(htmlIntermediateDir, `job_${jobId}_png`);
+    const jobHtmlDir = path.join(htmlIntermediateDir, `job_${jobId}_html`);
+    await fs.mkdir(jobHtmlDir, { recursive: true });
+
+    const pageImages = [];
+    for (let p = startPage; p <= endPage; p++) {
+      const pngImagePath = path.join(jobPngDir, `page_${p}.png`);
+      try {
+        await fs.access(pngImagePath);
+      } catch (e) {
+        throw new Error(`PNG image for page ${p} not found at ${pngImagePath}`);
+      }
+      pageImages.push({ path: pngImagePath, pageNumber: p });
+    }
+
+    console.log(`[Regenerate Chapter ${chapterNumber}] Regenerating pages ${startPage}-${endPage} (type: ${pageType}) via Gemini...`);
+    const xhtmlResult = await GeminiService.convertChapterPngsToXhtml(
+      pageImages,
+      chapterTitle,
+      chapterNumber,
+      {}, // no extracted images passed to AI
+      pageType
+    );
+
+    if (!xhtmlResult || !xhtmlResult.xhtml) {
+      throw new Error(`Gemini API failed to generate XHTML for chapter ${chapterNumber} (pages ${startPage}-${endPage})`);
+    }
+
+    const xhtmlFilePageNumber = startPage;
+    const outPath = path.join(jobHtmlDir, `page_${xhtmlFilePageNumber}.xhtml`);
+    await fs.writeFile(outPath, xhtmlResult.xhtml, 'utf8');
+
+    // Best-effort cleanup: remove per-page files inside the chapter range except the start page file
+    for (let p = startPage + 1; p <= endPage; p++) {
+      const maybePath = path.join(jobHtmlDir, `page_${p}.xhtml`);
+      try {
+        await fs.unlink(maybePath);
+      } catch (_) {
+        // ignore if doesn't exist
+      }
+    }
+
+    console.log(`[Regenerate Chapter ${chapterNumber}] Saved regenerated chapter XHTML to ${outPath}`);
+
+    return {
+      xhtml: xhtmlResult.xhtml,
+      chapterNumber,
+      startPage,
+      endPage,
+      xhtmlFilePageNumber
+    };
+  }
+
+  /**
    * Extract Table of Contents from PDF pages using Gemini AI
    * @param {Array} pageImages - Array of page image objects
    * @param {string} jobId - Job ID for logging

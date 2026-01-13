@@ -52,7 +52,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
     }
     
     // Check if clicking on a placeholder - if so, don't drag the text block
-    const clickedPlaceholder = e.target.closest('.image-placeholder, .image-drop-zone');
+    const clickedPlaceholder = e.target.closest('.image-placeholder, .image-drop-zone, .has-image');
     if (clickedPlaceholder) {
       console.log('[DraggableCanvas] Clicked on placeholder - allowing image drop');
       return; // Let the image drop handler take over
@@ -101,7 +101,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
     // Skip non-text elements
     if (['script', 'style', 'meta', 'link', 'img', 'svg', 'canvas', 'iframe'].includes(tag)) return;
     // Skip placeholders and images
-    if (el.classList.contains('image-placeholder') || el.classList.contains('image-drop-zone')) return;
+    if (el.classList.contains('image-placeholder') || el.classList.contains('image-drop-zone') || el.classList.contains('has-image')) return;
     if (tag === 'img') return;
     
     // Check if this is an editable element
@@ -286,7 +286,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
       console.log(`[DraggableCanvas] Found ${draggableBlocks.length} draggable text blocks`);
       
       // Find and ensure placeholders are visible
-      const placeholders = container.querySelectorAll('.image-placeholder, .image-drop-zone');
+      const placeholders = container.querySelectorAll('.image-placeholder, .image-drop-zone, .has-image');
       console.log(`[DraggableCanvas] Found ${placeholders.length} placeholders`);
       
       // Add click handler to prevent image stretching when clicking on placeholders
@@ -382,7 +382,8 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
             left: 0;
             right: 0;
             bottom: 0;
-            background: rgba(0, 0, 0, 0.6);
+            /* Keep overlay transparent to avoid "black overlay" effect on large images */
+            background: transparent;
             display: none;
             align-items: center;
             justify-content: center;
@@ -761,7 +762,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
         // Skip non-text elements
         if (['script', 'style', 'meta', 'link', 'img', 'svg', 'canvas', 'iframe'].includes(tag)) return false;
         // Skip placeholders and images
-        if (el.classList.contains('image-placeholder') || el.classList.contains('image-drop-zone')) return false;
+        if (el.classList.contains('image-placeholder') || el.classList.contains('image-drop-zone') || el.classList.contains('has-image')) return false;
         // Check if element has text content or contains text nodes
         const hasText = el.textContent && el.textContent.trim().length > 0;
         const hasTextNodes = Array.from(el.childNodes).some(node => node.nodeType === Node.TEXT_NODE && node.textContent.trim().length > 0);
@@ -776,7 +777,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
         if (node.classList.contains('image-placeholder') || node.classList.contains('image-drop-zone')) return;
         if (node.tagName.toLowerCase() === 'img') return;
         // Skip if it's a parent of a placeholder/image
-        if (node.querySelector('.image-placeholder, .image-drop-zone, img')) {
+        if (node.querySelector('.image-placeholder, .image-drop-zone, .has-image, img')) {
           // Only make it editable if it has direct text content (not just nested placeholders)
           const directText = Array.from(node.childNodes).some(n => 
             n.nodeType === Node.TEXT_NODE && n.textContent.trim().length > 0
@@ -845,7 +846,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
           node.removeEventListener('input', handler);
         });
         // Cleanup placeholder click handlers
-        const allPlaceholders = container.querySelectorAll('.image-placeholder, .image-drop-zone');
+        const allPlaceholders = container.querySelectorAll('.image-placeholder, .image-drop-zone, .has-image');
         allPlaceholders.forEach((placeholder) => {
           placeholder.removeEventListener('click', handlePlaceholderClick);
         });
@@ -952,7 +953,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
     // Skip non-text elements
     if (['script', 'style', 'meta', 'link', 'img', 'svg', 'canvas', 'iframe'].includes(tag)) return;
     // Skip placeholders and images
-    if (el.classList.contains('image-placeholder') || el.classList.contains('image-drop-zone')) return;
+    if (el.classList.contains('image-placeholder') || el.classList.contains('image-drop-zone') || el.classList.contains('has-image')) return;
     if (tag === 'img') return;
     
     // Helper function to check if an element contains text (directly or in children)
@@ -967,7 +968,7 @@ const DraggableCanvas = ({ xhtml, onXhtmlChange, editMode = false, onEditModeCha
       // Check if it contains text elements (but not just placeholders/images)
       const textElements = element.querySelectorAll('p, span, h1, h2, h3, h4, h5, h6, li, td, th, label, figcaption, blockquote, article, section, aside, .sync-word, .sync-sentence');
       const hasRealTextElements = Array.from(textElements).some(te => {
-        const hasPlaceholder = te.classList.contains('image-placeholder') || te.classList.contains('image-drop-zone') || te.querySelector('.image-placeholder, .image-drop-zone, img');
+        const hasPlaceholder = te.classList.contains('image-placeholder') || te.classList.contains('image-drop-zone') || te.querySelector('.image-placeholder, .image-drop-zone, .has-image, img');
         return !hasPlaceholder && te.textContent && te.textContent.trim().length > 0;
       });
       return hasRealTextElements;

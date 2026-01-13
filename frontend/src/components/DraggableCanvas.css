@@ -262,13 +262,14 @@
   left: 0;
   right: 0;
   bottom: 0;
-  background: rgba(0, 0, 0, 0.6);
+  /* Keep overlay transparent to avoid "black overlay" effect on large images */
+  background: transparent;
   display: none;
   align-items: center;
   justify-content: center;
   z-index: 3000 !important;
   border-radius: 4px;
-  backdrop-filter: blur(2px);
+  backdrop-filter: none;
   pointer-events: auto !important;
 }
 

@@ -6,6 +6,8 @@
   min-height: 400px; /* Ensure minimum height */
   position: relative;
   overflow: hidden;
+  /* IMPORTANT: Avoid dark/black canvas background bleeding through transparent XHTML */
+  background: #ffffff;
 }
 
 /* Override GrapesJS default styles for EPUB editing */
@@ -25,11 +27,22 @@
   height: 100% !important;
   top: 0 !important;
   left: 0 !important;
+  /* GrapesJS default canvas can be dark; force white to avoid "black overlay" */
+  background: #ffffff !important;
 }
 
 .gjs-frame {
   width: 100% !important;
   height: 100% !important;
+  background: #ffffff !important;
+}
+
+/* Also cover common wrappers used by GrapesJS */
+.gjs-frame-wrapper,
+.gjs-cv-canvas__frames,
+.gjs-cv-canvas__frames *,
+.gjs-cv-canvas__frame {
+  background: #ffffff !important;
 }
 
 /* Placeholder styles */
@@ -59,8 +72,10 @@
 .image-placeholder.drag-over-disabled,
 .image-drop-zone.drag-over-disabled {
   border-color: #ccc !important;
-  background-color: rgba(0, 0, 0, 0.05) !important;
-  opacity: 0.4 !important;
+  /* Do NOT dim the whole page when a placeholder is disabled (can look like a black overlay) */
+  background-color: transparent !important;
+  opacity: 1 !important;
+  filter: none !important;
   pointer-events: none !important;
 }
 
