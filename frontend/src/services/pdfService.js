@@ -1,7 +1,14 @@
 import api from './api';
 
 export const pdfService = {
-  getAllPdfs: () => api.get('/pdfs').then(res => res.data.data),
+  getAllPdfs: () => api.get('/pdfs').then(res => {
+    console.log('PDF API response:', res.data);
+    return res.data.data || [];
+  }).catch(error => {
+    console.error('Error fetching PDFs:', error);
+    // Return empty array instead of throwing
+    return [];
+  }),
   
   getPdfById: (id) => api.get(`/pdfs/${id}`).then(res => res.data.data),
   

@@ -20,18 +20,36 @@ const PdfUpload = () => {
       return;
     }
 
+    // Validate file size (max 50MB)
+    if (file.size > 50 * 1024 * 1024) {
+      setError('File size must be less than 50MB');
+      return;
+    }
+
+    // Validate file type
+    if (!file.type.includes('pdf') && !file.name.toLowerCase().endsWith('.pdf')) {
+      setError('Please select a valid PDF file');
+      return;
+    }
+
     setUploading(true);
     setError('');
     setSuccess('');
 
     try {
-      await pdfService.uploadPdf(file);
+      const response = await pdfService.uploadPdf(file);
+      console.log('Upload successful:', response);
       setSuccess('PDF uploaded successfully!');
       setTimeout(() => {
         navigate('/pdfs');
       }, 1500);
     } catch (err) {
-      setError(err.response?.data?.error || err.message || 'Upload failed');
+      console.error('Upload error:', err);
+      const errorMessage = err.response?.data?.error ||
+                          err.response?.data?.message ||
+                          err.message ||
+                          'Upload failed. Please check your connection and try again.';
+      setError(errorMessage);
     } finally {
       setUploading(false);
     }

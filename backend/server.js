@@ -38,7 +38,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 app.use('/epub_output', express.static(path.join(__dirname, 'epub_output')));
 
 // Health check
-app.get('/health', async (req, res) => {
+app.get('/api/health', async (req, res) => {
   try {
     // Test database connection
     const pool = (await import('./src/config/database.js')).default;

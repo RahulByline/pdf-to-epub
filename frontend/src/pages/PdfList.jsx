@@ -17,9 +17,12 @@ const PdfList = () => {
   const loadPdfs = async () => {
     try {
       const data = await pdfService.getAllPdfs();
-      setPdfs(data);
+      // Ensure we have an array
+      setPdfs(Array.isArray(data) ? data : []);
     } catch (err) {
-      setError(err.message || 'Failed to load PDFs');
+      console.error('Error loading PDFs:', err);
+      setError(err.response?.data?.message || err.message || 'Failed to load PDFs');
+      setPdfs([]); // Set empty array on error
     } finally {
       setLoading(false);
     }
@@ -132,6 +135,9 @@ const PdfList = () => {
             </thead>
             <tbody>
               {pdfs.map((pdf, index) => {
+                // Skip if pdf object is invalid
+                if (!pdf || !pdf.id) return null;
+
                 const typeBadge = getDocumentTypeBadge(pdf.documentType);
                 return (
                   <tr 
@@ -155,12 +161,12 @@ const PdfList = () => {
                         alignItems: 'center',
                         justifyContent: 'center'
                       }}>
-                        <img 
+                        <img
                           src={`/api/pdfs/${pdf.id}/thumbnail`}
-                          alt={`${pdf.originalFileName} preview`}
-                          style={{ 
-                            width: '100%', 
-                            height: '100%', 
+                          alt={`${pdf.originalFileName || 'PDF'} preview`}
+                          style={{
+                            width: '100%',
+                            height: '100%',
                             objectFit: 'contain'
                           }}
                           onError={(e) => {
@@ -187,7 +193,7 @@ const PdfList = () => {
                     <td style={{ padding: '16px 24px' }}>
                       <div>
                         <div style={{ fontWeight: '600', fontSize: '15px', color: '#212121', marginBottom: '4px' }}>
-                          {pdf.originalFileName}
+                          {pdf.originalFileName || 'Unnamed PDF'}
                         </div>
                         <div style={{ fontSize: '12px', color: '#757575' }}>
                           ID: {pdf.id}

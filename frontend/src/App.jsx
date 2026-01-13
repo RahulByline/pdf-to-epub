@@ -1,5 +1,6 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import ErrorBoundary from './components/ErrorBoundary';
 import Layout from './components/layout/Layout';
 import Dashboard from './pages/Dashboard';
 import Login from './pages/Login';
@@ -13,12 +14,14 @@ import AiConfig from './pages/AiConfig';
 import TtsManagement from './pages/TtsManagement';
 import EpubImageEditorPage from './pages/EpubImageEditorPage';
 import ChapterSelector from './pages/ChapterSelector';
+import ApiDebugger from './components/ApiDebugger';
 
 function App() {
   return (
-    <Router>
-      <Routes>
-        <Route path="/login" element={<Login />} />
+    <ErrorBoundary>
+      <Router>
+        <Routes>
+          <Route path="/login" element={<Login />} />
         <Route path="/" element={<Layout />}>
           <Route index element={<Dashboard />} />
           <Route path="pdfs" element={<PdfList />} />
@@ -31,9 +34,11 @@ function App() {
           <Route path="epub-image-editor/:jobId" element={<EpubImageEditorPage />} />
           <Route path="ai-config" element={<AiConfig />} />
           <Route path="tts-management" element={<TtsManagement />} />
+          <Route path="api-debugger" element={<ApiDebugger />} />
         </Route>
-      </Routes>
-    </Router>
+        </Routes>
+      </Router>
+    </ErrorBoundary>
   );
 }
 

@@ -1,0 +1,224 @@
+.canvas-editor-container {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background-color: #f8f9fa;
+  border-radius: 4px;
+}
+
+.canvas-editor-container canvas {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
+
+/* Text editing overlay */
+.canvas-editor-container textarea {
+  font-family: inherit;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  border-radius: 4px;
+  outline: none;
+}
+
+/* Toolbar styles for future use */
+.canvas-toolbar {
+  display: flex;
+  gap: 8px;
+  padding: 8px;
+  background-color: #ffffff;
+  border-bottom: 1px solid #e9ecef;
+  border-radius: 4px 4px 0 0;
+}
+
+.canvas-toolbar button {
+  padding: 6px 12px;
+  border: 1px solid #ced4da;
+  background-color: #ffffff;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s;
+}
+
+.canvas-toolbar button:hover {
+  background-color: #f8f9fa;
+  border-color: #adb5bd;
+}
+
+.canvas-toolbar button:active,
+.canvas-toolbar button.active {
+  background-color: #007bff;
+  border-color: #007bff;
+  color: white;
+}
+
+/* Zoom controls */
+.zoom-controls {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  background: rgba(255, 255, 255, 0.9);
+  padding: 4px;
+  border-radius: 6px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.zoom-controls button {
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  font-weight: bold;
+}
+
+.zoom-controls button:hover {
+  background-color: #f8f9fa;
+}
+
+/* Object properties panel */
+.object-properties {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  background: rgba(255, 255, 255, 0.95);
+  padding: 12px;
+  border-radius: 8px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.15);
+  min-width: 200px;
+  max-width: 300px;
+}
+
+.object-properties h3 {
+  margin: 0 0 8px 0;
+  font-size: 14px;
+  color: #495057;
+}
+
+.object-properties label {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #6c757d;
+}
+
+.object-properties input,
+.object-properties select {
+  width: 100%;
+  padding: 4px 8px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 14px;
+  margin-bottom: 8px;
+}
+
+.object-properties input:focus,
+.object-properties select:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+}
+
+/* Mobile responsiveness */
+@media (max-width: 768px) {
+  .canvas-editor-container {
+    touch-action: none;
+  }
+
+  .zoom-controls {
+    top: auto;
+    bottom: 10px;
+    right: 10px;
+    flex-direction: row;
+  }
+
+  .object-properties {
+    top: auto;
+    bottom: 10px;
+    left: 10px;
+    max-width: calc(100vw - 60px);
+  }
+
+  .canvas-toolbar {
+    flex-wrap: wrap;
+    padding: 4px;
+  }
+
+  .canvas-toolbar button {
+    padding: 8px 12px;
+    font-size: 12px;
+  }
+}
+
+/* Selection animation */
+@keyframes selection-pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.7; }
+  100% { opacity: 1; }
+}
+
+.selected-object {
+  animation: selection-pulse 2s infinite;
+}
+
+/* Loading states */
+.canvas-loading {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 16px;
+  color: #6c757d;
+}
+
+/* Grid overlay (optional) */
+.canvas-grid {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  opacity: 0.1;
+}
+
+.canvas-grid canvas {
+  background: transparent;
+}
+
+/* Context menu (for future use) */
+.context-menu {
+  position: absolute;
+  background: white;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+  min-width: 120px;
+}
+
+.context-menu-item {
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 14px;
+  border: none;
+  background: none;
+  width: 100%;
+  text-align: left;
+}
+
+.context-menu-item:hover {
+  background-color: #f8f9fa;
+}

@@ -1,8 +1,8 @@
 import React from 'react';
 import { Outlet, Link, useNavigate, useLocation } from 'react-router-dom';
-import { 
-  HiOutlineHome, 
-  HiOutlineDocument, 
+import {
+  HiOutlineHome,
+  HiOutlineDocument,
   HiOutlineCloudUpload,
   HiOutlineRefresh,
   HiOutlineCog,
@@ -10,6 +10,7 @@ import {
   HiOutlineBookOpen,
   HiOutlineSpeakerphone
 } from 'react-icons/hi';
+import HealthCheck from '../HealthCheck';
 import './Layout.css';
 
 const Layout = () => {
@@ -56,6 +57,7 @@ const Layout = () => {
           </div>
           
           <div className="navbar-actions">
+            <HealthCheck />
             <button onClick={handleLogout} className="navbar-logout-btn">
               <HiOutlineLogout className="navbar-logout-icon" />
               <span>Logout</span>
@@ -89,6 +91,10 @@ const Layout = () => {
           <Link to="/tts-management" className={`sidebar-link ${isActive('/tts-management')}`}>
             <HiOutlineSpeakerphone className="sidebar-icon" />
             <span>TTS Management</span>
+          </Link>
+          <Link to="/api-debugger" className={`sidebar-link ${isActive('/api-debugger')}`}>
+            <HiOutlineCog className="sidebar-icon" />
+            <span>API Debugger</span>
           </Link>
         </nav>
       </aside>
