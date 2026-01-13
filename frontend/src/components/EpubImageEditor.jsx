@@ -426,7 +426,7 @@ const XhtmlCanvas = ({
         // Get ALL placeholders - search the entire container recursively
       // Include both divs with the class AND divs with title attributes that look like placeholders
       // Use querySelectorAll with a more comprehensive selector to find nested placeholders
-      let allPlaceholders = searchContainer.querySelectorAll('.image-placeholder, .image-drop-zone');
+      let allPlaceholders = searchContainer.querySelectorAll('.image-placeholder, .image-drop-zone, .has-image');
       
       console.log(`[XhtmlCanvas] Initial query found ${allPlaceholders.length} placeholders`);
       
@@ -435,7 +435,7 @@ const XhtmlCanvas = ({
       console.log(`[XhtmlCanvas] Found ${divsWithTitle.length} divs with title attributes`);
       
       divsWithTitle.forEach((div) => {
-        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
+        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone') || div.classList.contains('has-image');
         const hasText = div.textContent.trim().length > 0;
         const hasImg = div.querySelector('img') !== null;
         const id = div.id;
@@ -464,7 +464,7 @@ const XhtmlCanvas = ({
       // Check all divs with IDs for placeholder characteristics
       const allDivsWithId = searchContainer.querySelectorAll('div[id]');
       allDivsWithId.forEach((div) => {
-        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
+        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone') || div.classList.contains('has-image');
         const hasText = div.textContent.trim().length > 0;
         const hasImg = div.querySelector('img') !== null;
         const id = div.id;
@@ -957,11 +957,42 @@ const XhtmlCanvas = ({
   // Note: The GrapesJS drop handler useEffect is in the EpubImageEditor component
   // because it needs access to useGrapesJS state which is defined there
 
+  const [globalDraggingFlag, setGlobalDraggingFlag] = useState(false);
+
+  // Synchronize global drag flag with window events to ensure we always clear it
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+
+    const handleDragStart = () => {
+      if (typeof window !== 'undefined') {
+        window.__imageDragging = true;
+      }
+      setGlobalDraggingFlag(true);
+    };
+
+    const handleDragEnd = () => {
+      if (typeof window !== 'undefined') {
+        window.__imageDragging = false;
+      }
+      setGlobalDraggingFlag(false);
+    };
+
+    window.addEventListener('image-drag-start', handleDragStart);
+    window.addEventListener('image-drag-end', handleDragEnd);
+
+    return () => {
+      window.removeEventListener('image-drag-start', handleDragStart);
+      window.removeEventListener('image-drag-end', handleDragEnd);
+    };
+  }, []);
+
   // This is a transparent overlay for drop handling
   // react-dnd needs this to always be present and active to detect drops
   // Check both local state and global flag to ensure we detect drags
   // Safe access to window object
-  const globalFlag = typeof window !== 'undefined' ? (window.__imageDragging || false) : false;
+  const globalFlag = typeof window !== 'undefined'
+    ? (window.__imageDragging || globalDraggingFlag || false)
+    : globalDraggingFlag;
   const isAnyImageDragging = isDragging || globalFlag;
   
   // When edit mode is ON and no image is being dragged, allow pointer events to pass through
@@ -1024,7 +1055,7 @@ const XhtmlCanvas = ({
         // Image overlay has z-index 3000, so it's always on top
         pointerEvents: (shouldBlockPointerEvents && !isOverImageOptions) ? 'auto' : 'none',
         zIndex: isAnyImageDragging ? 2000 : (editMode ? 50 : 100), // Lower z-index in edit mode when not dragging (image overlay is 3000)
-        backgroundColor: isOver ? 'rgba(33, 150, 243, 0.2)' : (isAnyImageDragging ? 'rgba(33, 150, 243, 0.05)' : 'transparent'),
+        backgroundColor: isAnyImageDragging ? (isOver ? 'rgba(33, 150, 243, 0.2)' : 'rgba(33, 150, 243, 0.05)') : 'transparent',
         border: isAnyImageDragging ? '2px dashed rgba(33, 150, 243, 0.5)' : 'none', // Visual indicator
         transition: 'background-color 0.2s ease',
         // Debug: Make overlay visible when dragging
@@ -1120,7 +1151,7 @@ const formatXHTML = (xhtml) => {
 /**
  * Main EpubImageEditor Component
  */
-const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
+const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange, onRequestPageChange }) => {
   const [xhtml, setXhtml] = useState('');
   const [originalXhtml, setOriginalXhtml] = useState('');
   const [images, setImages] = useState([]);
@@ -1577,20 +1608,28 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         Math.min(previewXhtml.length, previewXhtml.indexOf('page1_img2') + 200)
       ));
       
-      // Verify the img tag exists and placeholder was replaced
-      const imgTagPattern = new RegExp(`<img[^>]*id=["']${placeholderId}["'][^>]*>`, 'i');
+      // Verify the img tag exists (it's now inside the placeholder div)
+      const imgTagPattern = new RegExp(`<img[^>]*src=["'][^"']*${image.fileName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>`, 'i');
       const imgTagMatch = previewXhtml.match(imgTagPattern);
+      
+      // Check if the placeholder div still has the drop-zone class (it shouldn't)
       const placeholderDivPattern = new RegExp(`<div[^>]*id=["']${placeholderId}["'][^>]*class=["'][^"]*image-drop-zone[^"]*["']`, 'i');
       const placeholderStillExists = previewXhtml.match(placeholderDivPattern);
+      
+      // Check if the placeholder div now has the has-image class
+      const hasImageClassPattern = new RegExp(`<div[^>]*id=["']${placeholderId}["'][^>]*class=["'][^"]*has-image[^"]*["']`, 'i');
+      const hasImageClass = previewXhtml.match(hasImageClassPattern);
       
       console.log('[handleDrop] Verification:', {
         imgTagFound: !!imgTagMatch,
         placeholderStillExists: !!placeholderStillExists,
+        hasImageClass: !!hasImageClass,
         hasAbsoluteUrl: previewXhtml.includes(absoluteUrl),
         hasRelativePath: previewXhtml.includes(`images/${image.fileName}`)
       });
       
-        if (imgTagMatch && !placeholderStillExists) {
+      // Success if image tag is found AND either placeholder class is gone OR has-image class is present
+      if (imgTagMatch && (!placeholderStillExists || hasImageClass)) {
           console.log('[handleDrop] ✓ Image successfully injected - updating XHTML state');
           setModified(true);
           
@@ -1617,13 +1656,16 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
                       const frameDoc = iframe.contentDocument || iframe.contentWindow?.document;
                       if (frameDoc) {
                         searchDoc = frameDoc;
-                        img = frameDoc.querySelector(`img[id="${placeholderId}"]`);
+                        // Image is now inside the div with the placeholderId
+                        const parent = frameDoc.getElementById(placeholderId);
+                        img = parent ? parent.querySelector('img') : frameDoc.querySelector(`img[id="${placeholderId}"]`);
                       }
                     }
                   }
                 } else {
                   // Standard mode - search in canvasRef
-                  img = canvasRef.current.querySelector(`img[id="${placeholderId}"]`);
+                  const parent = canvasRef.current.querySelector(`[id="${placeholderId}"]`);
+                  img = parent ? parent.querySelector('img') : canvasRef.current.querySelector(`img[id="${placeholderId}"]`);
                 }
                 
                 if (img) {
@@ -2392,9 +2434,10 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         }
         
         const targetTag = target.tagName ? target.tagName.toLowerCase() : '';
+        const childImg = target.querySelector('img');
         
-        if (targetTag !== 'img') {
-          console.log(`[EpubImageEditor] Target ${placeholderId} is not an img tag, it's a ${targetTag}`);
+        if (targetTag !== 'img' && !(targetTag === 'div' && childImg)) {
+          console.log(`[EpubImageEditor] Target ${placeholderId} is not an img tag or div with image, it's a ${targetTag}`);
           // Check if it's already a placeholder div
           if (targetTag === 'div' && (target.classList.contains('image-placeholder') || target.classList.contains('image-drop-zone'))) {
             console.log(`[EpubImageEditor] Placeholder ${placeholderId} is already a placeholder div, nothing to clear`);
@@ -2412,38 +2455,16 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
         placeholderDiv.setAttribute('title', 'Drop image here');
         placeholderDiv.textContent = 'Drop image here';
         
-        // Copy any style attributes from the img to preserve dimensions
+        // Copy any style attributes from the target (div or img) to preserve dimensions
         if (target.hasAttribute('style')) {
-          const imgStyle = target.getAttribute('style');
-          if (imgStyle) {
-            placeholderDiv.setAttribute('style', imgStyle);
+          const targetStyle = target.getAttribute('style');
+          if (targetStyle) {
+            placeholderDiv.setAttribute('style', targetStyle);
           }
         }
         
-        // Copy width/height attributes if present
-        if (target.hasAttribute('width')) {
-          placeholderDiv.style.width = target.getAttribute('width') + (target.getAttribute('width').includes('%') ? '' : 'px');
-        }
-        if (target.hasAttribute('height')) {
-          placeholderDiv.style.height = target.getAttribute('height') + (target.getAttribute('height').includes('%') ? '' : 'px');
-        }
-        
-        // Set default styles if not present
-        if (!placeholderDiv.style.minHeight) {
-          placeholderDiv.style.minHeight = '80px';
-        }
-        if (!placeholderDiv.style.minWidth) {
-          placeholderDiv.style.minWidth = '80px';
-        }
-        
-        // Ensure placeholder is visible
-        placeholderDiv.style.display = 'flex';
-        placeholderDiv.style.alignItems = 'center';
-        placeholderDiv.style.justifyContent = 'center';
-        
-        // Replace the img with the placeholder div
-        // If the img is inside an image-with-options wrapper, replace the wrapper entirely
-        // Otherwise, just replace the img
+        // If it was an img tag directly, or we want to replace the whole div
+        // If it's a div, we could just empty it, but replacing it is safer for state consistency
         if (target.parentNode) {
           const parent = target.parentNode;
           // Check if parent is an image-with-options wrapper
@@ -2452,9 +2473,9 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
             parent.parentNode.replaceChild(placeholderDiv, parent);
             console.log(`[EpubImageEditor] Replaced wrapper containing image ${placeholderId} with placeholder div`);
           } else {
-            // Just replace the img with the placeholder div
+            // Just replace the target with the placeholder div
             parent.replaceChild(placeholderDiv, target);
-            console.log(`[EpubImageEditor] Replaced image ${placeholderId} with placeholder div`);
+            console.log(`[EpubImageEditor] Replaced element ${placeholderId} with placeholder div`);
           }
         } else {
           console.error(`[EpubImageEditor] Target ${placeholderId} has no parent node`);
@@ -2983,6 +3004,57 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
     }
   }, [jobId, pageNumber, loadData]);
 
+  const handleRegenerateChapter = useCallback(async () => {
+    if (!window.confirm(`Are you sure you want to regenerate the CHAPTER that contains page ${pageNumber}? This will replace the current chapter XHTML (stored as page_{chapterStart}.xhtml) with a new version generated by Gemini AI. Any unsaved changes in that chapter will be lost.`)) {
+      return;
+    }
+
+    try {
+      setRegenerating(true);
+      setError('');
+      console.log(`[EpubImageEditor] Regenerating chapter containing page ${pageNumber}...`);
+
+      const response = await api.post(`/conversions/${jobId}/regenerate-chapter/${pageNumber}`);
+      const regeneratedXhtml = response.data.data.xhtml;
+      const chapterStartPage = response.data.data.xhtmlFilePageNumber;
+
+      if (!regeneratedXhtml) {
+        throw new Error('No XHTML content returned from chapter regeneration');
+      }
+
+      // Convert any images/ paths to absolute URLs for preview (safety)
+      let previewXhtml = regeneratedXhtml;
+      previewXhtml = previewXhtml.replace(/src=["']images\/([^"']+)["']/gi, (match, fileName) => {
+        const absoluteUrl = `${api.defaults.baseURL}/conversions/${jobId}/images/${fileName}`;
+        return `src="${absoluteUrl}"`;
+      });
+      previewXhtml = previewXhtml.replace(/src=["']\.\.\/images\/([^"']+)["']/gi, (match, fileName) => {
+        const absoluteUrl = `${api.defaults.baseURL}/conversions/${jobId}/images/${fileName}`;
+        return `src="${absoluteUrl}"`;
+      });
+
+      // Switch the editor to the chapter start page file (since chapter XHTML is stored as page_{startPage}.xhtml)
+      if (chapterStartPage && Number.isFinite(chapterStartPage) && chapterStartPage !== pageNumber) {
+        if (typeof onRequestPageChange === 'function') {
+          onRequestPageChange(chapterStartPage);
+        }
+      }
+
+      setOriginalXhtml(regeneratedXhtml);
+      setXhtml(previewXhtml);
+      setModified(false);
+
+      await loadData();
+      alert(`Chapter regenerated successfully (saved as page_${chapterStartPage}.xhtml).`);
+    } catch (err) {
+      console.error('Error regenerating chapter:', err);
+      setError(err.response?.data?.message || err.message || 'Failed to regenerate chapter XHTML');
+      alert(`Failed to regenerate chapter: ${err.response?.data?.message || err.message || 'Unknown error'}`);
+    } finally {
+      setRegenerating(false);
+    }
+  }, [jobId, pageNumber, loadData]);
+
   const handleSave = useCallback(async () => {
     try {
       setSaving(true);
@@ -3303,7 +3375,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       
       allDivs.forEach(div => {
         const id = div.id;
-        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
+        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone') || div.classList.contains('has-image');
         const hasText = div.textContent.trim().length > 0;
         const hasImg = div.querySelector('img') !== null;
         
@@ -3517,7 +3589,7 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       
       allDivs.forEach(div => {
         const id = div.id;
-        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone');
+        const hasClass = div.classList.contains('image-placeholder') || div.classList.contains('image-drop-zone') || div.classList.contains('has-image');
         const hasText = div.textContent.trim().length > 0;
         const hasImg = div.querySelector('img') !== null;
         
@@ -3792,6 +3864,29 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
               title={regenerating ? 'Regenerating page...' : `Regenerate page ${pageNumber} XHTML using Gemini AI`}
             >
               {regenerating ? '🔄 Regenerating...' : '🔄 Regenerate XHTML'}
+            </button>
+            <button
+              onClick={handleRegenerateChapter}
+              disabled={regenerating}
+              className="btn-regenerate-chapter"
+              style={{ 
+                display: 'inline-block', 
+                visibility: 'visible', 
+                minWidth: '170px',
+                marginRight: '10px',
+                padding: '8px 16px',
+                background: regenerating ? '#999' : '#E91E63',
+                color: 'white',
+                border: `1px solid ${regenerating ? '#999' : '#E91E63'}`,
+                borderRadius: '4px',
+                cursor: regenerating ? 'not-allowed' : 'pointer',
+                fontSize: '14px',
+                transition: 'all 0.2s ease',
+                opacity: regenerating ? 0.6 : 1
+              }}
+              title={regenerating ? 'Regenerating chapter...' : `Regenerate chapter containing page ${pageNumber} using Gemini AI`}
+            >
+              {regenerating ? '🔄 Regenerating...' : '📚 Regenerate Chapter'}
             </button>
             <button
               onClick={handleSave}

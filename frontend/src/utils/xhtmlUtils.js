@@ -114,101 +114,38 @@ export function injectImageIntoXhtml(xhtml, targetId, imageSrc, imageWidth = nul
   } else {
     console.log('[injectImageIntoXhtml] Creating new img tag to replace placeholder div');
     
-    // For cover page and header placeholders, keep the container div and insert image inside it
-    if (isCoverPlaceholder || isHeaderPlaceholder) {
-      const placeholderType = isCoverPlaceholder ? 'cover page' : 'header';
-      console.log(`[injectImageIntoXhtml] ${placeholderType} placeholder detected - inserting image inside container`);
-      
-      // Remove placeholder content (text instructions)
-      while (placeholder.firstChild) {
-        placeholder.removeChild(placeholder.firstChild);
-      }
-      
-      // Create img element
-      const img = doc.createElement('img');
-      img.setAttribute('src', imageSrc);
-      const altText = isCoverPlaceholder 
-        ? `Cover Page ${placeholder.getAttribute('data-page-number') || ''}`
-        : `Header Page ${placeholder.getAttribute('data-page-number') || ''}`;
-      img.setAttribute('alt', placeholder.getAttribute('title') || altText);
-      
-      // For cover pages, make image fill the container; for headers, make it full width
-      const imgStyle = isCoverPlaceholder
-        ? 'max-width: 100%; max-height: 100vh; width: auto; height: auto; display: block; object-fit: contain;'
-        : 'max-width: 100%; width: 100%; height: auto; display: block; object-fit: contain;';
-      img.setAttribute('style', imgStyle);
-      
-      // Append image to placeholder container
-      placeholder.appendChild(img);
-      
-      // Add has-image class to indicate image is present
-      placeholder.classList.add('has-image');
-      placeholder.classList.remove('image-placeholder', 'image-drop-zone');
-      
-      console.log(`[injectImageIntoXhtml] Successfully inserted image into ${placeholderType} placeholder`);
-    } else {
-      // Regular placeholder - replace with img tag
-      const img = doc.createElement('img');
-      img.setAttribute('id', targetId);
-      img.setAttribute('src', imageSrc);
-      
-      // Get alt text from title or alt attribute, or use a default
-      const altText = placeholder.getAttribute('title') || placeholder.getAttribute('alt') || 'Image';
-      img.setAttribute('alt', altText);
-      
-      // Get placeholder dimensions to preserve them, but don't force image to stretch
-      const placeholderStyle = placeholder.getAttribute('style') || '';
-      const placeholderWidth = placeholder.getAttribute('width') || '';
-      const placeholderHeight = placeholder.getAttribute('height') || '';
-      
-      // Build style that maintains aspect ratio - don't force width/height to 100%
-      let imgStyle = 'max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; object-fit: contain;';
-      
-      // Only use placeholder dimensions if they're specific pixel values, not percentages
-      if (placeholderWidth && !placeholderWidth.includes('%')) {
-        imgStyle += ` max-width: ${placeholderWidth};`;
-      }
-      if (placeholderHeight && !placeholderHeight.includes('%')) {
-        imgStyle += ` max-height: ${placeholderHeight};`;
-      }
-      
-      img.setAttribute('style', imgStyle);
-      
-      // Don't set width/height attributes if they would cause stretching
-      // Only set them if they're specific pixel values
-      if (imageWidth && !String(imageWidth).includes('%')) {
-        img.setAttribute('width', imageWidth);
-      }
-      if (imageHeight && !String(imageHeight).includes('%')) {
-        img.setAttribute('height', imageHeight);
-      }
-      
-      // Copy any classes from the placeholder (except placeholder classes)
-      if (placeholder.className) {
-        const cleanedClasses = placeholder.className
-          .replace('image-placeholder', '')
-          .replace('image-drop-zone', '')
-          .trim();
-        if (cleanedClasses) {
-          img.setAttribute('class', cleanedClasses);
-        }
-      }
-      
-      // Remove any text content from the placeholder before replacing
-      // This ensures no text nodes remain
-      while (placeholder.firstChild) {
-        placeholder.removeChild(placeholder.firstChild);
-      }
-      
-      // Replace the placeholder with the img tag
-      if (placeholder.parentNode) {
-        placeholder.parentNode.replaceChild(img, placeholder);
-        console.log('[injectImageIntoXhtml] Successfully replaced placeholder with img tag');
-      } else {
-        console.error('[injectImageIntoXhtml] Placeholder has no parent node, cannot replace');
-        return xhtml;
-      }
+    // ALWAYS keep the container div and insert image inside it to preserve positioning styles (absolute, top, left, etc.)
+    const placeholderType = isCoverPlaceholder ? 'cover page' : isHeaderPlaceholder ? 'header' : 'regular';
+    console.log(`[injectImageIntoXhtml] ${placeholderType} placeholder detected - inserting image inside container to preserve styles`);
+    
+    // Remove placeholder content (text instructions)
+    while (placeholder.firstChild) {
+      placeholder.removeChild(placeholder.firstChild);
     }
+    
+    // Create img element
+    const img = doc.createElement('img');
+    img.setAttribute('src', imageSrc);
+    
+    // Get alt text from title or alt attribute, or use a default
+    const altText = placeholder.getAttribute('title') || placeholder.getAttribute('alt') || 
+                   (isCoverPlaceholder ? `Cover Page ${placeholder.getAttribute('data-page-number') || ''}` : 
+                    isHeaderPlaceholder ? `Header Page ${placeholder.getAttribute('data-page-number') || ''}` : 'Image');
+    img.setAttribute('alt', altText);
+    
+    // For ALL placeholders, make image fill the container while preserving aspect ratio
+    // Use width: 100% and height: 100% to fill the positioned div created by AI
+    const imgStyle = 'width: 100%; height: 100%; display: block; object-fit: contain;';
+    img.setAttribute('style', imgStyle);
+    
+    // Append image to placeholder container
+    placeholder.appendChild(img);
+    
+    // Add has-image class to indicate image is present
+    placeholder.classList.add('has-image');
+    placeholder.classList.remove('image-placeholder', 'image-drop-zone');
+    
+    console.log(`[injectImageIntoXhtml] Successfully inserted image into ${placeholderType} placeholder`);
   }
   
   // Serialize back to string
@@ -303,38 +240,32 @@ function injectImageIntoXhtmlRegex(xhtml, targetId, imageSrc, imageWidth, imageH
   const titleMatch = fullMatch.match(/title=["']([^"']*)["']/i);
   const altText = titleMatch ? titleMatch[1] : 'Image';
   
-  if (isCoverPlaceholder || isHeaderPlaceholder) {
-    // For cover and header placeholders, insert image inside the div and add has-image class
-    const imgStyle = isCoverPlaceholder
-      ? 'max-width: 100%; max-height: 100vh; width: auto; height: auto; display: block; object-fit: contain;'
-      : 'max-width: 100%; width: 100%; height: auto; display: block; object-fit: contain;';
-    const imgTag = `<img src="${imageSrc}" alt="${altText.replace(/"/g, '&quot;')}" style="${imgStyle}"/>`;
-    const replacement = xhtml.replace(
-      new RegExp(`(<div[^>]*id=["']${targetId}["'][^>]*>)(.*?)(</div>)`, 'is'),
-      (match, openTag, content, closeTag) => {
-        // Remove placeholder classes and add has-image class
-        const modifiedOpenTag = openTag
-          .replace(/class=["']([^"']*)["']/, (m, classes) => {
-            const cleaned = classes
-              .replace(/image-placeholder|image-drop-zone/g, '')
-              .trim();
-            return `class="${cleaned} has-image"`;
-          })
-          .replace(/class=["']([^"']*)["']/, 'class="has-image"'); // If no class existed
-        return `${modifiedOpenTag}${imgTag}${closeTag}`;
+  // ALWAYS keep the container div and insert image inside it to preserve positioning styles (absolute, top, left, etc.)
+  const imgStyle = 'width: 100%; height: 100%; display: block; object-fit: contain;';
+  const imgTag = `<img src="${imageSrc}" alt="${altText.replace(/"/g, '&quot;')}" style="${imgStyle}"/>`;
+  
+  const replacement = xhtml.replace(
+    new RegExp(`(<div[^>]*id=["']${targetId}["'][^>]*>)(.*?)(</div>)`, 'is'),
+    (match, openTag, content, closeTag) => {
+      // Remove placeholder classes and add has-image class
+      let modifiedOpenTag = openTag;
+      if (modifiedOpenTag.includes('class=')) {
+        modifiedOpenTag = modifiedOpenTag.replace(/class=["']([^"']*)["']/, (m, classes) => {
+          const cleaned = classes
+            .replace(/image-placeholder|image-drop-zone/g, '')
+            .trim();
+          return `class="${cleaned} has-image"`;
+        });
+      } else {
+        // If no class existed, add class="has-image" after the ID
+        modifiedOpenTag = modifiedOpenTag.replace(/(id=["'][^"']*["'])/, '$1 class="has-image"');
       }
-    );
-    return replacement;
-  } else {
-    // Regular placeholder - replace with img tag
-    let imgTag = `<img id="${targetId}" src="${imageSrc}" alt="${altText.replace(/"/g, '&quot;')}" style="max-width: 100%; height: auto; display: block;"`;
-    if (imageWidth) imgTag += ` width="${imageWidth}"`;
-    if (imageHeight) imgTag += ` height="${imageHeight}"`;
-    imgTag += '/>';
-    
-    // Replace the placeholder
-    return xhtml.replace(placeholderPattern, imgTag);
-  }
+      
+      return `${modifiedOpenTag}${imgTag}${closeTag}`;
+    }
+  );
+  
+  return replacement;
 }
 
 /**
@@ -353,7 +284,7 @@ export function extractPlaceholders(xhtml) {
   }
   
   const placeholders = [];
-  const placeholderElements = doc.querySelectorAll('.image-placeholder, .image-drop-zone');
+  const placeholderElements = doc.querySelectorAll('.image-placeholder, .image-drop-zone, .has-image');
   
   placeholderElements.forEach((el, index) => {
     const id = el.id || `placeholder_${index}`;
@@ -373,7 +304,7 @@ export function extractPlaceholders(xhtml) {
  */
 function extractPlaceholdersRegex(xhtml) {
   const placeholders = [];
-  const pattern = /<div[^>]*class=["'][^"]*(?:image-placeholder|image-drop-zone)[^"]*["'][^>]*id=["']([^"']+)["'][^>]*>/gi;
+  const pattern = /<div[^>]*class=["'][^"]*(?:image-placeholder|image-drop-zone|has-image)[^"]*["'][^>]*id=["']([^"']+)["'][^>]*>/gi;
   let match;
   
   while ((match = pattern.exec(xhtml)) !== null) {

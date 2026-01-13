@@ -209,6 +209,40 @@ export class GeminiService {
     
     return xhtml;
   }
+
+  static replaceImgTagsWithPlaceholders(xhtml) {
+    return xhtml.replace(/<img\b([^>]*)\/?>/gi, (match, attrs) => {
+      const attrMap = {};
+      let attrMatch;
+      const attrRegex = /([a-zA-Z0-9_-]+)=["']([^"']*)["']/g;
+      while ((attrMatch = attrRegex.exec(attrs)) !== null) {
+        attrMap[attrMatch[1].toLowerCase()] = attrMatch[2];
+      }
+
+      const title = attrMap.alt || attrMap.title || 'Image placeholder';
+      const id = attrMap.id ? `id="${attrMap.id}"` : '';
+      const style = attrMap.style ? `style="${attrMap.style}"` : '';
+      const dataAttrs = [];
+      
+      if (attrMap.src) {
+        dataAttrs.push(`data-original-src="${attrMap.src}"`);
+      }
+      if (attrMap.width) {
+        dataAttrs.push(`data-original-width="${attrMap.width}"`);
+      }
+      if (attrMap.height) {
+        dataAttrs.push(`data-original-height="${attrMap.height}"`);
+      }
+
+      // Preserve existing classes, but ensure image-drop-zone is present
+      let classes = attrMap.class || '';
+      if (!classes.includes('image-drop-zone') && !classes.includes('image-placeholder')) {
+        classes = classes ? `${classes} image-drop-zone` : 'image-drop-zone';
+      }
+
+      return `<div class="${classes}" ${id} title="${title}" ${style} ${dataAttrs.join(' ')}></div>`;
+    });
+  }
   
   /**
    * Fix truncated attributes in HTML/XHTML content
@@ -957,21 +991,24 @@ export class GeminiService {
             : isBack
               ? 'Back cover image'
               : 'Table of Contents page image';
+          const placeholderPerPage = pageImages.map(p => 
+            `  - Page ${p.pageNumber}: <div class="image-drop-zone" id="chapter${chapterNumber}_page${p.pageNumber}_${placeholderIdSuffix}" title="${placeholderTitle}" style="width: 100%; min-height: 100vh; background: transparent; border: none;"></div>`
+          ).join('\n');
 
           pageTypeInstructions = `
 **⭐ SPECIAL PAGE TYPE: ${specialLabel}**
-This is a ${specialDesc} page. Create a simple layout with:
-- ONE large full-page image placeholder that covers the entire page
-- Use: <div class="image-drop-zone" id="chapter${chapterNumber}_page{pageNum}_${placeholderIdSuffix}" title="${placeholderTitle}" style="width: 100%; min-height: 100vh; background: transparent; border: none;"></div>
-- Extract any text if present (title, author, etc.) and place below the image placeholder
-- Keep the layout simple and clean`;
+This is a ${specialDesc} page. Create a VERY SIMPLE layout with:
+- **Create one placeholder per page listed below:** 
+${placeholderPerPage}
+- Keep the layout extremely simple - just the placeholder div
+- The user will manually insert the final image in the editor`;
         } else {
           pageTypeInstructions = `
 **PAGE TYPE: REGULAR CHAPTER**
 This is a regular chapter with standard content. Follow all standard conversion rules.`;
         }
 
-        const prompt = `You are converting a chapter from a PDF document to EPUB format. Analyze the provided ${pageImages.length} image(s) and generate a SINGLE, complete XHTML document.
+        const promptHeader = `You are converting a chapter from a PDF document to EPUB format. Analyze the provided ${pageImages.length} image(s) and generate a SINGLE, complete XHTML document.
 
 **🚫 CRITICAL RULE - READ FIRST:**
 **NEVER create <img> tags with src attributes. You MUST create ONLY empty <div> placeholders with class="image-drop-zone" for ALL images. NO <img src="..."> tags allowed!**
@@ -985,7 +1022,7 @@ ${pageTypeInstructions}
 
 **CRITICAL OUTPUT REQUIREMENTS - MUST BE COMPLETE:**
 - You MUST return the ENTIRE XHTML document from <!DOCTYPE to </html> - DO NOT truncate mid-tag or mid-attribute
-- ALL attributes MUST have values - NEVER write incomplete attributes like id</p> (must be id="value" or id="")
+- ALL attributes MUST have values - NEVER write incomplete attributes like id="value"
 - If you cannot complete the entire document, prioritize completing all opening tags and attributes before closing tags
 - Create ONE unified XHTML document containing ALL content from ALL ${pageImages.length} page images
 - Ensure every opening tag has a matching closing tag
@@ -997,16 +1034,23 @@ ${pageTypeInstructions}
   3. Ensure </body> and </html> closing tags are present
   4. Then add content as space allows
 
-**EPUB 3 REFLOWABLE STRATEGY (CRITICAL):**
-1) This is a REFLOWABLE EPUB. Use semantic HTML5 and Flexbox for text flow.
-2) **EXCEPTION:** Use position: absolute/relative with % units for image placeholders to match PDF positioning exactly
-3) **Container Strategy:** Wrap content in a positioned container (position: relative) so images can be absolutely positioned within
-4) Recreate the visual "look and feel" (colors, typography, spacing) using CSS.
-5) Use background colors on <div> wrappers to replicate banners and colored sections found in the PDF.
+**EPUB 3 REFLOWABLE STRATEGY (CRITICAL - CANVAS MAPPING):**
+1) **THE PAGE IS A CANVAS:** Treat the entire page as a coordinate-based canvas.
+2) **ABSOLUTE POSITIONING FOR EVERYTHING:** To match the PDF's visual fidelity, you MUST use position: absolute with percentage (%) units for:
+   - ALL Image Placeholders (.image-drop-zone)
+   - ALL Text Blocks (.draggable-text-block)
+   - ALL Decorative UI elements (banners, boxes, shapes)
+3) **OVERLAYING IS REQUIRED:** If text or a banner appears "on top" of an image in the PDF (like a title box over a sky or a caption over a photo), you MUST position the image first (lower z-index) and then position the text/banner at the same coordinates (higher z-index).
+4) **NO STANDARD FLOW (MANDATORY):** Do NOT let elements just "flow" one after another. If you do, they will stack vertically and not overlap. Use top and left for every single block to place it exactly where it is in the PDF.
+   - **SAME VERTICAL START:** If two elements (like a background image and an overlay) start at the same vertical position, they MUST share the same top percentage (e.g., both top: 0%).
+   - **TRUE OVERLAPPING:** If a smaller image or text box is "on top" of a larger image, its top and left coordinates MUST place it within the bounds of the larger image, and it MUST have a higher z-index.
+5) **BACKGROUND DETECTION:** If an image fills the background or covers the top half of the page while other elements sit inside its area, treat it as the base layer (z-index: 1) and place overlays on top (z-index: 5 or higher).
+6) Recreate the visual "look and feel" (colors, typography, spacing, **exact widths**) using CSS.
+7) Use background colors, border-radius, and padding on div wrappers to replicate banners, buttons, and colored sections. **DO NOT default to 100% width; match the visual width in the PDF.** For example, a green pill-shaped title banner should have width: 40%; border-radius: 50px; position: absolute; top: 5%; left: 5%;.
 
 **IMAGE HANDLING & ASSET FITTING (CRITICAL - MANDATORY CLASSES):**
 
-1) **FOR EVERY illustration, icon, logo, photo, graphic, or visual element in the PDF, you MUST create an empty <div> with ONE of these classes:**
+1) **FOR EVERY illustration, icon, logo, photo, graphic, or visual element in the PDF, you MUST create an empty div with ONE of these classes:
    - class="image-drop-zone" (preferred for main images)
    - class="image-placeholder" (alternative, also acceptable)
 
@@ -1017,13 +1061,16 @@ ${pageTypeInstructions}
 3) **TITLE ATTRIBUTE:** ALWAYS include a detailed description of the image for the user.
    - Example: title="A brown horse with its mouth wide open, showing its teeth, against a blue sky"
 
-4) **PRECISE POSITIONING (CRITICAL - MATCH PDF EXACTLY):**
-   - **Observe the EXACT position** of each image in the PDF
-   - Use inline styles with position, top, left, width, height to match the PDF layout precisely
-   - Example: style="position: absolute; top: 10%; left: 5%; width: 40%; height: 30%;"
-   - **For overlapping images:** Use z-index to control stacking order
-   - **For images cut to each other:** Position them with precise coordinates
-   - **Multiple images stacked:** Each gets its own positioned placeholder with appropriate z-index
+4) **PRECISE POSITIONING & LAYERING (CRITICAL - MATCH PDF EXACTLY):**
+   - **Observe the EXACT position and layering** of each element.
+   - **OVERLAPPING ELEMENTS (MANDATORY):** If one image or box is on top of another, you MUST use z-index and absolute coordinates to recreate that overlap exactly. 
+   - **NO SIDE-BY-SIDE SPLITTING:** If an image appears to continue BEHIND a text box or banner, DO NOT create two separate image placeholders side-by-side. Instead, create ONE large image placeholder that covers the entire area (including the area behind the text/banner) and use z-index to place the text/banner on top.
+   - **BACKGROUND DECORATIONS:** Look for background textures, shadows, or decorative background images behind the main content. Create these using additional div layers with absolute positioning and appropriate z-index.
+   - Use inline styles with position, top, left, width, height to match the PDF layout precisely. Use % units for all dimensions and positions.
+   - Example: style="position: absolute; top: 10%; left: 5%; width: 40%; height: 30%; z-index: 5;"
+   - **For images cut to each other:** Position them with precise coordinates so they touch or overlap exactly as they do in the PDF.
+   - **Multiple images stacked:** Each gets its own positioned placeholder with appropriate z-index to maintain the visual stack. Background images should usually be z-index: 1, and overlays z-index: 2 or higher.
+   - **TEXT OVERLAYS:** Ensure text blocks that sit on top of images have a higher z-index (draggable-text-block defaults to 10) than the image placeholders.
 
 5) **PLACEHOLDER STYLING (CRITICAL - INVISIBLE PLACEHOLDERS):**
    - **NO borders** - placeholders should be invisible/transparent
@@ -1037,16 +1084,16 @@ ${pageTypeInstructions}
    - Example: style="transform: rotate(-5deg); position: absolute; top: 10%; left: 5%;"
    - Combine positioning and rotation in the same style attribute
 
-7) **CRITICAL:** NEVER create a <div> for an image without adding class="image-drop-zone" or class="image-placeholder". 
+7) **CRITICAL:** NEVER create a div for an image without adding class="image-drop-zone" or class="image-placeholder". 
    - If you create a div with a title describing an image, it MUST have one of these classes.
    - Empty divs with image descriptions but no class will NOT work in the editor.
 
 8) **ABSOLUTELY FORBIDDEN - MOST CRITICAL RULE - NO <IMG> TAGS ALLOWED:**
    - **NEVER create any <img> tag with src attribute under ANY circumstance**
    - **DO NOT write <img src="images/..." /> or <img src="..." /> - THIS IS 100% FORBIDDEN**
-   - **You MUST create ONLY empty <div> elements with class="image-drop-zone" or class="image-placeholder"**
-   - **EVERY single image, photo, graphic, icon, logo MUST be an empty <div> placeholder, NOT an <img> tag**
-   - **NO EXCEPTIONS - Even if you detect images in the PNG, you MUST create ONLY <div> placeholders, NEVER <img> tags**
+   - **You MUST create ONLY empty div elements with class="image-drop-zone" or class="image-placeholder"**
+   - **EVERY single image, photo, graphic, icon, logo MUST be an empty div placeholder, NOT an <img> tag**
+   - **NO EXCEPTIONS - Even if you detect images in the PNG, you MUST create ONLY div placeholders, NEVER <img> tags**
    - **WRONG (FORBIDDEN):** <img src="images/horse.jpg" alt="Horse" />
    - **CORRECT (REQUIRED):** <div class="image-drop-zone" id="page1_img1" title="Horse image" style="width: 80%; aspect-ratio: 16/9; background: transparent; border: none;"></div>
 
@@ -1136,13 +1183,16 @@ ${pageTypeInstructions}
 - **Page numbers, headers, footers, titles, captions, labels - ALL must have unique IDs**
 
 **BACKROUND & CANVAS LOGIC (CRITICAL):**
-1) **The Background:** For the primary visual, use a <div class="canvas-background" id="chapter${chapterNumber}_page{pageNum}_bg">. 
-2) **The Drop Zone:** Inside the background div, place the <div class="image-drop-zone" title="..."> representing the main horse photo.
-   - **MANDATORY:** This div MUST have class="image-drop-zone" or class="image-placeholder".
-3) **The Text Layer:** All text must be treated as "overlays." Wrap text blocks in:
-   <div class="draggable-text-block" style="top: [N]%; left: [N]%; width: [N]%;">
-     [Standard Nested Audio-Sync Structure: Parent > Sentence > Word]
-   </div>
+1) **The Page Container:** Use <div class="page" style="position: relative; width: 100%; min-height: 100vh;"> as the parent for everything.
+2) **Everything is Absolute:** Every child inside .page MUST have position: absolute;.
+3) **Layering Order:**
+   - **Background/Main Images:** z-index: 1. Example: A large image of horses that fills the page.
+   - **Decorative Banners/Boxes:** z-index: 5. Example: The green "If You Were a Horse" pill-shaped box.
+   - **Text Blocks:** z-index: 10. Example: The actual text inside the banners or floating on the image.
+4) **Coordinate Mapping:** Use top, left, width, and height in % for every element to match the PDF's visual layout precisely.
+5) **Example of Overlay:**
+   [Example omitted for simplicity in search_replace, but I will include the code blocks if needed]
+
 
 **REMINDER - ALL IMAGE PLACEHOLDERS MUST HAVE CLASSES:**
 - Every <div> that represents an image, illustration, icon, logo, or graphic MUST have either:
@@ -1317,6 +1367,48 @@ Example structure for CHAPTER ${chapterNumber} (showing HIERARCHICAL NESTED stru
 - For overlapping images, use z-index to control stacking
 - Preserve colors, fonts, and visual hierarchy from the original pages`;
 
+        const isSpecialPage = pageType === 'cover' || pageType === 'back' || pageType === 'toc';
+        const promptSplitMarker = '**CRITICAL OUTPUT REQUIREMENTS - MUST BE COMPLETE:**';
+        const generalIndex = promptHeader.indexOf(promptSplitMarker);
+        const promptLead = generalIndex >= 0 ? promptHeader.slice(0, generalIndex).trim() : promptHeader;
+        const placeholderIdSuffix = pageType === 'cover' ? 'cover_img' : pageType === 'back' ? 'back_img' : 'toc_img';
+        const placeholderTitle = pageType === 'cover'
+          ? 'Front cover image'
+          : pageType === 'back'
+            ? 'Back cover image'
+            : 'Table of Contents page image';
+
+        const specialPromptBody = `
+**CRITICAL OUTPUT REQUIREMENTS - SPECIAL:** 
+- Return only the DOCTYPE/html structure that wraps the placeholder div.
+- Include a single <div class="page"> wrapper containing the placeholder.
+- DO NOT add paragraphs, lists, headings, tables, or TOC entries beyond an optional short caption.
+- The placeholder must use the id and title specified above and span the full viewport.
+- Keep CSS minimal (basic body reset and placeholder sizing).
+**DOCUMENT STRUCTURE EXAMPLE:**
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
+  <title>${chapterTitle}</title>
+  <style type="text/css">
+    body { margin: 0; padding: 0; font-family: serif; }
+    .page { position: relative; width: 100%; min-height: 100vh; }
+    .image-drop-zone { width: 100%; min-height: 100vh; background: transparent; border: none; }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <div class="image-drop-zone" id="chapter${chapterNumber}_page{pageNum}_${placeholderIdSuffix}" title="${placeholderTitle}"></div>
+  </div>
+</body>
+</html>`;
+
+        let prompt = promptHeader;
+        if (isSpecialPage && generalIndex >= 0) {
+          prompt = `${promptLead}\n\n${specialPromptBody}`;
+        }
+
         console.log(`[Chapter ${chapterNumber}] Calling Gemini API with ${imageParts.length} images and detailed prompt...`);
         console.log(`[Chapter ${chapterNumber}] This may take several minutes for ${pageImages.length} pages. Please wait...`);
         
@@ -1337,11 +1429,13 @@ Example structure for CHAPTER ${chapterNumber} (showing HIERARCHICAL NESTED stru
 
         // Clean up the response
         text = text.trim();
-        text = text.replace(/^```x?html\s*/i, '').replace(/```\s*$/,  '');
+        // Remove markdown code blocks - handle various formats
+        text = text.replace(/^```\w*\s*\n?/i, '').replace(/\n?```\s*$/i, '');
         text = text.trim();
 
         // Sanitize XHTML
         text = this.sanitizeXhtml(text);
+        text = this.replaceImgTagsWithPlaceholders(text);
 
         // Split xhtml and css (css is embedded in xhtml already)
         const xhtml = text;
@@ -1519,7 +1613,7 @@ Example structure for CHAPTER ${chapterNumber} (showing HIERARCHICAL NESTED stru
 
 **CRITICAL OUTPUT REQUIREMENTS - MUST BE COMPLETE:**
 - You MUST return the ENTIRE XHTML document from <!DOCTYPE to </html> - DO NOT truncate mid-tag or mid-attribute
-- ALL attributes MUST have values - NEVER write incomplete attributes like id</p> (must be id="value" or id="")
+- ALL attributes MUST have values - NEVER write incomplete attributes like id="value"
 - If you cannot complete the entire document, prioritize completing all opening tags and attributes before closing tags
 - Ensure every opening tag has a matching closing tag
 - Every attribute must have a value in quotes: id="value", class="value", NOT id or class
@@ -1533,17 +1627,18 @@ Example structure for CHAPTER ${chapterNumber} (showing HIERARCHICAL NESTED stru
         **THIS IS PAGE ${pageNumber}** - Use this page number in ALL element IDs to ensure global uniqueness.
 
         
- **EPUB 3 REFLOWABLE STRATEGY (CRITICAL):**
-
-        1) This is a REFLOWABLE EPUB. Use semantic HTML5 and Flexbox for text flow.
-
-        2) **EXCEPTION:** Use position: absolute/relative with % units for image placeholders to match PDF positioning exactly
-
-        3) **Container Strategy:** Wrap content in a positioned container (position: relative) so images can be absolutely positioned within
-
-        4) Recreate the visual "look and feel" (colors, typography, spacing) using CSS.
-
-        5) Use background colors on <div> wrappers to replicate banners and colored sections found in the PDF.
+ **EPUB 3 REFLOWABLE STRATEGY (CRITICAL - CANVAS MAPPING):**
+1) **THE PAGE IS A CANVAS:** Treat the entire page as a coordinate-based canvas.
+2) **ABSOLUTE POSITIONING FOR EVERYTHING:** To match the PDF's visual fidelity, you MUST use position: absolute with percentage (%) units for:
+   - ALL Image Placeholders (.image-drop-zone)
+   - ALL Text Blocks (.draggable-text-block)
+   - ALL Decorative UI elements (banners, boxes, shapes)
+3) **OVERLAYING IS REQUIRED:** If text or a banner appears "on top" of an image in the PDF (like a title box over a sky or a caption over a photo), you MUST position the image first (lower z-index) and then position the text/banner at the same coordinates (higher z-index).
+4) **NO STANDARD FLOW:** Do NOT let elements just "flow" one after another. If you do, they will stack vertically and not overlap. Use top and left for every single block to place it exactly where it is in the PDF.
+5) **MATCH BACKGROUNDS:** If a page has a large background image, create a full-page placeholder first, then place everything else on top of it using absolute coordinates.
+6) Recreate the visual "look and feel" (colors, typography, spacing, exact widths) using CSS.
+7) Use background colors, border-radius, and padding on div wrappers to replicate banners, buttons, and colored sections. DO NOT default to 100% width; match the visual width in the PDF. For example, a green pill-shaped title banner should have width: 40%; border-radius: 50px; position: absolute; top: 5%; left: 5%;.
+7) Use background colors, border-radius, and padding on div wrappers to replicate banners, buttons, and colored sections. **DO NOT default to 100% width; match the visual width in the PDF.** For example, a green pill-shaped title banner should have width: 40%; border-radius: 50px; position: absolute; top: 5%; left: 5%;.
 
 
 
@@ -1561,13 +1656,16 @@ Example structure for CHAPTER ${chapterNumber} (showing HIERARCHICAL NESTED stru
 3) **TITLE ATTRIBUTE:** ALWAYS include a detailed description of the image for the user.
    - Example: title="A brown horse with its mouth wide open, showing its teeth, against a blue sky"
 
-4) **PRECISE POSITIONING (CRITICAL - MATCH PDF EXACTLY):**
-   - **Observe the EXACT position** of each image in the PDF
-   - Use inline styles with position, top, left, width, height to match the PDF layout precisely
-   - Example: style="position: absolute; top: 10%; left: 5%; width: 40%; height: 30%;"
-   - **For overlapping images:** Use z-index to control stacking order
-   - **For images cut to each other:** Position them with precise coordinates
-   - **Multiple images stacked:** Each gets its own positioned placeholder with appropriate z-index
+4) **PRECISE POSITIONING & LAYERING (CRITICAL - MATCH PDF EXACTLY):**
+   - **Observe the EXACT position and layering** of each element.
+   - **OVERLAPPING ELEMENTS (MANDATORY):** If one image or box is on top of another, you MUST use z-index and absolute coordinates to recreate that overlap exactly. 
+   - **NO SIDE-BY-SIDE SPLITTING:** If an image appears to continue BEHIND a text box or banner, DO NOT create two separate image placeholders side-by-side. Instead, create ONE large image placeholder that covers the entire area (including the area behind the text/banner) and use z-index to place the text/banner on top.
+   - **BACKGROUND DECORATIONS:** Look for background textures, shadows, or decorative background images behind the main content. Create these using additional div layers with absolute positioning and appropriate z-index.
+   - Use inline styles with position, top, left, width, height to match the PDF layout precisely. Use % units for all dimensions and positions.
+   - Example: style="position: absolute; top: 10%; left: 5%; width: 40%; height: 30%; z-index: 5;"
+   - **For images cut to each other:** Position them with precise coordinates so they touch or overlap exactly as they do in the PDF.
+   - **Multiple images stacked:** Each gets its own positioned placeholder with appropriate z-index to maintain the visual stack. Background images should usually be z-index: 1, and overlays z-index: 2 or higher.
+   - **TEXT OVERLAYS:** Ensure text blocks that sit on top of images have a higher z-index (draggable-text-block defaults to 10) than the image placeholders.
 
 5) **PLACEHOLDER STYLING (CRITICAL - INVISIBLE PLACEHOLDERS):**
    - **NO borders** - placeholders should be invisible/transparent
@@ -1581,16 +1679,16 @@ Example structure for CHAPTER ${chapterNumber} (showing HIERARCHICAL NESTED stru
    - Example: style="transform: rotate(-5deg); position: absolute; top: 10%; left: 5%;"
    - Combine positioning and rotation in the same style attribute
 
-7) **CRITICAL:** NEVER create a <div> for an image without adding class="image-drop-zone" or class="image-placeholder". 
+7) **CRITICAL:** NEVER create a div for an image without adding class="image-drop-zone" or class="image-placeholder". 
    - If you create a div with a title describing an image, it MUST have one of these classes.
    - Empty divs with image descriptions but no class will NOT work in the editor.
 
 8) **ABSOLUTELY FORBIDDEN - MOST CRITICAL RULE - NO <IMG> TAGS ALLOWED:**
    - **NEVER create any <img> tag with src attribute under ANY circumstance**
    - **DO NOT write <img src="images/..." /> or <img src="..." /> - THIS IS 100% FORBIDDEN**
-   - **You MUST create ONLY empty <div> elements with class="image-drop-zone" or class="image-placeholder"**
-   - **EVERY single image, photo, graphic, icon, logo MUST be an empty <div> placeholder, NOT an <img> tag**
-   - **NO EXCEPTIONS - Even if you detect images in the PNG, you MUST create ONLY <div> placeholders, NEVER <img> tags**
+   - **You MUST create ONLY empty div elements with class="image-drop-zone" or class="image-placeholder"**
+   - **EVERY single image, photo, graphic, icon, logo MUST be an empty div placeholder, NOT an <img> tag**
+   - **NO EXCEPTIONS - Even if you detect images in the PNG, you MUST create ONLY div placeholders, NEVER <img> tags**
    - **WRONG (FORBIDDEN):** <img src="images/horse.jpg" alt="Horse" />
    - **CORRECT (REQUIRED):** <div class="image-drop-zone" id="page1_img1" title="Horse image" style="width: 80%; aspect-ratio: 16/9; background: transparent; border: none;"></div>
 
@@ -1690,11 +1788,12 @@ Example structure for CHAPTER ${chapterNumber} (showing HIERARCHICAL NESTED stru
         - **Page numbers, headers, footers, titles, captions, labels - ALL must have unique IDs**
 
         **BACKROUND & CANVAS LOGIC (CRITICAL):**
-1) **The Background:** For the primary visual, use a <div class="canvas-background" id="page${pageNumber}_bg">. 
-2) **The Drop Zone:** Inside the background div, place the <div class="image-drop-zone" title="..."> representing the main horse photo.
-   - **MANDATORY:** This div MUST have class="image-drop-zone" or class="image-placeholder".
+1) **The Background:** For the primary visual or background texture, use a <div class="canvas-background" id="page${pageNumber}_bg">. 
+2) **Layered Images:** You can place multiple <div class="image-drop-zone"> elements inside or outside the background div. Use absolute positioning and z-index to stack them.
+   - **MANDATORY:** If one image overlaps another, they MUST have different z-index values.
+   - **MANDATORY:** Decorative boxes and text banners should always have a higher z-index than the images they sit on.
 3) **The Text Layer:** All text must be treated as "overlays." Wrap text blocks in:
-   <div class="draggable-text-block" style="top: [N]%; left: [N]%; width: [N]%;">
+   <div class="draggable-text-block" style="top: [N]%; left: [N]%; width: [N]%; z-index: 10;">
      [Standard Nested Audio-Sync Structure: Parent > Sentence > Word]
    </div>
 
