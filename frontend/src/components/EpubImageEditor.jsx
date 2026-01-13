@@ -2941,9 +2941,13 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       
       console.log(`[EpubImageEditor] Regenerating page ${pageNumber}...`);
       
-      // Call the regenerate API
-      const response = await api.post(`/conversions/${jobId}/regenerate-page/${pageNumber}`);
+      // Call the regenerate API with longer timeout for AI operations
+      console.log(`[EpubImageEditor] Starting XHTML regeneration for page ${pageNumber}...`);
+      const response = await api.post(`/conversions/${jobId}/regenerate-page/${pageNumber}`, {}, {
+        timeout: 180000 // 3 minutes for AI regeneration
+      });
       const regeneratedXhtml = response.data.data.xhtml;
+      console.log(`[EpubImageEditor] XHTML regeneration completed for page ${pageNumber}`);
       
       if (!regeneratedXhtml) {
         throw new Error('No XHTML content returned from regeneration');
@@ -2976,8 +2980,16 @@ const EpubImageEditor = ({ jobId, pageNumber, onSave, onStateChange }) => {
       alert(`Page ${pageNumber} XHTML regenerated successfully!`);
     } catch (err) {
       console.error('Error regenerating page:', err);
-      setError(err.response?.data?.message || err.message || 'Failed to regenerate page XHTML');
-      alert(`Failed to regenerate page: ${err.response?.data?.message || err.message || 'Unknown error'}`);
+
+      // Handle timeout specifically
+      if (err.code === 'ECONNABORTED' || err.message.includes('timeout')) {
+        const timeoutMessage = 'XHTML regeneration timed out. The AI service may be busy or experiencing delays. Please try again in a few minutes.';
+        setError(timeoutMessage);
+        alert(timeoutMessage);
+      } else {
+        setError(err.response?.data?.message || err.message || 'Failed to regenerate page XHTML');
+        alert(`Failed to regenerate page: ${err.response?.data?.message || err.message || 'Unknown error'}`);
+      }
     } finally {
       setRegenerating(false);
     }
